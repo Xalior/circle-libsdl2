@@ -1,0 +1,17 @@
+#
+# circle-libsdl2 gradient test — SDL2 video first light
+#
+
+include ../../../circle-stdlib/Config.mk
+
+OBJS = main.o kernel.o
+
+STANDARD = -std=c++23 -Wno-volatile
+
+include $(CIRCLEHOME)/Rules.mk
+
+INCLUDE := -I ../../include $(CIRCLE_STDLIB_INCLUDES) $(INCLUDE)
+
+LIBS := ../../libSDL2.a $(CIRCLE_STDLIB_LIBS)
+
+-include $(DEPS)
