@@ -6,6 +6,9 @@
 #include <SDL2/SDL.h>
 #include "sdl2circle.h"
 #include <circle/sched/scheduler.h>
+#include <circle/cputhrottle.h>
+#include <circle/timer.h>
+#include <circle/logger.h>
 #include <cstring>
 
 namespace
@@ -33,6 +36,47 @@ extern "C" void SDL_PumpEvents(void)
     // reports, and yields so cooperative std::threads make progress.
     if (CScheduler::IsActive())
         CScheduler::Get()->Yield();
+
+    // Liveness beacon + deadman: a debug line every 10 s proves the app's
+    // main loop is still pumping. A kernel timer re-armed on every beat
+    // fires from IRQ context if the pump goes silent for 30 s and dumps
+    // the scheduler's task list — the wedged system's own post-mortem.
+    {
+        static u64 lastBeat = 0;
+        static TKernelTimerHandle deadman = 0;
+        u64 now = CTimer::GetClockTicks64();
+        if (now - lastBeat > 10000000)
+        {
+            lastBeat = now;
+            CLogger::Get()->Write("sdl2", LogDebug, "pump alive t=%us",
+                                  (unsigned)(now / 1000000));
+
+            if (deadman != 0)
+                CTimer::Get()->CancelKernelTimer(deadman);
+            deadman = CTimer::Get()->StartKernelTimer(
+                30 * HZ,
+                [](TKernelTimerHandle, void *, void *) {
+                    CLogger::Get()->Write("sdl2", LogError,
+                                          "PUMP STALLED 30s -- task dump:");
+                    if (CScheduler::IsActive())
+                        CScheduler::Get()->ListTasks(CLogger::Get()->GetTarget());
+                });
+        }
+    }
+
+    // Tick the host kernel's CPU throttle (if it created one) so thermal
+    // management actually runs — Circle requires periodic Update() calls.
+    CCPUThrottle *throttle = CCPUThrottle::Get();
+    if (throttle)
+    {
+        static u64 lastUpdate = 0;
+        u64 now = CTimer::GetClockTicks64();
+        if (now - lastUpdate > 2000000)   // every 2 s
+        {
+            lastUpdate = now;
+            throttle->Update();
+        }
+    }
 
     SDL2Circle_InputPump();
     SDL2Circle_AudioPump();

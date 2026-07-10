@@ -23,6 +23,7 @@ struct SDL_Renderer
     u8 *base;          // start of the (2x height) virtual framebuffer
     unsigned pitch;
     unsigned back;     // half we're drawing into: 0 = top, 1 = bottom
+    bool vsync;        // present blocks for vertical sync
     Uint8 r, g, b, a;  // draw color
 };
 
@@ -192,7 +193,7 @@ extern "C" Uint32 SDL_GetWindowFlags(SDL_Window *win)
 extern "C" void SDL_SetWindowTitle(SDL_Window *, const char *) {}
 extern "C" void SDL_ShowWindow(SDL_Window *) {}
 
-extern "C" SDL_Renderer *SDL_CreateRenderer(SDL_Window *win, int, Uint32)
+extern "C" SDL_Renderer *SDL_CreateRenderer(SDL_Window *win, int, Uint32 flags)
 {
     if (!win)
     {
@@ -204,6 +205,7 @@ extern "C" SDL_Renderer *SDL_CreateRenderer(SDL_Window *win, int, Uint32)
     ren->base = (u8 *)(uintptr)win->fb->GetBuffer();
     ren->pitch = win->fb->GetPitch();
     ren->back = 1;   // half 0 is visible after init; draw into half 1 first
+    ren->vsync = (flags & SDL_RENDERER_PRESENTVSYNC) != 0;
     ren->r = ren->g = ren->b = 0;
     ren->a = 255;
     return ren;
@@ -469,6 +471,9 @@ extern "C" void SDL_RenderPresent(SDL_Renderer *ren)
 {
     CBcmFrameBuffer *fb = ren->window->fb;
     fb->SetVirtualOffset(0, ren->back * ren->window->h);
-    fb->WaitForVerticalSync();
+    if (ren->vsync)
+        fb->WaitForVerticalSync();   // only when the app asked for vsync:
+                                     // throttled apps pace themselves, and
+                                     // blocking here would double-throttle
     ren->back ^= 1;
 }
