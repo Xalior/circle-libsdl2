@@ -32,11 +32,93 @@ struct SDL_Texture
     Uint32 format;
     u8 *pixels;
     int pitch;
+    SDL_BlendMode blend;
+    Uint8 alphamod;
 };
+
+// The one fullscreen window (ID 1). Display-mode queries answer with its
+// size once it exists, and with the panel default before that.
+static SDL_Window *s_window = nullptr;
+
+static const int DEFAULT_W = 1920, DEFAULT_H = 1080, DEFAULT_HZ = 60;
 
 static u8 *back_buffer(SDL_Renderer *ren)
 {
     return ren->base + (size_t)ren->back * ren->window->h * ren->pitch;
+}
+
+static void fill_mode(SDL_DisplayMode *mode)
+{
+    mode->format = SDL_PIXELFORMAT_ARGB8888;
+    mode->w = s_window ? s_window->w : DEFAULT_W;
+    mode->h = s_window ? s_window->h : DEFAULT_H;
+    mode->refresh_rate = DEFAULT_HZ;
+    mode->driverdata = nullptr;
+}
+
+// ---- display information ---------------------------------------------------
+
+extern "C" int SDL_GetNumVideoDisplays(void) { return 1; }
+
+extern "C" const char *SDL_GetDisplayName(int) { return "HDMI0"; }
+
+extern "C" int SDL_GetDisplayBounds(int, SDL_Rect *rect)
+{
+    rect->x = 0;
+    rect->y = 0;
+    rect->w = s_window ? s_window->w : DEFAULT_W;
+    rect->h = s_window ? s_window->h : DEFAULT_H;
+    return 0;
+}
+
+extern "C" int SDL_GetNumDisplayModes(int) { return 1; }
+
+extern "C" int SDL_GetDisplayMode(int, int, SDL_DisplayMode *mode)
+{
+    fill_mode(mode);
+    return 0;
+}
+
+extern "C" int SDL_GetCurrentDisplayMode(int, SDL_DisplayMode *mode)
+{
+    fill_mode(mode);
+    return 0;
+}
+
+extern "C" int SDL_GetDesktopDisplayMode(int, SDL_DisplayMode *mode)
+{
+    fill_mode(mode);
+    return 0;
+}
+
+extern "C" int SDL_GetNumVideoDrivers(void) { return 1; }
+extern "C" const char *SDL_GetVideoDriver(int) { return "circle"; }
+extern "C" const char *SDL_GetCurrentVideoDriver(void) { return "circle"; }
+
+extern "C" SDL_bool SDL_PixelFormatEnumToMasks(Uint32 format, int *bpp,
+                                               Uint32 *Rmask, Uint32 *Gmask,
+                                               Uint32 *Bmask, Uint32 *Amask)
+{
+    switch (format)
+    {
+    case SDL_PIXELFORMAT_ARGB8888:
+        *bpp = 32;
+        *Rmask = 0x00FF0000;
+        *Gmask = 0x0000FF00;
+        *Bmask = 0x000000FF;
+        *Amask = 0xFF000000;
+        return SDL_TRUE;
+    case SDL_PIXELFORMAT_RGB888:   // XRGB, no alpha
+        *bpp = 32;
+        *Rmask = 0x00FF0000;
+        *Gmask = 0x0000FF00;
+        *Bmask = 0x000000FF;
+        *Amask = 0;
+        return SDL_TRUE;
+    default:
+        SDL_SetError("unsupported pixel format");
+        return SDL_FALSE;
+    }
 }
 
 extern "C" SDL_Window *SDL_CreateWindow(const char *, int, int, int w, int h,
@@ -56,13 +138,28 @@ extern "C" SDL_Window *SDL_CreateWindow(const char *, int, int, int w, int h,
     win->w = (int)fb->GetWidth();
     win->h = (int)fb->GetHeight();
     win->flags = flags | SDL_WINDOW_FULLSCREEN | SDL_WINDOW_SHOWN;
+    s_window = win;
     return win;
 }
+
+extern "C" Uint32 SDL_GetWindowID(SDL_Window *win)
+{
+    return (win && win == s_window) ? 1 : 0;
+}
+
+extern "C" SDL_Window *SDL_GetWindowFromID(Uint32 id)
+{
+    return (id == 1) ? s_window : nullptr;
+}
+
+extern "C" int SDL_GetWindowDisplayIndex(SDL_Window *) { return 0; }
 
 extern "C" void SDL_DestroyWindow(SDL_Window *win)
 {
     if (!win)
         return;
+    if (win == s_window)
+        s_window = nullptr;
     delete win->fb;
     delete win;
 }
@@ -145,7 +242,60 @@ extern "C" SDL_Texture *SDL_CreateTexture(SDL_Renderer *, Uint32 format,
     tex->format = format;
     tex->pitch = w * 4;
     tex->pixels = (u8 *)malloc((size_t)tex->pitch * h);
+    tex->blend = SDL_BLENDMODE_NONE;
+    tex->alphamod = 255;
     return tex;
+}
+
+extern "C" int SDL_QueryTexture(SDL_Texture *tex, Uint32 *format, int *access,
+                                int *w, int *h)
+{
+    if (format) *format = tex->format;
+    if (access) *access = SDL_TEXTUREACCESS_STREAMING;
+    if (w) *w = tex->w;
+    if (h) *h = tex->h;
+    return 0;
+}
+
+extern "C" int SDL_UpdateTexture(SDL_Texture *tex, const SDL_Rect *rect,
+                                 const void *pixels, int pitch)
+{
+    int x = rect ? rect->x : 0;
+    int y = rect ? rect->y : 0;
+    int w = rect ? rect->w : tex->w;
+    int h = rect ? rect->h : tex->h;
+    const u8 *src = (const u8 *)pixels;
+    u8 *dst = tex->pixels + (size_t)y * tex->pitch + (size_t)x * 4;
+    for (int row = 0; row < h; row++)
+    {
+        memcpy(dst, src, (size_t)w * 4);
+        src += pitch;
+        dst += tex->pitch;
+    }
+    return 0;
+}
+
+extern "C" int SDL_SetTextureBlendMode(SDL_Texture *tex, SDL_BlendMode blend)
+{
+    tex->blend = blend;
+    return 0;
+}
+
+extern "C" int SDL_GetTextureBlendMode(SDL_Texture *tex, SDL_BlendMode *blend)
+{
+    *blend = tex->blend;
+    return 0;
+}
+
+extern "C" int SDL_SetTextureAlphaMod(SDL_Texture *tex, Uint8 alpha)
+{
+    tex->alphamod = alpha;
+    return 0;
+}
+
+extern "C" int SDL_SetTextureColorMod(SDL_Texture *, Uint8, Uint8, Uint8)
+{
+    return 0;   // tinting is not applied; MAME uses it only for effects
 }
 
 extern "C" void SDL_DestroyTexture(SDL_Texture *tex)
@@ -172,9 +322,8 @@ extern "C" void SDL_UnlockTexture(SDL_Texture *) {}
 extern "C" int SDL_RenderCopy(SDL_Renderer *ren, SDL_Texture *tex,
                               const SDL_Rect *srcrect, const SDL_Rect *dstrect)
 {
-    // Milestone scope: full-texture, unscaled blit to the top-left of the
-    // target (or dstrect position). MAME renders its own scaling, so this
-    // covers the drawsdl software path; srcrect subsetting comes later.
+    // Unscaled blit (MAME's drawsdl renders at output size already), with
+    // straight-alpha blending when the texture asks for it.
     int dx = dstrect ? dstrect->x : 0;
     int dy = dstrect ? dstrect->y : 0;
     int sw = srcrect ? srcrect->w : tex->w;
@@ -190,11 +339,114 @@ extern "C" int SDL_RenderCopy(SDL_Renderer *ren, SDL_Texture *tex,
 
     const u8 *src = tex->pixels + (size_t)sy * tex->pitch + (size_t)sx * 4;
     u8 *dst = back_buffer(ren) + (size_t)dy * ren->pitch + (size_t)dx * 4;
+
+    if (tex->blend != SDL_BLENDMODE_BLEND && tex->alphamod == 255)
+    {
+        for (int y = 0; y < h; y++)
+        {
+            memcpy(dst, src, (size_t)w * 4);
+            src += tex->pitch;
+            dst += ren->pitch;
+        }
+        return 0;
+    }
+
     for (int y = 0; y < h; y++)
     {
-        memcpy(dst, src, (size_t)w * 4);
+        const u32 *s = (const u32 *)src;
+        u32 *d = (u32 *)dst;
+        for (int x = 0; x < w; x++)
+        {
+            u32 sp = s[x];
+            unsigned a = ((sp >> 24) * tex->alphamod) / 255;
+            if (a == 255)
+            {
+                d[x] = sp;
+            }
+            else if (a != 0)
+            {
+                u32 dp = d[x];
+                u32 srb = sp & 0x00FF00FF, sg = sp & 0x0000FF00;
+                u32 drb = dp & 0x00FF00FF, dg = dp & 0x0000FF00;
+                u32 rb = ((srb * a + drb * (255 - a)) >> 8) & 0x00FF00FF;
+                u32 g = ((sg * a + dg * (255 - a)) >> 8) & 0x0000FF00;
+                d[x] = 0xFF000000u | rb | g;
+            }
+        }
         src += tex->pitch;
         dst += ren->pitch;
+    }
+    return 0;
+}
+
+extern "C" int SDL_GetRendererInfo(SDL_Renderer *, SDL_RendererInfo *info)
+{
+    memset(info, 0, sizeof(*info));
+    info->name = "circle";
+    info->flags = SDL_RENDERER_SOFTWARE | SDL_RENDERER_PRESENTVSYNC;
+    info->num_texture_formats = 1;
+    info->texture_formats[0] = SDL_PIXELFORMAT_ARGB8888;
+    info->max_texture_width = 4096;
+    info->max_texture_height = 4096;
+    return 0;
+}
+
+extern "C" int SDL_GetNumRenderDrivers(void) { return 1; }
+
+extern "C" int SDL_GetRenderDriverInfo(int, SDL_RendererInfo *info)
+{
+    return SDL_GetRendererInfo(nullptr, info);
+}
+
+extern "C" int SDL_RenderSetViewport(SDL_Renderer *, const SDL_Rect *)
+{
+    return 0;   // the target is always the whole framebuffer
+}
+
+extern "C" int SDL_SetRenderDrawBlendMode(SDL_Renderer *, SDL_BlendMode)
+{
+    return 0;   // draw ops (clear/fill) are opaque
+}
+
+extern "C" int SDL_RenderFillRect(SDL_Renderer *ren, const SDL_Rect *rect)
+{
+    int x = rect ? rect->x : 0;
+    int y = rect ? rect->y : 0;
+    int w = rect ? rect->w : ren->window->w;
+    int h = rect ? rect->h : ren->window->h;
+    if (x < 0) { w += x; x = 0; }
+    if (y < 0) { h += y; y = 0; }
+    if (x + w > ren->window->w) w = ren->window->w - x;
+    if (y + h > ren->window->h) h = ren->window->h - y;
+    if (w <= 0 || h <= 0)
+        return 0;
+
+    u32 color = ((u32)ren->a << 24) | ((u32)ren->r << 16) |
+                ((u32)ren->g << 8) | ren->b;
+    u8 *dst = back_buffer(ren) + (size_t)y * ren->pitch + (size_t)x * 4;
+    for (int row = 0; row < h; row++, dst += ren->pitch)
+    {
+        u32 *d = (u32 *)dst;
+        for (int i = 0; i < w; i++)
+            d[i] = color;
+    }
+    return 0;
+}
+
+extern "C" int SDL_RenderDrawLine(SDL_Renderer *ren, int x1, int y1,
+                                  int x2, int y2)
+{
+    // horizontal/vertical only (MAME's UI uses axis-aligned lines)
+    SDL_Rect r;
+    if (y1 == y2)
+    {
+        r = { x1 < x2 ? x1 : x2, y1, (x1 < x2 ? x2 - x1 : x1 - x2) + 1, 1 };
+        return SDL_RenderFillRect(ren, &r);
+    }
+    if (x1 == x2)
+    {
+        r = { x1, y1 < y2 ? y1 : y2, 1, (y1 < y2 ? y2 - y1 : y1 - y2) + 1 };
+        return SDL_RenderFillRect(ren, &r);
     }
     return 0;
 }
