@@ -102,6 +102,7 @@ void PushKeyEvent(SDL_Scancode sc, bool down)
     memset(&ev, 0, sizeof(ev));
     ev.type = down ? SDL_KEYDOWN : SDL_KEYUP;
     ev.key.timestamp = SDL_GetTicks();
+    ev.key.windowID = 1;   // the single window owns the keyboard
     ev.key.state = down ? SDL_PRESSED : SDL_RELEASED;
     ev.key.repeat = 0;
     ev.key.keysym.scancode = sc;

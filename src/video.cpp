@@ -139,6 +139,20 @@ extern "C" SDL_Window *SDL_CreateWindow(const char *, int, int, int w, int h,
     win->h = (int)fb->GetHeight();
     win->flags = flags | SDL_WINDOW_FULLSCREEN | SDL_WINDOW_SHOWN;
     s_window = win;
+
+    // The window is the whole display: it is shown and focused from birth.
+    // Consumers (MAME's OSD among them) gate keyboard input on having seen
+    // a focus event, so announce it.
+    SDL_Event ev;
+    memset(&ev, 0, sizeof(ev));
+    ev.type = SDL_WINDOWEVENT;
+    ev.window.timestamp = SDL_GetTicks();
+    ev.window.windowID = 1;
+    ev.window.event = SDL_WINDOWEVENT_SHOWN;
+    SDL_PushEvent(&ev);
+    ev.window.event = SDL_WINDOWEVENT_FOCUS_GAINED;
+    SDL_PushEvent(&ev);
+
     return win;
 }
 
