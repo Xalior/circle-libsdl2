@@ -14,6 +14,8 @@ include $(CIRCLEHOME)/Rules.mk
 
 INCLUDE := -I ../../include $(CIRCLE_STDLIB_INCLUDES) $(INCLUDE)
 
-LIBS := ../../libSDL2.a $(CIRCLEHOME)/lib/sound/libsound.a $(CIRCLE_STDLIB_LIBS)
+LIBS := ../../libSDL2.a $(CIRCLE_STDLIB_LIBS)
 
 -include $(DEPS)
+
+include ../../sdl-app.mk

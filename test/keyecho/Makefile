@@ -17,3 +17,5 @@ INCLUDE := -I ../../include $(CIRCLE_STDLIB_INCLUDES) $(INCLUDE)
 LIBS := ../../libSDL2.a $(CIRCLE_STDLIB_LIBS)
 
 -include $(DEPS)
+
+include ../../sdl-app.mk

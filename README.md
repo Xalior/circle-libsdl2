@@ -82,8 +82,13 @@ make            # produces libSDL2.a
 The Makefiles default to the sibling layout above; a circle-stdlib tree
 anywhere else works with `make CIRCLESTDLIBHOME=/path/to/circle-stdlib`.
 
-Link order: your objects, `libSDL2.a`, then the circle-stdlib libraries
-(see any Makefile under `test/`).
+Applications link by including `sdl-app.mk` after Circle's `Rules.mk`
+(see any Makefile under `test/`): it links with `sdl-app.ld` — required
+with binutils 2.44+, whose linker refuses non-adjacent TLS sections with
+the stock script ordering (libc++'s threading carries TLS) — and adds the
+Circle sound library the audio backend needs. `sdl-app.ld` is derived from
+Circle's `circle.ld` and remains GPLv3 (see its header); everything else
+here is zlib.
 
 ## Test apps
 
