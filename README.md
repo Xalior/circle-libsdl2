@@ -14,8 +14,12 @@ other bare-metal ports.
 | Video: window + software renderer + streaming ARGB8888 textures | `CBcmFrameBuffer`, double-buffered, vsync page flip | working |
 | Keyboard | Circle USB HID (raw reports → SDL events; scancodes are USB usage codes) | working |
 | Events | queue + `SDL_PumpEvents` (also the cooperative-scheduler yield point) | working |
-| Audio (callback API) | `CSoundBaseDevice` (HDMI/PWM) | TBD |
+| Audio (callback API) | `CHDMISoundBaseDevice` — app callback runs on the main loop out of `SDL_PumpEvents`, feeding a ~100ms hardware queue | working |
 | Mouse/gamepad | Circle USB HID | TBD |
+
+Pi 4 note: HDMI audio exists on **HDMI0 only** (the port next to USB-C);
+`config.txt` should carry `hdmi_drive=2` (and `hdmi_force_edid_audio=1` for
+displays with shy EDIDs).
 
 Headers in `include/SDL2/` are the official SDL2 2.32.4 headers (zlib
 license, `SDL2-LICENSE.txt`) with one substitution: `SDL_config.h` is ours,

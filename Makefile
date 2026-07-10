@@ -5,7 +5,7 @@
 
 include ../circle-stdlib/Config.mk
 
-OBJS = src/init.o src/error.o src/timer.o src/hints.o src/events.o src/video.o src/input.o
+OBJS = src/init.o src/error.o src/timer.o src/hints.o src/events.o src/video.o src/input.o src/audio.o
 
 libSDL2.a: $(OBJS)
 	@echo "  AR    $@"

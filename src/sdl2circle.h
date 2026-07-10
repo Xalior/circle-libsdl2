@@ -11,5 +11,6 @@
 
 void SDL2Circle_InputInit(void);   // bring up USB (idempotent)
 void SDL2Circle_InputPump(void);   // PnP + translate HID reports to events
+void SDL2Circle_AudioPump(void);   // run app audio callback into the queue
 
 #endif

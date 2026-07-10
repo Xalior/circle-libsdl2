@@ -35,6 +35,7 @@ extern "C" void SDL_PumpEvents(void)
         CScheduler::Get()->Yield();
 
     SDL2Circle_InputPump();
+    SDL2Circle_AudioPump();
 }
 
 extern "C" int SDL_PollEvent(SDL_Event *event)
