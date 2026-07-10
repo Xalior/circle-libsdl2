@@ -6,6 +6,7 @@
 // an SDL_Renderer, streaming ARGB8888 textures.
 //
 #include <SDL2/SDL.h>
+#include <SDL2/SDL_circle.h>
 #include <circle/bcmframebuffer.h>
 #include <cstring>
 #include <cstdlib>
@@ -41,7 +42,20 @@ struct SDL_Texture
 // size once it exists, and with the panel default before that.
 static SDL_Window *s_window = nullptr;
 
-static const int DEFAULT_W = 1920, DEFAULT_H = 1080, DEFAULT_HZ = 60;
+// The display size is fixed before SDL comes up: the hosting kernel picks
+// it (SDL2Circle_SetDisplaySize) and the VideoCore scaler stretches the
+// framebuffer to the panel. 1080p when the host doesn't say otherwise.
+static int s_display_w = 1920, s_display_h = 1080;
+static const int DEFAULT_HZ = 60;
+
+extern "C" void SDL2Circle_SetDisplaySize(int w, int h)
+{
+    if (w > 0 && h > 0 && !s_window)
+    {
+        s_display_w = w;
+        s_display_h = h;
+    }
+}
 
 static u8 *back_buffer(SDL_Renderer *ren)
 {
@@ -51,8 +65,8 @@ static u8 *back_buffer(SDL_Renderer *ren)
 static void fill_mode(SDL_DisplayMode *mode)
 {
     mode->format = SDL_PIXELFORMAT_ARGB8888;
-    mode->w = s_window ? s_window->w : DEFAULT_W;
-    mode->h = s_window ? s_window->h : DEFAULT_H;
+    mode->w = s_window ? s_window->w : s_display_w;
+    mode->h = s_window ? s_window->h : s_display_h;
     mode->refresh_rate = DEFAULT_HZ;
     mode->driverdata = nullptr;
 }
@@ -67,8 +81,8 @@ extern "C" int SDL_GetDisplayBounds(int, SDL_Rect *rect)
 {
     rect->x = 0;
     rect->y = 0;
-    rect->w = s_window ? s_window->w : DEFAULT_W;
-    rect->h = s_window ? s_window->h : DEFAULT_H;
+    rect->w = s_window ? s_window->w : s_display_w;
+    rect->h = s_window ? s_window->h : s_display_h;
     return 0;
 }
 
