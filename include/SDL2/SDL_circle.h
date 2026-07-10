@@ -20,6 +20,14 @@ extern "C" {
 // Default when never called: 1920x1080.
 void SDL2Circle_SetDisplaySize(int w, int h);
 
+// Core-0 time accounting over the PMU cycle counter: every nSeconds the
+// pump logs the cycle split between the application's own compute and
+// the shim's instrumented sections (render, audio, input, yield). IRQ
+// cycles land inside whichever section they preempt (no IRQ-entry hook
+// exists on this stack). 0 (the default) disables both the reports and
+// the counters.
+void SDL2Circle_SetPerfInterval(unsigned nSeconds);
+
 #ifdef __cplusplus
 }
 #endif

@@ -35,7 +35,10 @@ extern "C" void SDL_PumpEvents(void)
     // (via SDL_PollEvent), it services USB plug-and-play, translates HID
     // reports, and yields so cooperative std::threads make progress.
     if (CScheduler::IsActive())
+    {
+        SDL2CirclePerfScope perf(SDL2CIRCLE_PERF_YIELD);
         CScheduler::Get()->Yield();
+    }
 
     // Liveness beacon + deadman: a debug line every 10 s proves the app's
     // main loop is still pumping. A kernel timer re-armed on every beat
@@ -78,8 +81,16 @@ extern "C" void SDL_PumpEvents(void)
         }
     }
 
-    SDL2Circle_InputPump();
-    SDL2Circle_AudioPump();
+    {
+        SDL2CirclePerfScope perf(SDL2CIRCLE_PERF_INPUT);
+        SDL2Circle_InputPump();
+    }
+    {
+        SDL2CirclePerfScope perf(SDL2CIRCLE_PERF_AUDIO);
+        SDL2Circle_AudioPump();
+    }
+
+    SDL2Circle_PerfTick();
 }
 
 extern "C" int SDL_PollEvent(SDL_Event *event)

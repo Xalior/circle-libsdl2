@@ -7,6 +7,7 @@
 //
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_circle.h>
+#include "sdl2circle.h"
 #include <circle/bcmframebuffer.h>
 #include <cstring>
 #include <cstdlib>
@@ -245,6 +246,7 @@ extern "C" int SDL_SetRenderDrawColor(SDL_Renderer *ren, Uint8 r, Uint8 g,
 
 extern "C" int SDL_RenderClear(SDL_Renderer *ren)
 {
+    SDL2CirclePerfScope perf(SDL2CIRCLE_PERF_RENDER);
     // Pi firmware 32bpp framebuffer layout: XRGB little-endian
     u32 color = ((u32)ren->a << 24) | ((u32)ren->r << 16) |
                 ((u32)ren->g << 8) | ren->b;
@@ -290,6 +292,7 @@ extern "C" int SDL_QueryTexture(SDL_Texture *tex, Uint32 *format, int *access,
 extern "C" int SDL_UpdateTexture(SDL_Texture *tex, const SDL_Rect *rect,
                                  const void *pixels, int pitch)
 {
+    SDL2CirclePerfScope perf(SDL2CIRCLE_PERF_RENDER);
     int x = rect ? rect->x : 0;
     int y = rect ? rect->y : 0;
     int w = rect ? rect->w : tex->w;
@@ -352,6 +355,7 @@ extern "C" void SDL_UnlockTexture(SDL_Texture *) {}
 extern "C" int SDL_RenderCopy(SDL_Renderer *ren, SDL_Texture *tex,
                               const SDL_Rect *srcrect, const SDL_Rect *dstrect)
 {
+    SDL2CirclePerfScope perf(SDL2CIRCLE_PERF_RENDER);
     // Unscaled blit (MAME's drawsdl renders at output size already), with
     // straight-alpha blending when the texture asks for it.
     int dx = dstrect ? dstrect->x : 0;
@@ -440,6 +444,7 @@ extern "C" int SDL_SetRenderDrawBlendMode(SDL_Renderer *, SDL_BlendMode)
 
 extern "C" int SDL_RenderFillRect(SDL_Renderer *ren, const SDL_Rect *rect)
 {
+    SDL2CirclePerfScope perf(SDL2CIRCLE_PERF_RENDER);
     int x = rect ? rect->x : 0;
     int y = rect ? rect->y : 0;
     int w = rect ? rect->w : ren->window->w;
@@ -483,6 +488,7 @@ extern "C" int SDL_RenderDrawLine(SDL_Renderer *ren, int x1, int y1,
 
 extern "C" void SDL_RenderPresent(SDL_Renderer *ren)
 {
+    SDL2CirclePerfScope perf(SDL2CIRCLE_PERF_RENDER);
     CBcmFrameBuffer *fb = ren->window->fb;
     fb->SetVirtualOffset(0, ren->back * ren->window->h);
     if (ren->vsync)
