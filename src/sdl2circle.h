@@ -32,6 +32,11 @@ bool SDL2Circle_PerfEnabled(void);
 void SDL2Circle_PerfAccumulate(unsigned cat, u64 cycles);
 void SDL2Circle_PerfTick(void);
 
+// Dev instrumentation switch (off by default; internal — the shipped SDL
+// surface carries no host-side knobs): nSeconds > 0 enables the PMU cycle
+// counter and periodic split reports from the pump heartbeat.
+extern "C" void SDL2Circle_SetPerfInterval(unsigned nSeconds);
+
 // Scoped section timer: no-op (one branch) while perf is disabled.
 class SDL2CirclePerfScope
 {

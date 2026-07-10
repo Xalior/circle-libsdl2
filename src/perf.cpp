@@ -13,7 +13,6 @@
 // cycle counter (EL1) and periodic reports through the logger from the
 // pump's heartbeat.
 //
-#include <SDL2/SDL_circle.h>
 #include "sdl2circle.h"
 #include <circle/logger.h>
 

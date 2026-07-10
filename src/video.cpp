@@ -6,9 +6,11 @@
 // an SDL_Renderer, streaming ARGB8888 textures.
 //
 #include <SDL2/SDL.h>
-#include <SDL2/SDL_circle.h>
 #include "sdl2circle.h"
 #include <circle/bcmframebuffer.h>
+#include <circle/bcmpropertytags.h>
+#include <circle/koptions.h>
+#include <circle/logger.h>
 #include <cstring>
 #include <cstdlib>
 
@@ -43,19 +45,41 @@ struct SDL_Texture
 // size once it exists, and with the panel default before that.
 static SDL_Window *s_window = nullptr;
 
-// The display size is fixed before SDL comes up: the hosting kernel picks
-// it (SDL2Circle_SetDisplaySize) and the VideoCore scaler stretches the
-// framebuffer to the panel. 1080p when the host doesn't say otherwise.
-static int s_display_w = 1920, s_display_h = 1080;
+// The display size is platform boot configuration, consumed the way
+// Circle's own samples consume it: `width=`/`height=` in the FAT-root
+// cmdline.txt (circle/doc/cmdline.txt) through CKernelOptions. Without
+// boot config the panel's own size is used — the same probe (and the
+// same sanity clamp) CBcmFrameBuffer performs when constructed with 0x0.
+// The VideoCore scaler stretches the framebuffer to the panel.
+static int s_display_w = 0, s_display_h = 0;
 static const int DEFAULT_HZ = 60;
 
-extern "C" void SDL2Circle_SetDisplaySize(int w, int h)
+static void resolve_display_size(void)
 {
-    if (w > 0 && h > 0 && !s_window)
+    if (s_display_w > 0 && s_display_h > 0)
+        return;
+
+    CKernelOptions *opts = CKernelOptions::Get();
+    if (opts && opts->GetWidth() > 0 && opts->GetHeight() > 0)
     {
-        s_display_w = w;
-        s_display_h = h;
+        s_display_w = (int)opts->GetWidth();
+        s_display_h = (int)opts->GetHeight();
+        return;
     }
+
+    CBcmPropertyTags Tags;
+    TPropertyTagDisplayDimensions Dim;
+    if (Tags.GetTag(PROPTAG_GET_DISPLAY_DIMENSIONS, &Dim, sizeof Dim)
+        && Dim.nWidth >= 640 && Dim.nWidth <= 4096
+        && Dim.nHeight >= 480 && Dim.nHeight <= 2160)
+    {
+        s_display_w = (int)Dim.nWidth;
+        s_display_h = (int)Dim.nHeight;
+        return;
+    }
+
+    s_display_w = 640;
+    s_display_h = 480;
 }
 
 static u8 *back_buffer(SDL_Renderer *ren)
@@ -65,6 +89,7 @@ static u8 *back_buffer(SDL_Renderer *ren)
 
 static void fill_mode(SDL_DisplayMode *mode)
 {
+    resolve_display_size();
     mode->format = SDL_PIXELFORMAT_ARGB8888;
     mode->w = s_window ? s_window->w : s_display_w;
     mode->h = s_window ? s_window->h : s_display_h;
@@ -80,6 +105,7 @@ extern "C" const char *SDL_GetDisplayName(int) { return "HDMI0"; }
 
 extern "C" int SDL_GetDisplayBounds(int, SDL_Rect *rect)
 {
+    resolve_display_size();
     rect->x = 0;
     rect->y = 0;
     rect->w = s_window ? s_window->w : s_display_w;
@@ -155,6 +181,11 @@ extern "C" SDL_Window *SDL_CreateWindow(const char *, int, int, int w, int h,
     win->h = (int)fb->GetHeight();
     win->flags = flags | SDL_WINDOW_FULLSCREEN | SDL_WINDOW_SHOWN;
     s_window = win;
+
+    // The one line that proves the geometry chain: boot config (or panel)
+    // -> display mode -> window -> this allocation.
+    CLogger::Get()->Write("sdl2video", LogNotice, "framebuffer %ux%u",
+                          fb->GetWidth(), fb->GetHeight());
 
     // The window is the whole display: it is shown and focused from birth.
     // Consumers (MAME's OSD among them) gate keyboard input on having seen
