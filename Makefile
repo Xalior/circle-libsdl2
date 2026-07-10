@@ -1,9 +1,14 @@
 #
 # circle-libsdl2 — SDL2-compatible shim over the Circle bare-metal framework.
-# Builds libSDL2.a. Requires a configured+built ../circle-stdlib.
+# Builds libSDL2.a. Requires a configured+built circle-stdlib tree; defaults
+# to a sibling checkout, overridable:
+#
+#     make CIRCLESTDLIBHOME=/path/to/circle-stdlib
 #
 
-include ../circle-stdlib/Config.mk
+CIRCLESTDLIBHOME ?= ../circle-stdlib
+
+include $(CIRCLESTDLIBHOME)/Config.mk
 
 OBJS = src/init.o src/error.o src/timer.o src/hints.o src/events.o src/video.o src/input.o src/audio.o
 

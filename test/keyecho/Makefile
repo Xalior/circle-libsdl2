@@ -2,7 +2,9 @@
 # circle-libsdl2 keyecho test — SDL2 keyboard input
 #
 
-include ../../../circle-stdlib/Config.mk
+CIRCLESTDLIBHOME ?= ../../../circle-stdlib
+
+include $(CIRCLESTDLIBHOME)/Config.mk
 
 OBJS = main.o kernel.o
 

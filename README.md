@@ -39,7 +39,7 @@ bare-metal GPU driver — software rendering is the design, not a stopgap).
   (USB host controller, framebuffer, sound) inside `SDL_Init`. Host-kernel
   contract: initialize `CInterruptSystem` and `CTimer` before `SDL_Init`;
   run a `CScheduler` if your app uses `std::thread`
-  (via [circle-stdlib](https://github.com/smuehlst/circle-stdlib)'s
+  (via [circle-stdlib](https://codeberg.org/larchcone/circle-stdlib)'s
   libc++ threading).
 - **Honest headers.** `include/SDL2/` is the official SDL2 2.32.4 header
   set (zlib license, see `SDL2-LICENSE.txt`) with one substitution: an
@@ -49,18 +49,38 @@ bare-metal GPU driver — software rendering is the design, not a stopgap).
 
 ## Building
 
-Requires a configured and built circle-stdlib tree (AArch64, Raspberry
-Pi 4, `--libcxx`) as a sibling directory, and the Arm GNU
-`aarch64-none-elf` toolchain:
+You need two things on your machine first:
+
+1. The **Arm GNU toolchain** for `aarch64-none-elf` (bare-metal AArch64),
+   on your `PATH` — from the
+   [Arm GNU Toolchain downloads](https://developer.arm.com/downloads/-/arm-gnu-toolchain-downloads).
+2. A checkout of
+   [circle-stdlib](https://codeberg.org/larchcone/circle-stdlib) — the
+   Circle framework plus newlib and libc++ (that specific fork carries the
+   libc++ build with `std::thread` support this project uses).
+
+Clone the two projects side by side, then configure and build
+circle-stdlib for the Pi 4 (this also builds Circle itself):
 
 ```sh
+git clone --recursive https://codeberg.org/larchcone/circle-stdlib.git
+git clone https://github.com/Xalior/circle-libsdl2.git
+
 cd circle-stdlib
 ./configure -r 4 -p aarch64-none-elf- --libcxx
 make
+cd ..
+```
 
-cd ../circle-libsdl2
+Now build the shim:
+
+```sh
+cd circle-libsdl2
 make            # produces libSDL2.a
 ```
+
+The Makefiles default to the sibling layout above; a circle-stdlib tree
+anywhere else works with `make CIRCLESTDLIBHOME=/path/to/circle-stdlib`.
 
 Link order: your objects, `libSDL2.a`, then the circle-stdlib libraries
 (see any Makefile under `test/`).
