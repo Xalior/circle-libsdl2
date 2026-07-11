@@ -509,6 +509,21 @@ void SDL2Circle_InjectPump(void)
     }
 }
 
+// Core split: the app core mirrors keyboard state from the events it drains
+// off the cross-core ring, so SDL_GetKeyboardState / SDL_GetModState answer
+// from core-local memory. The producer-side state above keeps serving the
+// diffing logic on core 0.
+void SDL2Circle_ApplyEventState(const SDL_Event *ev)
+{
+    if (ev->type != SDL_KEYDOWN && ev->type != SDL_KEYUP)
+        return;
+    SDL_Scancode sc = ev->key.keysym.scancode;
+    if (sc <= SDL_SCANCODE_UNKNOWN || sc >= SDL_NUM_SCANCODES)
+        return;
+    s_keyState[sc] = (ev->type == SDL_KEYDOWN) ? 1 : 0;
+    s_modState = ev->key.keysym.mod;
+}
+
 extern "C" const Uint8 *SDL_GetKeyboardState(int *numkeys)
 {
     if (numkeys)

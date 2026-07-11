@@ -6,13 +6,20 @@
 
 static Uint32 s_initialized = 0;
 
+static void init_input_on0(void *)
+{
+    SDL2Circle_InputInit();
+}
+
 extern "C" int SDL_InitSubSystem(Uint32 flags)
 {
     // Video/window devices come up lazily in SDL_CreateWindow; USB comes up
     // here so keyboards enumerate while the app is still initializing.
+    // USB (xHCI, interrupts) belongs to core 0: under the core split this
+    // marshals to the servo, otherwise it is a direct call.
     if (flags & (SDL_INIT_VIDEO | SDL_INIT_EVENTS | SDL_INIT_JOYSTICK
                  | SDL_INIT_GAMECONTROLLER))
-        SDL2Circle_InputInit();
+        SDL2Circle_CallOn0(init_input_on0, nullptr);
 
     s_initialized |= flags;
     return 0;

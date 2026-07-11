@@ -2,6 +2,7 @@
 // timer.cpp — ticks and delays over Circle's system timer (µs, 64-bit)
 //
 #include <SDL2/SDL.h>
+#include "sdl2circle.h"
 #include <circle/timer.h>
 #include <circle/sched/scheduler.h>
 
@@ -27,6 +28,17 @@ extern "C" Uint64 SDL_GetPerformanceFrequency(void)
 
 extern "C" void SDL_Delay(Uint32 ms)
 {
+    // The scheduler is core-0-only by construction: off core 0 a delay is
+    // a plain timed wait on the system timer (a dedicated core has nothing
+    // else to run).
+    if (SDL2Circle_ThisCore() != 0)
+    {
+        u64 deadline = CTimer::GetClockTicks64() + (u64)ms * 1000;
+        while (CTimer::GetClockTicks64() < deadline)
+            asm volatile("yield" ::: "memory");
+        return;
+    }
+
     // With the scheduler active, sleeping yields to cooperative peers
     // (audio task, IO thread); without it, plain busy delay.
     if (CScheduler::IsActive())

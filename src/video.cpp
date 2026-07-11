@@ -29,13 +29,24 @@ struct SDL_Renderer
     unsigned back;     // half we're drawing into: 0 = top, 1 = bottom
     bool vsync;        // present blocks for vertical sync
     Uint8 r, g, b, a;  // draw color
+
+    // Draw calls become present commands. Single-core they execute
+    // immediately (the degenerate case of the same design); under the core
+    // split they are recorded here and RenderPresent posts the frame to the
+    // presentation worker, which blits and flips off-core.
+    SDL2CirclePresentCmd cmds[SDL2CIRCLE_PRESENT_MAX_CMDS];
+    unsigned ncmds;
 };
 
 struct SDL_Texture
 {
     int w, h;
     Uint32 format;
-    u8 *pixels;
+    u8 *pixels[2];     // [1] exists only under the core split: the app
+                       // renders into one buffer while the presentation
+                       // worker still reads the frame in flight
+    u8 widx;           // buffer the app writes next
+    u8 posted;         // buffer referenced by the last recorded COPY (0xFF none)
     int pitch;
     SDL_BlendMode blend;
     Uint8 alphamod;
@@ -82,9 +93,93 @@ static void resolve_display_size(void)
     s_display_h = 480;
 }
 
-static u8 *back_buffer(SDL_Renderer *ren)
+// Presentation geometry, published when the window exists: the worker core
+// executes commands against these (it must never touch SDL structs that the
+// app core mutates).
+static u8 *s_fb_base = nullptr;
+static unsigned s_fb_pitch = 0;
+static int s_fb_w = 0, s_fb_h = 0;
+
+// Execute one present command into a framebuffer half. Runs on the caller
+// single-core, and on the presentation worker under the core split.
+void SDL2Circle_VideoExecCmd(const SDL2CirclePresentCmd *cmd, unsigned half)
 {
-    return ren->base + (size_t)ren->back * ren->window->h * ren->pitch;
+    if (!s_fb_base)
+        return;
+    u8 *dst0 = s_fb_base + (size_t)half * s_fb_h * s_fb_pitch;
+
+    if (cmd->op == SDL2CirclePresentCmd::FILL)
+    {
+        u8 *dst = dst0 + (size_t)cmd->dy * s_fb_pitch + (size_t)cmd->dx * 4;
+        for (int row = 0; row < cmd->h; row++, dst += s_fb_pitch)
+        {
+            u32 *d = (u32 *)dst;
+            for (int i = 0; i < cmd->w; i++)
+                d[i] = cmd->color;
+        }
+        return;
+    }
+
+    // COPY, with straight-alpha blending when the texture asked for it.
+    const u8 *src = cmd->src;
+    u8 *dst = dst0 + (size_t)cmd->dy * s_fb_pitch + (size_t)cmd->dx * 4;
+
+    if (!cmd->blend && cmd->alphamod == 255)
+    {
+        for (int y = 0; y < cmd->h; y++)
+        {
+            memcpy(dst, src, (size_t)cmd->w * 4);
+            src += cmd->srcpitch;
+            dst += s_fb_pitch;
+        }
+        return;
+    }
+
+    for (int y = 0; y < cmd->h; y++)
+    {
+        const u32 *s = (const u32 *)src;
+        u32 *d = (u32 *)dst;
+        for (int x = 0; x < cmd->w; x++)
+        {
+            u32 sp = s[x];
+            unsigned a = ((sp >> 24) * cmd->alphamod) / 255;
+            if (a == 255)
+            {
+                d[x] = sp;
+            }
+            else if (a != 0)
+            {
+                u32 dp = d[x];
+                u32 srb = sp & 0x00FF00FF, sg = sp & 0x0000FF00;
+                u32 drb = dp & 0x00FF00FF, dg = dp & 0x0000FF00;
+                u32 rb = ((srb * a + drb * (255 - a)) >> 8) & 0x00FF00FF;
+                u32 g = ((sg * a + dg * (255 - a)) >> 8) & 0x0000FF00;
+                d[x] = 0xFF000000u | rb | g;
+            }
+        }
+        src += cmd->srcpitch;
+        dst += s_fb_pitch;
+    }
+}
+
+// Page-flip to a framebuffer half. The firmware mailbox tolerates off-core
+// callers (single presentation owner at a time).
+void SDL2Circle_VideoFlip(unsigned half)
+{
+    if (s_window)
+        s_window->fb->SetVirtualOffset(0, half * (unsigned)s_fb_h);
+}
+
+// Record a command (core split) or execute it into the back half now.
+static void emit_cmd(SDL_Renderer *ren, const SDL2CirclePresentCmd &cmd)
+{
+    if (SDL2Circle_SplitActive() && SDL2Circle_ThisCore() != 0)
+    {
+        if (ren->ncmds < SDL2CIRCLE_PRESENT_MAX_CMDS)
+            ren->cmds[ren->ncmds++] = cmd;
+        return;
+    }
+    SDL2Circle_VideoExecCmd(&cmd, ren->back);
 }
 
 static void fill_mode(SDL_DisplayMode *mode)
@@ -163,23 +258,45 @@ extern "C" SDL_bool SDL_PixelFormatEnumToMasks(Uint32 format, int *bpp,
     }
 }
 
-extern "C" SDL_Window *SDL_CreateWindow(const char *, int, int, int w, int h,
-                                        Uint32 flags)
+namespace
 {
+struct CreateWindowArgs
+{
+    int w, h;
+    Uint32 flags;
+    SDL_Window *result;
+};
+}
+
+// The framebuffer allocation (a firmware mailbox transaction plus Circle
+// device bookkeeping) runs on core 0; under the core split the window
+// creation marshals there through the call mailbox.
+static void create_window_on0(void *p)
+{
+    auto *a = (CreateWindowArgs *)p;
+    a->result = nullptr;
+
     CBcmFrameBuffer *fb =
-        new CBcmFrameBuffer(w, h, 32, 0, 0, 0, TRUE /*double buffered*/);
+        new CBcmFrameBuffer(a->w, a->h, 32, 0, 0, 0, TRUE /*double buffered*/);
     if (!fb->Initialize())
     {
         delete fb;
-        SDL_SetError("CBcmFrameBuffer::Initialize failed (%dx%d)", w, h);
-        return nullptr;
+        SDL_SetError("CBcmFrameBuffer::Initialize failed (%dx%d)", a->w, a->h);
+        return;
     }
 
     SDL_Window *win = new SDL_Window;
     win->fb = fb;
     win->w = (int)fb->GetWidth();
     win->h = (int)fb->GetHeight();
-    win->flags = flags | SDL_WINDOW_FULLSCREEN | SDL_WINDOW_SHOWN;
+    win->flags = a->flags | SDL_WINDOW_FULLSCREEN | SDL_WINDOW_SHOWN;
+
+    // Publish the presentation geometry before the window becomes visible
+    // to the app core or the worker.
+    s_fb_base = (u8 *)(uintptr)fb->GetBuffer();
+    s_fb_pitch = fb->GetPitch();
+    s_fb_w = win->w;
+    s_fb_h = win->h;
     s_window = win;
 
     // The one line that proves the geometry chain: boot config (or panel)
@@ -200,7 +317,15 @@ extern "C" SDL_Window *SDL_CreateWindow(const char *, int, int, int w, int h,
     ev.window.event = SDL_WINDOWEVENT_FOCUS_GAINED;
     SDL_PushEvent(&ev);
 
-    return win;
+    a->result = win;
+}
+
+extern "C" SDL_Window *SDL_CreateWindow(const char *, int, int, int w, int h,
+                                        Uint32 flags)
+{
+    CreateWindowArgs a{w, h, flags, nullptr};
+    SDL2Circle_CallOn0(create_window_on0, &a);
+    return a.result;
 }
 
 extern "C" Uint32 SDL_GetWindowID(SDL_Window *win)
@@ -220,7 +345,10 @@ extern "C" void SDL_DestroyWindow(SDL_Window *win)
     if (!win)
         return;
     if (win == s_window)
+    {
         s_window = nullptr;
+        s_fb_base = nullptr;
+    }
     delete win->fb;
     delete win;
 }
@@ -254,6 +382,7 @@ extern "C" SDL_Renderer *SDL_CreateRenderer(SDL_Window *win, int, Uint32 flags)
     ren->vsync = (flags & SDL_RENDERER_PRESENTVSYNC) != 0;
     ren->r = ren->g = ren->b = 0;
     ren->a = 255;
+    ren->ncmds = 0;
     return ren;
 }
 
@@ -279,15 +408,15 @@ extern "C" int SDL_RenderClear(SDL_Renderer *ren)
 {
     SDL2CirclePerfScope perf(SDL2CIRCLE_PERF_RENDER);
     // Pi firmware 32bpp framebuffer layout: XRGB little-endian
-    u32 color = ((u32)ren->a << 24) | ((u32)ren->r << 16) |
+    SDL2CirclePresentCmd cmd;
+    cmd.op = SDL2CirclePresentCmd::FILL;
+    cmd.dx = 0;
+    cmd.dy = 0;
+    cmd.w = ren->window->w;
+    cmd.h = ren->window->h;
+    cmd.color = ((u32)ren->a << 24) | ((u32)ren->r << 16) |
                 ((u32)ren->g << 8) | ren->b;
-    u8 *dst = back_buffer(ren);
-    for (int y = 0; y < ren->window->h; y++, dst += ren->pitch)
-    {
-        u32 *row = (u32 *)dst;
-        for (int x = 0; x < ren->window->w; x++)
-            row[x] = color;
-    }
+    emit_cmd(ren, cmd);
     return 0;
 }
 
@@ -304,10 +433,34 @@ extern "C" SDL_Texture *SDL_CreateTexture(SDL_Renderer *, Uint32 format,
     tex->h = h;
     tex->format = format;
     tex->pitch = w * 4;
-    tex->pixels = (u8 *)malloc((size_t)tex->pitch * h);
+    tex->pixels[0] = (u8 *)malloc((size_t)tex->pitch * h);
+    tex->pixels[1] = nullptr;   // allocated on first split-mode reuse
+    tex->widx = 0;
+    tex->posted = 0xFF;
     tex->blend = SDL_BLENDMODE_NONE;
     tex->alphamod = 255;
     return tex;
+}
+
+// Core split: a texture referenced by the frame in flight must not be
+// written; hand the app the other buffer. One frame is in flight at most
+// (SDL2Circle_PresentPost waits for the previous ACK), so two buffers are
+// provably enough. MAME's software path redraws the full texture each
+// frame; the partial-update path still copies the stable content across
+// first.
+static u8 *texture_write_buffer(SDL_Texture *tex, bool preserve)
+{
+    if (SDL2Circle_SplitActive() && tex->posted == tex->widx)
+    {
+        u8 next = tex->widx ^ 1;
+        if (!tex->pixels[next])
+            tex->pixels[next] = (u8 *)malloc((size_t)tex->pitch * tex->h);
+        if (preserve)
+            memcpy(tex->pixels[next], tex->pixels[tex->widx],
+                   (size_t)tex->pitch * tex->h);
+        tex->widx = next;
+    }
+    return tex->pixels[tex->widx];
 }
 
 extern "C" int SDL_QueryTexture(SDL_Texture *tex, Uint32 *format, int *access,
@@ -328,8 +481,10 @@ extern "C" int SDL_UpdateTexture(SDL_Texture *tex, const SDL_Rect *rect,
     int y = rect ? rect->y : 0;
     int w = rect ? rect->w : tex->w;
     int h = rect ? rect->h : tex->h;
+    bool partial = (x != 0) || (y != 0) || (w != tex->w) || (h != tex->h);
     const u8 *src = (const u8 *)pixels;
-    u8 *dst = tex->pixels + (size_t)y * tex->pitch + (size_t)x * 4;
+    u8 *dst = texture_write_buffer(tex, partial)
+              + (size_t)y * tex->pitch + (size_t)x * 4;
     for (int row = 0; row < h; row++)
     {
         memcpy(dst, src, (size_t)w * 4);
@@ -366,17 +521,19 @@ extern "C" void SDL_DestroyTexture(SDL_Texture *tex)
 {
     if (!tex)
         return;
-    free(tex->pixels);
+    free(tex->pixels[0]);
+    free(tex->pixels[1]);
     delete tex;
 }
 
 extern "C" int SDL_LockTexture(SDL_Texture *tex, const SDL_Rect *rect,
                                void **pixels, int *pitch)
 {
+    u8 *buf = texture_write_buffer(tex, rect != nullptr);
     if (rect)
-        *pixels = tex->pixels + (size_t)rect->y * tex->pitch + (size_t)rect->x * 4;
+        *pixels = buf + (size_t)rect->y * tex->pitch + (size_t)rect->x * 4;
     else
-        *pixels = tex->pixels;
+        *pixels = buf;
     *pitch = tex->pitch;
     return 0;
 }
@@ -402,45 +559,22 @@ extern "C" int SDL_RenderCopy(SDL_Renderer *ren, SDL_Texture *tex,
     if (w <= 0 || h <= 0)
         return 0;
 
-    const u8 *src = tex->pixels + (size_t)sy * tex->pitch + (size_t)sx * 4;
-    u8 *dst = back_buffer(ren) + (size_t)dy * ren->pitch + (size_t)dx * 4;
+    SDL2CirclePresentCmd cmd;
+    cmd.op = SDL2CirclePresentCmd::COPY;
+    cmd.dx = dx;
+    cmd.dy = dy;
+    cmd.w = w;
+    cmd.h = h;
+    cmd.color = 0;
+    cmd.src = tex->pixels[tex->widx] + (size_t)sy * tex->pitch + (size_t)sx * 4;
+    cmd.srcpitch = tex->pitch;
+    cmd.blend = (tex->blend == SDL_BLENDMODE_BLEND) ? 1 : 0;
+    cmd.alphamod = tex->alphamod;
+    emit_cmd(ren, cmd);
 
-    if (tex->blend != SDL_BLENDMODE_BLEND && tex->alphamod == 255)
-    {
-        for (int y = 0; y < h; y++)
-        {
-            memcpy(dst, src, (size_t)w * 4);
-            src += tex->pitch;
-            dst += ren->pitch;
-        }
-        return 0;
-    }
-
-    for (int y = 0; y < h; y++)
-    {
-        const u32 *s = (const u32 *)src;
-        u32 *d = (u32 *)dst;
-        for (int x = 0; x < w; x++)
-        {
-            u32 sp = s[x];
-            unsigned a = ((sp >> 24) * tex->alphamod) / 255;
-            if (a == 255)
-            {
-                d[x] = sp;
-            }
-            else if (a != 0)
-            {
-                u32 dp = d[x];
-                u32 srb = sp & 0x00FF00FF, sg = sp & 0x0000FF00;
-                u32 drb = dp & 0x00FF00FF, dg = dp & 0x0000FF00;
-                u32 rb = ((srb * a + drb * (255 - a)) >> 8) & 0x00FF00FF;
-                u32 g = ((sg * a + dg * (255 - a)) >> 8) & 0x0000FF00;
-                d[x] = 0xFF000000u | rb | g;
-            }
-        }
-        src += tex->pitch;
-        dst += ren->pitch;
-    }
+    // This buffer now belongs to the frame being assembled; the next write
+    // to the texture switches buffers while it is (or may be) in flight.
+    tex->posted = tex->widx;
     return 0;
 }
 
@@ -487,15 +621,15 @@ extern "C" int SDL_RenderFillRect(SDL_Renderer *ren, const SDL_Rect *rect)
     if (w <= 0 || h <= 0)
         return 0;
 
-    u32 color = ((u32)ren->a << 24) | ((u32)ren->r << 16) |
+    SDL2CirclePresentCmd cmd;
+    cmd.op = SDL2CirclePresentCmd::FILL;
+    cmd.dx = x;
+    cmd.dy = y;
+    cmd.w = w;
+    cmd.h = h;
+    cmd.color = ((u32)ren->a << 24) | ((u32)ren->r << 16) |
                 ((u32)ren->g << 8) | ren->b;
-    u8 *dst = back_buffer(ren) + (size_t)y * ren->pitch + (size_t)x * 4;
-    for (int row = 0; row < h; row++, dst += ren->pitch)
-    {
-        u32 *d = (u32 *)dst;
-        for (int i = 0; i < w; i++)
-            d[i] = color;
-    }
+    emit_cmd(ren, cmd);
     return 0;
 }
 
@@ -520,6 +654,19 @@ extern "C" int SDL_RenderDrawLine(SDL_Renderer *ren, int x1, int y1,
 extern "C" void SDL_RenderPresent(SDL_Renderer *ren)
 {
     SDL2CirclePerfScope perf(SDL2CIRCLE_PERF_RENDER);
+
+    // Core split: hand the recorded frame to the presentation worker (blit
+    // + flip happen off-core; the post waits only for the PREVIOUS frame's
+    // acknowledgement, keeping exactly one frame in flight).
+    if (SDL2Circle_SplitActive() && SDL2Circle_ThisCore() != 0)
+    {
+        SDL2Circle_PresentPost(ren->cmds, ren->ncmds, ren->back);
+        ren->ncmds = 0;
+        ren->back ^= 1;
+        return;
+    }
+
+    ren->ncmds = 0;   // commands were executed as they were emitted
     CBcmFrameBuffer *fb = ren->window->fb;
     fb->SetVirtualOffset(0, ren->back * ren->window->h);
     if (ren->vsync)

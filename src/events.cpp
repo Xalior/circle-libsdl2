@@ -22,6 +22,13 @@ unsigned s_count = 0;
 
 extern "C" int SDL_PushEvent(SDL_Event *event)
 {
+    // Core split: producers on core 0 (USB input pump, window events from
+    // proxied calls) publish through the cross-core ring; the app core's
+    // pump drains it into this local queue.
+    if (SDL2Circle_SplitActive() && SDL2Circle_ThisCore() == 0)
+        return SDL2Circle_EventRingPush(event)
+                   ? 1 : SDL_SetError("event ring full");
+
     if (s_count >= QUEUE_SIZE)
         return SDL_SetError("event queue full");
     s_queue[(s_head + s_count) % QUEUE_SIZE] = *event;
@@ -31,6 +38,28 @@ extern "C" int SDL_PushEvent(SDL_Event *event)
 
 extern "C" void SDL_PumpEvents(void)
 {
+    // Core split: the app core's pump touches nothing but shared memory.
+    // Everything the single-core pump did on the platform's behalf (USB
+    // PnP, scheduler yield, throttle tick, deadman) belongs to the core-0
+    // servo and watchdog now; here the pump drains the event ring, mirrors
+    // key state, runs the audio callback into its ring, and beats the
+    // heartbeat the watchdog listens to.
+    if (SDL2Circle_SplitActive() && SDL2Circle_ThisCore() != 0)
+    {
+        SDL2Circle_HeartbeatBump();
+
+        SDL_Event ev;
+        while (s_count < QUEUE_SIZE && SDL2Circle_EventRingPop(&ev))
+        {
+            SDL2Circle_ApplyEventState(&ev);
+            s_queue[(s_head + s_count) % QUEUE_SIZE] = ev;
+            s_count++;
+        }
+
+        SDL2Circle_AudioPump();
+        return;
+    }
+
     // The shim's cooperative heartbeat: called every frame by any SDL app
     // (via SDL_PollEvent), it services USB plug-and-play, translates HID
     // reports, and yields so cooperative std::threads make progress.

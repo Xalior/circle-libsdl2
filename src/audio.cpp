@@ -30,6 +30,22 @@ constexpr unsigned QUEUE_MSECS = 100;
 
 } // namespace
 
+// Device construction (interrupt registration, queue allocation) belongs to
+// core 0; under the core split it marshals through the call mailbox.
+static void open_device_on0(void *p)
+{
+    int freq = *(int *)p;
+    s_device = new CHDMISoundBaseDevice(CInterruptSystem::Get(), freq);
+    s_device->SetWriteFormat(SoundFormatSigned16, 2);
+    if (!s_device->AllocateQueue(QUEUE_MSECS))
+    {
+        delete s_device;
+        s_device = nullptr;
+        return;
+    }
+    s_queueFrames = s_device->GetQueueSizeFrames();
+}
+
 extern "C" SDL_AudioDeviceID SDL_OpenAudioDevice(const char *, int iscapture,
                                                  const SDL_AudioSpec *desired,
                                                  SDL_AudioSpec *obtained,
@@ -49,16 +65,12 @@ extern "C" SDL_AudioDeviceID SDL_OpenAudioDevice(const char *, int iscapture,
     int freq = desired->freq > 0 ? desired->freq : 48000;
     Uint16 samples = desired->samples > 0 ? desired->samples : 1024;
 
-    s_device = new CHDMISoundBaseDevice(CInterruptSystem::Get(), freq);
-    s_device->SetWriteFormat(SoundFormatSigned16, 2);
-    if (!s_device->AllocateQueue(QUEUE_MSECS))
+    SDL2Circle_CallOn0(open_device_on0, &freq);
+    if (!s_device)
     {
-        delete s_device;
-        s_device = nullptr;
         SDL_SetError("cannot allocate sound queue");
         return 0;
     }
-    s_queueFrames = s_device->GetQueueSizeFrames();
 
     s_spec = *desired;
     s_spec.freq = freq;
@@ -82,6 +94,20 @@ void SDL2Circle_AudioPump(void)
     if (!s_device || s_paused || !s_spec.callback || s_lock > 0)
         return;
 
+    // Core split inverts audio from pull to push: the app core runs its
+    // callback into the cross-core sample ring; the core-0 servo feeds the
+    // device from the ring at its own cadence (SDL2Circle_AudioDrain).
+    // Audio stops being hostage to frame granularity.
+    if (SDL2Circle_SplitActive() && SDL2Circle_ThisCore() != 0)
+    {
+        while (SDL2Circle_AudioRingSpace() >= s_spec.size)
+        {
+            s_spec.callback(s_spec.userdata, s_chunk, (int)s_spec.size);
+            SDL2Circle_AudioRingWrite(s_chunk, s_spec.size);
+        }
+        return;
+    }
+
     unsigned queued = s_device->GetQueueFramesAvail();
     unsigned space = s_queueFrames > queued ? s_queueFrames - queued : 0;
 
@@ -94,6 +120,35 @@ void SDL2Circle_AudioPump(void)
     }
 }
 
+// Core-0 servo: sample ring -> sound device.
+void SDL2Circle_AudioDrain(void)
+{
+    if (!s_device || s_paused)
+        return;
+
+    static u8 *drainChunk = nullptr;
+    if (!drainChunk)
+        drainChunk = (u8 *)malloc(s_spec.size ? s_spec.size : 4096);
+
+    unsigned queued = s_device->GetQueueFramesAvail();
+    unsigned space = s_queueFrames > queued ? s_queueFrames - queued : 0;
+
+    while (space >= s_spec.samples)
+    {
+        unsigned n = SDL2Circle_AudioRingRead(drainChunk, s_spec.size);
+        if (n == 0)
+            break;
+        if (s_device->Write(drainChunk, n) <= 0)
+            break;
+        space -= s_spec.samples;
+    }
+}
+
+static void start_device_on0(void *)
+{
+    s_started = s_device->Start();
+}
+
 extern "C" void SDL_PauseAudioDevice(SDL_AudioDeviceID, int pause_on)
 {
     if (!s_device)
@@ -101,7 +156,7 @@ extern "C" void SDL_PauseAudioDevice(SDL_AudioDeviceID, int pause_on)
     s_paused = (pause_on != 0);
     if (!s_paused && !s_started)
     {
-        s_started = s_device->Start();
+        SDL2Circle_CallOn0(start_device_on0, nullptr);
         if (!s_started)
             SDL_SetError("HDMI sound failed to start "
                          "(display without audio support? hdmi_drive=2?)");
@@ -138,6 +193,37 @@ extern "C" int SDL_GetNumAudioDevices(int iscapture)
 extern "C" const char *SDL_GetAudioDeviceName(int index, int iscapture)
 {
     return (!iscapture && index == 0) ? "HDMI" : nullptr;
+}
+
+// The one device's native format: 48kHz S16 stereo (what the HDMI sound
+// device speaks). Enumerators that report an error here get dropped from
+// callers' device lists — MAME builds its sink list from this answer.
+extern "C" int SDL_GetAudioDeviceSpec(int index, int iscapture,
+                                      SDL_AudioSpec *spec)
+{
+    if (iscapture || index != 0 || !spec)
+        return -1;
+    memset(spec, 0, sizeof(*spec));
+    spec->freq = 48000;
+    spec->format = AUDIO_S16SYS;
+    spec->channels = 2;
+    return 0;
+}
+
+extern "C" int SDL_GetDefaultAudioInfo(char **name, SDL_AudioSpec *spec,
+                                       int iscapture)
+{
+    if (iscapture)
+    {
+        if (name)
+            *name = nullptr;
+        return -1;
+    }
+    if (name)
+        *name = strdup("HDMI");   // caller frees with SDL_free (libc free)
+    if (spec)
+        SDL_GetAudioDeviceSpec(0, 0, spec);
+    return 0;
 }
 
 extern "C" const char *SDL_GetCurrentAudioDriver(void)
