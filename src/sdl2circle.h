@@ -15,6 +15,13 @@ void SDL2Circle_InputInit(void);   // bring up USB (idempotent)
 void SDL2Circle_InputPump(void);   // PnP + translate HID reports to events
 void SDL2Circle_AudioPump(void);   // run app audio callback into the queue
 
+// Debug UART key injection: the host kernel hands us its serial (only for
+// --rapi-debug-uart); the pump then types serial-RX bytes into the machine as
+// SDL key events. Inert until SetInjectSerial gets a non-null device.
+class CSerialDevice;
+void SDL2Circle_SetInjectSerial(CSerialDevice *pSerial);
+void SDL2Circle_InjectPump(void);
+
 // Perf accounting (src/perf.cpp): PMCCNTR-based category split, reported
 // through the logger by the pump. Everything not inside an instrumented
 // section is attributed to the application ("app" = MAME's emulation).

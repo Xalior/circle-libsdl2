@@ -14,6 +14,7 @@
 #include <circle/devicenameservice.h>
 #include <circle/usb/usbhcidevice.h>
 #include <circle/usb/usbkeyboard.h>
+#include <circle/serial.h>
 #include <circle/atomic.h>
 #include <cstring>
 
@@ -119,6 +120,86 @@ bool InReport(const RawReport &r, unsigned char key)
     return false;
 }
 
+// --- Debug UART key injection ------------------------------------------------
+// Active only when the kernel hands us a serial (SetInjectSerial), which it
+// does solely for --rapi-debug-uart. Bytes on the serial RX are typed into the
+// running machine as SDL key events, so a serial console can drive input a
+// keypress gates — dismiss a +3 Loader menu, type a C64 LOAD"...". Each key is
+// HELD for a few frames then released: MAME scans the keyboard per frame, so a
+// press-and-release in one pump would be missed by the emulated matrix.
+CSerialDevice *s_injectSerial = nullptr;
+
+struct InjKey { SDL_Scancode sc; bool shift; };
+InjKey s_injQueue[64];
+unsigned s_injHead = 0;
+unsigned s_injCount = 0;
+
+SDL_Scancode s_injHeldSc = SDL_SCANCODE_UNKNOWN;
+bool s_injHeldShift = false;
+int s_injPhase = 0;            // 0 idle, 1 holding a key, 2 inter-key gap
+u64 s_injUntil = 0;           // wall-clock (us) the current phase ends at
+
+// Timing is WALL-CLOCK, not pump calls: SDL_PumpEvents runs many times per
+// emulated frame (MAME drains the event queue in a loop), so a frame counter
+// would expire in a fraction of one real frame and MAME's per-frame keyboard
+// scan would miss the key. 80 ms down / 50 ms up survives that scan reliably.
+const u64 INJ_HOLD_US = 80000;
+const u64 INJ_GAP_US = 50000;
+
+// ASCII byte -> US-layout scancode + shift. false => ignore the byte.
+bool AsciiToKey(char c, SDL_Scancode &sc, bool &shift)
+{
+    shift = false;
+    if (c >= 'a' && c <= 'z') { sc = (SDL_Scancode)(SDL_SCANCODE_A + (c - 'a')); return true; }
+    if (c >= 'A' && c <= 'Z') { sc = (SDL_Scancode)(SDL_SCANCODE_A + (c - 'A')); shift = true; return true; }
+    if (c >= '1' && c <= '9') { sc = (SDL_Scancode)(SDL_SCANCODE_1 + (c - '1')); return true; }
+    switch (c)
+    {
+    case '0':  sc = SDL_SCANCODE_0;            return true;
+    case '\r': case '\n': sc = SDL_SCANCODE_RETURN; return true;
+    case ' ':  sc = SDL_SCANCODE_SPACE;        return true;
+    case 0x1b: sc = SDL_SCANCODE_ESCAPE;       return true;
+    case 0x08: case 0x7f: sc = SDL_SCANCODE_BACKSPACE; return true;
+    case '\t': sc = SDL_SCANCODE_TAB;          return true;
+    case '-':  sc = SDL_SCANCODE_MINUS;        return true;
+    case '=':  sc = SDL_SCANCODE_EQUALS;       return true;
+    case '[':  sc = SDL_SCANCODE_LEFTBRACKET;  return true;
+    case ']':  sc = SDL_SCANCODE_RIGHTBRACKET; return true;
+    case ';':  sc = SDL_SCANCODE_SEMICOLON;    return true;
+    case '\'': sc = SDL_SCANCODE_APOSTROPHE;   return true;
+    case '`':  sc = SDL_SCANCODE_GRAVE;        return true;
+    case ',':  sc = SDL_SCANCODE_COMMA;        return true;
+    case '.':  sc = SDL_SCANCODE_PERIOD;       return true;
+    case '/':  sc = SDL_SCANCODE_SLASH;        return true;
+    case '\\': sc = SDL_SCANCODE_BACKSLASH;    return true;
+    case '!':  sc = SDL_SCANCODE_1;          shift = true; return true;
+    case '@':  sc = SDL_SCANCODE_2;          shift = true; return true;
+    case '#':  sc = SDL_SCANCODE_3;          shift = true; return true;
+    case '$':  sc = SDL_SCANCODE_4;          shift = true; return true;
+    case '%':  sc = SDL_SCANCODE_5;          shift = true; return true;
+    case '^':  sc = SDL_SCANCODE_6;          shift = true; return true;
+    case '&':  sc = SDL_SCANCODE_7;          shift = true; return true;
+    case '*':  sc = SDL_SCANCODE_8;          shift = true; return true;
+    case '(':  sc = SDL_SCANCODE_9;          shift = true; return true;
+    case ')':  sc = SDL_SCANCODE_0;          shift = true; return true;
+    case '_':  sc = SDL_SCANCODE_MINUS;      shift = true; return true;
+    case '+':  sc = SDL_SCANCODE_EQUALS;     shift = true; return true;
+    case ':':  sc = SDL_SCANCODE_SEMICOLON;  shift = true; return true;
+    case '"':  sc = SDL_SCANCODE_APOSTROPHE; shift = true; return true;
+    case '<':  sc = SDL_SCANCODE_COMMA;      shift = true; return true;
+    case '>':  sc = SDL_SCANCODE_PERIOD;     shift = true; return true;
+    case '?':  sc = SDL_SCANCODE_SLASH;      shift = true; return true;
+    default:   return false;
+    }
+}
+
+void InjectShift(bool down)
+{
+    if (down) s_modState |= KMOD_LSHIFT;
+    else      s_modState &= ~KMOD_LSHIFT;
+    PushKeyEvent(SDL_SCANCODE_LSHIFT, down);
+}
+
 } // namespace
 
 void SDL2Circle_InputInit(void)
@@ -187,6 +268,69 @@ void SDL2Circle_InputPump(void)
             PushKeyEvent((SDL_Scancode)now.keys[i], true);
 
     s_prev = now;
+}
+
+void SDL2Circle_SetInjectSerial(CSerialDevice *pSerial)
+{
+    s_injectSerial = pSerial;
+}
+
+void SDL2Circle_InjectPump(void)
+{
+    if (!s_injectSerial)
+        return;
+
+    // Drain serial RX into the keystroke queue.
+    char buf[64];
+    int n = s_injectSerial->Read(buf, sizeof buf);
+    for (int i = 0; i < n; i++)
+    {
+        SDL_Scancode sc;
+        bool shift;
+        if (AsciiToKey(buf[i], sc, shift) && s_injCount < 64)
+        {
+            s_injQueue[(s_injHead + s_injCount) % 64] = InjKey{sc, shift};
+            s_injCount++;
+        }
+    }
+
+    u64 now = CTimer::GetClockTicks64();
+
+    // Hold the current key until its wall-clock deadline, then release into a
+    // gap; only start the next key once the gap has elapsed.
+    if (s_injPhase == 1)                     // holding a key down
+    {
+        if (now < s_injUntil)
+            return;
+        PushKeyEvent(s_injHeldSc, false);
+        if (s_injHeldShift)
+            InjectShift(false);
+        s_injHeldSc = SDL_SCANCODE_UNKNOWN;
+        s_injPhase = 2;
+        s_injUntil = now + INJ_GAP_US;
+        return;
+    }
+    if (s_injPhase == 2)                     // inter-key gap (key released)
+    {
+        if (now < s_injUntil)
+            return;
+        s_injPhase = 0;
+    }
+
+    // Idle: start the next queued keystroke.
+    if (s_injCount > 0)
+    {
+        InjKey k = s_injQueue[s_injHead];
+        s_injHead = (s_injHead + 1) % 64;
+        s_injCount--;
+        if (k.shift)
+            InjectShift(true);
+        PushKeyEvent(k.sc, true);
+        s_injHeldSc = k.sc;
+        s_injHeldShift = k.shift;
+        s_injPhase = 1;
+        s_injUntil = now + INJ_HOLD_US;
+    }
 }
 
 extern "C" const Uint8 *SDL_GetKeyboardState(int *numkeys)

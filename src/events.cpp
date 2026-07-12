@@ -84,6 +84,7 @@ extern "C" void SDL_PumpEvents(void)
     {
         SDL2CirclePerfScope perf(SDL2CIRCLE_PERF_INPUT);
         SDL2Circle_InputPump();
+        SDL2Circle_InjectPump();   // inert unless --rapi-debug-uart armed it
     }
     {
         SDL2CirclePerfScope perf(SDL2CIRCLE_PERF_AUDIO);
