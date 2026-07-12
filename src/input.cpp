@@ -122,17 +122,47 @@ bool InReport(const RawReport &r, unsigned char key)
 
 // --- Debug UART key injection ------------------------------------------------
 // Active only when the kernel hands us a serial (SetInjectSerial), which it
-// does solely for --rapi-debug-uart. Bytes on the serial RX are typed into the
-// running machine as SDL key events, so a serial console can drive input a
-// keypress gates — dismiss a +3 Loader menu, type a C64 LOAD"...". Each key is
-// HELD for a few frames then released: MAME scans the keyboard per frame, so a
-// press-and-release in one pump would be missed by the emulated matrix.
+// does solely for --rapi-debug-uart. A serial console drives the emulated
+// keyboard so the bench can dismiss a +3 Loader, type a C64 LOAD"...", or
+// unlock MAME's UI (Scroll Lock) and open its menu (Tab).
+//
+// The wire format is a LINE-ORIENTED macro language (one command per '\n'):
+//
+//   <domain> <command...>
+//
+// The first token routes to a subsystem, so this is the shim's general
+// robot-hands channel over SDL's input surface, not a keyboard hack — mouse,
+// gamepad/joystick and whatever input device comes next each register a new
+// domain (s_injectDomains, below) without touching the transport. Today one
+// domain exists:
+//
+//   key down <key>     press and HOLD <key> (stays down; combine for chords)
+//   key up   <key>     release <key>
+//   key tap  <key>     self-timed press+release of one <key>
+//   key type <text>    self-timed taps for each character of <text>
+//   # ...              comment; blank lines ignored
+//
+// Explicit down/up exist because real machines need CHORDS — keys held down
+// together — that a stream of self-releasing taps can never express (there is
+// no single byte for "both shifts at once", the Sinclair reset):
+//   key down lshift / key down rshift / key up rshift / key up lshift
+//
+// <key> is a single printable character (US-layout, shift auto-applied for
+// tap/type) or a name: lshift rshift lctrl rctrl lalt ralt lgui rgui
+// scrolllock capslock tab esc enter space bs del ins up down left right
+// home end pgup pgdn f1..f12. down/up use the PHYSICAL key only (no auto
+// shift) — a chord names its own modifiers. tap/type feed a self-timed hold
+// queue (below) because MAME scans the keyboard per emulated frame; down/up
+// post immediately and the SCRIPT owns the timing between them.
 CSerialDevice *s_injectSerial = nullptr;
 
 struct InjKey { SDL_Scancode sc; bool shift; };
 InjKey s_injQueue[64];
 unsigned s_injHead = 0;
 unsigned s_injCount = 0;
+
+char s_injLine[128];           // accumulates serial RX until a '\n'
+int s_injLineLen = 0;
 
 SDL_Scancode s_injHeldSc = SDL_SCANCODE_UNKNOWN;
 bool s_injHeldShift = false;
@@ -198,6 +228,144 @@ void InjectShift(bool down)
     if (down) s_modState |= KMOD_LSHIFT;
     else      s_modState &= ~KMOD_LSHIFT;
     PushKeyEvent(SDL_SCANCODE_LSHIFT, down);
+}
+
+// Named non-printable keys the command protocol accepts (printables go through
+// AsciiToKey). f1..f12 are resolved arithmetically, not tabled.
+struct KeyName { const char *name; SDL_Scancode sc; };
+const KeyName s_keyNames[] = {
+    {"lshift", SDL_SCANCODE_LSHIFT}, {"rshift", SDL_SCANCODE_RSHIFT},
+    {"lctrl", SDL_SCANCODE_LCTRL},   {"rctrl", SDL_SCANCODE_RCTRL},
+    {"lalt", SDL_SCANCODE_LALT},     {"ralt", SDL_SCANCODE_RALT},
+    {"lgui", SDL_SCANCODE_LGUI},     {"rgui", SDL_SCANCODE_RGUI},
+    {"scrolllock", SDL_SCANCODE_SCROLLLOCK}, {"capslock", SDL_SCANCODE_CAPSLOCK},
+    {"tab", SDL_SCANCODE_TAB},       {"esc", SDL_SCANCODE_ESCAPE},
+    {"enter", SDL_SCANCODE_RETURN},  {"return", SDL_SCANCODE_RETURN},
+    {"space", SDL_SCANCODE_SPACE},
+    {"bs", SDL_SCANCODE_BACKSPACE},  {"del", SDL_SCANCODE_DELETE},
+    {"ins", SDL_SCANCODE_INSERT},
+    {"up", SDL_SCANCODE_UP},         {"down", SDL_SCANCODE_DOWN},
+    {"left", SDL_SCANCODE_LEFT},     {"right", SDL_SCANCODE_RIGHT},
+    {"home", SDL_SCANCODE_HOME},     {"end", SDL_SCANCODE_END},
+    {"pgup", SDL_SCANCODE_PAGEUP},   {"pgdn", SDL_SCANCODE_PAGEDOWN},
+};
+
+// Resolve a token to a scancode. Single char -> US-layout via AsciiToKey (which
+// also reports whether shift is implied, used only by tap/type). Otherwise a
+// name from the table, or fN. shift is always false for named keys.
+bool KeyByName(const char *name, SDL_Scancode &sc, bool &shift)
+{
+    shift = false;
+    if (name[0] && !name[1])
+        return AsciiToKey(name[0], sc, shift);
+
+    if ((name[0] == 'f' || name[0] == 'F') && name[1])
+    {
+        int n = 0;
+        for (const char *p = name + 1; *p; p++)
+        {
+            if (*p < '0' || *p > '9') { n = 0; break; }
+            n = n * 10 + (*p - '0');
+        }
+        if (n >= 1 && n <= 12) { sc = (SDL_Scancode)(SDL_SCANCODE_F1 + (n - 1)); return true; }
+    }
+
+    for (const KeyName &k : s_keyNames)
+        if (!strcmp(name, k.name)) { sc = k.sc; return true; }
+    return false;
+}
+
+// Immediate press/release for a named key, keeping s_modState coherent so a
+// chord built from named modifiers reports the right mod on later events.
+void ManualKey(SDL_Scancode sc, bool down)
+{
+    Uint16 m = 0;
+    switch (sc)
+    {
+    case SDL_SCANCODE_LSHIFT: m = KMOD_LSHIFT; break;
+    case SDL_SCANCODE_RSHIFT: m = KMOD_RSHIFT; break;
+    case SDL_SCANCODE_LCTRL:  m = KMOD_LCTRL;  break;
+    case SDL_SCANCODE_RCTRL:  m = KMOD_RCTRL;  break;
+    case SDL_SCANCODE_LALT:   m = KMOD_LALT;   break;
+    case SDL_SCANCODE_RALT:   m = KMOD_RALT;   break;
+    case SDL_SCANCODE_LGUI:   m = KMOD_LGUI;   break;
+    case SDL_SCANCODE_RGUI:   m = KMOD_RGUI;   break;
+    default: break;
+    }
+    if (m)
+    {
+        if (down) s_modState |= m;
+        else      s_modState &= ~m;
+    }
+    PushKeyEvent(sc, down);
+}
+
+// Enqueue one self-timed tap for the hold state machine.
+void InjectEnqueue(SDL_Scancode sc, bool shift)
+{
+    if (s_injCount < 64)
+    {
+        s_injQueue[(s_injHead + s_injCount) % 64] = InjKey{sc, shift};
+        s_injCount++;
+    }
+}
+
+// Split off the first whitespace-delimited token of `s`, NUL-terminate it, and
+// return the remainder (leading whitespace trimmed). *s is advanced past the
+// token. Empty remainder is "".
+char *InjectNextToken(char **s)
+{
+    char *p = *s;
+    while (*p == ' ' || *p == '\t') p++;
+    char *tok = p;
+    while (*p && *p != ' ' && *p != '\t') p++;
+    if (*p) { *p++ = 0; while (*p == ' ' || *p == '\t') p++; }
+    *s = p;
+    return tok;
+}
+
+// Domain: keyboard. `args` is everything after "key" — "<verb> <operand...>".
+void InjectKeyCmd(char *args)
+{
+    char *verb = InjectNextToken(&args);   // args now points at the operand
+
+    if (!strcmp(verb, "type"))
+    {
+        for (char *p = args; *p; p++)
+        {
+            SDL_Scancode sc; bool shift;
+            if (AsciiToKey(*p, sc, shift))
+                InjectEnqueue(sc, shift);
+        }
+        return;
+    }
+
+    SDL_Scancode sc; bool shift;
+    if (!KeyByName(args, sc, shift))
+        return;
+
+    if (!strcmp(verb, "down"))     ManualKey(sc, true);
+    else if (!strcmp(verb, "up"))  ManualKey(sc, false);
+    else if (!strcmp(verb, "tap")) InjectEnqueue(sc, shift);
+}
+
+// The robot-hands domain table. New subsystems (mouse, pad, grab, ...) register
+// here; the transport and line parser never change.
+struct InjectDomain { const char *name; void (*fn)(char *args); };
+const InjectDomain s_injectDomains[] = {
+    {"key", InjectKeyCmd},
+};
+
+// Route one command line (already NUL-terminated, no '\n') to its domain.
+void InjectDispatch(char *line)
+{
+    while (*line == ' ' || *line == '\t') line++;
+    if (*line == 0 || *line == '#')
+        return;
+
+    char *domain = InjectNextToken(&line);   // line now points at the args
+    for (const InjectDomain &d : s_injectDomains)
+        if (!strcmp(domain, d.name)) { d.fn(line); return; }
 }
 
 } // namespace
@@ -280,17 +448,25 @@ void SDL2Circle_InjectPump(void)
     if (!s_injectSerial)
         return;
 
-    // Drain serial RX into the keystroke queue.
+    // Drain serial RX, accumulating command lines; dispatch on each newline.
     char buf[64];
     int n = s_injectSerial->Read(buf, sizeof buf);
     for (int i = 0; i < n; i++)
     {
-        SDL_Scancode sc;
-        bool shift;
-        if (AsciiToKey(buf[i], sc, shift) && s_injCount < 64)
+        char c = buf[i];
+        if (c == '\n' || c == '\r')
         {
-            s_injQueue[(s_injHead + s_injCount) % 64] = InjKey{sc, shift};
-            s_injCount++;
+            s_injLine[s_injLineLen] = 0;
+            InjectDispatch(s_injLine);
+            s_injLineLen = 0;
+        }
+        else if (s_injLineLen < (int)sizeof(s_injLine) - 1)
+        {
+            s_injLine[s_injLineLen++] = c;
+        }
+        else
+        {
+            s_injLineLen = 0;   // overlong line: drop it rather than overflow
         }
     }
 
