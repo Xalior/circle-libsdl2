@@ -2,7 +2,7 @@
 # circle-libsdl2 tone test — SDL2 callback audio
 #
 
-CIRCLESTDLIBHOME ?= ../../../circle-stdlib
+CIRCLESTDLIBHOME ?= ../../circle-stdlib
 
 include $(CIRCLESTDLIBHOME)/Config.mk
 

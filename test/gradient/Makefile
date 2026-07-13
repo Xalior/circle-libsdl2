@@ -2,7 +2,7 @@
 # circle-libsdl2 gradient test — SDL2 video first light
 #
 
-CIRCLESTDLIBHOME ?= ../../../circle-stdlib
+CIRCLESTDLIBHOME ?= ../../circle-stdlib
 
 include $(CIRCLESTDLIBHOME)/Config.mk
 

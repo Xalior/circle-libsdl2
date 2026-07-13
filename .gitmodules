@@ -1,0 +1,3 @@
+[submodule "circle-stdlib"]
+	path = circle-stdlib
+	url = https://codeberg.org/larchcone/circle-stdlib.git

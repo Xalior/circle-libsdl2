@@ -2,7 +2,7 @@
 # circle-libsdl2 keyecho test — SDL2 keyboard input
 #
 
-CIRCLESTDLIBHOME ?= ../../../circle-stdlib
+CIRCLESTDLIBHOME ?= ../../circle-stdlib
 
 include $(CIRCLESTDLIBHOME)/Config.mk
 
