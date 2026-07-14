@@ -56,6 +56,16 @@ bare-metal GPU driver — software rendering is the design, not a stopgap).
   a liveness beat, and re-arms a kernel timer that fires from IRQ context if
   the pump goes quiet for 30 seconds — dumping the scheduler's task list, so
   a wedged system writes its own post-mortem instead of just stopping.
+- **The core split: your application gets a core to itself.** Call
+  `SDL2Circle_SplitInit` (`SDL2/SDL_circle.h`) and the shim moves the platform
+  off your back: core 0 keeps the Circle world — devices, scheduler, a servo
+  task and a cross-core watchdog — a presentation core does the blit and the
+  page flip, and your application runs alone on a core of its own, reaching
+  the hardware through lock-free rings (events in, audio out), a one-deep
+  frame mailbox, and a call mailbox for the rare marshalled call (device
+  bring-up, file I/O). Single-core is the same code path, degenerate: without
+  `SplitInit` every call executes directly, exactly as before. Multicore
+  Circle is required — see Building.
 - **Self-contained payloads.** The shim brings up everything it needs
   (USB host controller, framebuffer, sound) inside `SDL_Init`. Host-kernel
   contract: initialize `CInterruptSystem` and `CTimer` before `SDL_Init`;
@@ -97,11 +107,13 @@ ARM_ALLOW_MULTI_CORE`) and builds it, then builds the shim against it. Cold,
 that is a long build — newlib and libc++ from source. Afterwards, a plain
 `make` rebuilds just `libSDL2.a`.
 
-The world is configured **multicore** (`ARM_ALLOW_MULTI_CORE`) because the
-applications built on this shim need a multicore-capable Circle build; a
-single-core world is not interchangeable with it. A world elsewhere on disk
-works with `make CIRCLESTDLIBHOME=/path/to/circle-stdlib`, provided it was
-configured the same way.
+The world is configured **multicore** (`ARM_ALLOW_MULTI_CORE`) because the core
+split needs the other cores; a single-core world cannot serve this shim. A
+world elsewhere on disk works with `make CIRCLESTDLIBHOME=/path/to/circle-stdlib`,
+provided it was configured the same way. **Compile your application with
+`-DARM_ALLOW_MULTI_CORE` too** — Circle's headers change shape on that macro
+(spinlocks, atomics, memory), so an application compiled without it disagrees,
+silently, with the library it links against.
 
 Applications link by including `sdl-app.mk` after Circle's `Rules.mk`
 (see any Makefile under `test/`): it links with `sdl-app.ld` — required
