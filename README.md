@@ -32,7 +32,7 @@ never touches a device.
 | Keyboard → SDL events, `SDL_GetKeyboardState`, modifiers | Circle USB HID (raw reports; SDL scancodes *are* USB usage codes). Off core 0: USB stays on core 0, events cross by ring |
 | Audio: `SDL_OpenAudioDevice` callback API | `CHDMISoundBaseDevice`, ~100 ms hardware queue. Off core 0: your callback fills a ring, core 0's servo feeds the device |
 | Events: queue, `SDL_PumpEvents`, window focus | the per-frame heartbeat: USB pump and scheduler yield on core 0, ring drain and liveness beat off it |
-| Timers: `SDL_GetTicks64`, performance counter, `SDL_Delay` | Circle system timer (µs); `SDL_Delay` off core 0 is a plain timed wait — the scheduler is core-0-only |
+| Timers: `SDL_GetTicks64`, performance counter, `SDL_Delay` | Circle system timer (µs). `SDL_Delay` yields to the scheduler on core 0; off it, spins to a µs-exact deadline — deterministic, but it burns the core |
 | Files: an I/O service callable from any core | FatFs on core 0, marshalled (`SDL2Circle_IO*`) — for applications whose own file layer must not touch the card directly |
 | Init/error/version/hints | — |
 
@@ -41,7 +41,7 @@ bare-metal GPU driver — software rendering is the design, not a stopgap).
 
 ## Running off core 0
 
-Circle is core-0-only by construction: its scheduler, interrupts, USB, FatFs
+Circle kernel is core-0-only by design: its scheduler, interrupts, USB, FatFs
 and sound may only be touched from there. So an application that wants a core
 to itself has a problem — on any other core, it cannot call the platform at
 all.
@@ -76,7 +76,16 @@ What changes for your code, once it is off core 0:
   USB plug-and-play and HID translation stay on core 0's servo.
 - **Audio inverts from pull to push.** Your callback fills the audio ring; the
   servo feeds the sound device at its own cadence.
-- **`SDL_Delay` is a plain timed wait,** not a scheduler yield.
+- **`SDL_Delay` becomes exact, and costs the core.** On core 0 it is
+  `CScheduler::MsSleep` — cooperative, so you become *runnable* at the deadline
+  but only resume when the scheduler next gets control, and a peer that is slow
+  to yield overshoots your delay by however long it takes. Off core 0 there is
+  no scheduler to defer to, so the shim spins on the system timer (µs
+  resolution, `yield` hint) and returns at the deadline. You trade a scheduler
+  yield for a deterministic wait, and you pay for it by burning that core for
+  the duration — which is only sound *because* the core is dedicated and has
+  nothing else to run. The same spin on core 0 would starve the servo, the
+  watchdog, USB and the audio feed, which is why core 0 keeps yielding.
 
 **Single-core is the same code, degenerate.** Without `SplitInit` there is no
 ring and no mailbox: every call executes directly, the pump does the platform
@@ -101,15 +110,15 @@ multicore Circle world — see Building.
   contract: initialize `CInterruptSystem` and `CTimer` before `SDL_Init`;
   run a `CScheduler` if your app uses `std::thread`
   (via [circle-stdlib](https://codeberg.org/larchcone/circle-stdlib)'s
-  libc++ threading). To run the application off core 0, the host kernel also
-  starts the secondary cores and may hand one to `SDL2Circle_SplitPresentCore`
-  — this library marshals; it never starts or owns a core.
+  libc++ threading). To run split, the host kernel also starts the secondary
+  cores and hands one to `SDL2Circle_SplitPresentCore` — the shim marshals,
+  it does not own the cores.
 - **Honest headers.** `include/SDL2/` is the official SDL2 2.32.4 header
   set (zlib license, see `SDL2-LICENSE.txt`) with one substitution: an
   `SDL_config.h` for AArch64/newlib/Circle. Your app compiles against the
   genuine SDL2 API; unimplemented entry points fail at link time instead
-  of surprising you at runtime. The cross-core surface is the one addition, and
-  it is deliberately outside the SDL2 namespace: `SDL2/SDL_circle.h`.
+  of surprising you at runtime. The split's own surface is the one addition,
+  and it is deliberately outside the SDL2 namespace: `SDL2/SDL_circle.h`.
 
 ## Building
 
@@ -140,9 +149,8 @@ ARM_ALLOW_MULTI_CORE`) and builds it, then builds the shim against it. Cold,
 that is a long build — newlib and libc++ from source. Afterwards, a plain
 `make` rebuilds just `libSDL2.a`.
 
-The world is configured **multicore** (`ARM_ALLOW_MULTI_CORE`) because running
-an application off core 0 needs the other cores; a single-core world cannot
-serve that. A
+The world is configured **multicore** (`ARM_ALLOW_MULTI_CORE`) because the core
+split needs the other cores; a single-core world cannot serve this shim. A
 world elsewhere on disk works with `make CIRCLESTDLIBHOME=/path/to/circle-stdlib`,
 provided it was configured the same way.
 
