@@ -110,10 +110,15 @@ that is a long build — newlib and libc++ from source. Afterwards, a plain
 The world is configured **multicore** (`ARM_ALLOW_MULTI_CORE`) because the core
 split needs the other cores; a single-core world cannot serve this shim. A
 world elsewhere on disk works with `make CIRCLESTDLIBHOME=/path/to/circle-stdlib`,
-provided it was configured the same way. **Compile your application with
-`-DARM_ALLOW_MULTI_CORE` too** — Circle's headers change shape on that macro
-(spinlocks, atomics, memory), so an application compiled without it disagrees,
-silently, with the library it links against.
+provided it was configured the same way.
+
+Building through Circle's `Rules.mk` — as the test apps do — you get the
+world's own `DEFINE`, `-DARM_ALLOW_MULTI_CORE` included, and there is nothing
+to think about. **If you compile any translation unit outside it** — a foreign
+build system with its own flag list — it must carry that define too. Circle's
+headers change shape on it (spinlocks, atomics, memory layout), so an object
+compiled without it disagrees with the library it links against, and nothing
+tells you: it builds, it links, and it is wrong at runtime.
 
 Applications link by including `sdl-app.mk` after Circle's `Rules.mk`
 (see any Makefile under `test/`): it links with `sdl-app.ld` — required
