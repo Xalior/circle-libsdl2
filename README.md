@@ -7,10 +7,24 @@ from `kernel8.img` — no operating system underneath at all.
 
 This is **not a port of SDL**. It is a from-scratch implementation of the
 SDL2 API surface that real applications call, mapped directly onto Circle's
-bare-metal drivers. Proven by its founding use case: **MAME running
-bare-metal on a Raspberry Pi 4**, booting ZX Spectrum 48K BASIC and full
-NextZXOS (ZX Spectrum Next) with video, USB keyboard, and HDMI audio — all
-through this shim.
+bare-metal drivers.
+
+## What it is proven on
+
+Its founding use case is [**pi-mame**](https://github.com/Xalior/pi-mame):
+MAME's emulation core, running bare-metal on a Raspberry Pi 4 with no
+operating system underneath it at all. Not a demo of one machine — pi-mame
+ships whole vendor platforms, home computers and consoles alike, and every
+machine on every one of them reaches the hardware through this shim. Which
+machines those are is pi-mame's business, and its documentation is where they
+are listed.
+
+What that port leans on is the interesting part, because a demanding
+application asks for all of it: one fullscreen framebuffer at a resolution
+fixed by boot config, a software renderer, USB HID keyboards, HDMI audio, disk
+images and cartridges read off the SD card, and a per-frame heartbeat that
+keeps a cooperatively scheduled machine alive. None of it is MAME-specific —
+an ordinary SDL2 application gets the same surface.
 
 ## What works
 
@@ -35,6 +49,13 @@ bare-metal GPU driver — software rendering is the design, not a stopgap).
   callback, and yields to Circle's cooperative scheduler. Any app that
   polls events or presents frames keeps the whole machine alive — audio
   callbacks never run in interrupt context.
+- **The heartbeat is also the watchdog.** Nothing preempts under a
+  cooperative scheduler, so a main loop that stops pumping takes the whole
+  board down silently. The pump ticks the host kernel's CPU throttle (Circle
+  requires periodic `Update()` calls, or thermal management never runs), logs
+  a liveness beat, and re-arms a kernel timer that fires from IRQ context if
+  the pump goes quiet for 30 seconds — dumping the scheduler's task list, so
+  a wedged system writes its own post-mortem instead of just stopping.
 - **Self-contained payloads.** The shim brings up everything it needs
   (USB host controller, framebuffer, sound) inside `SDL_Init`. Host-kernel
   contract: initialize `CInterruptSystem` and `CTimer` before `SDL_Init`;
@@ -49,38 +70,38 @@ bare-metal GPU driver — software rendering is the design, not a stopgap).
 
 ## Building
 
-You need two things on your machine first:
+**Prerequisites**
 
-1. The **Arm GNU toolchain** for `aarch64-none-elf` (bare-metal AArch64),
-   on your `PATH` — from the
-   [Arm GNU Toolchain downloads](https://developer.arm.com/downloads/-/arm-gnu-toolchain-downloads).
-2. A checkout of
-   [circle-stdlib](https://codeberg.org/larchcone/circle-stdlib) — the
-   Circle framework plus newlib and libc++ (that specific fork carries the
-   libc++ build with `std::thread` support this project uses).
+- The **Arm GNU toolchain** for `aarch64-none-elf` (bare-metal AArch64) on
+  your `PATH` — from the
+  [Arm GNU Toolchain downloads](https://developer.arm.com/downloads/-/arm-gnu-toolchain-downloads).
+- A modern `bash` (5+) and GNU `getopt` on your `PATH` — circle-stdlib's
+  `configure` needs `mapfile` and GNU-style option parsing (macOS ships bash
+  3.2 and BSD getopt; `brew install bash gnu-getopt` provides both).
 
-Clone the two projects side by side, then configure and build
-circle-stdlib for the Pi 4 (this also builds Circle itself):
+**Steps**
 
 ```sh
-git clone --recursive https://codeberg.org/larchcone/circle-stdlib.git
-git clone https://github.com/Xalior/circle-libsdl2.git
-
-cd circle-stdlib
-./configure -r 4 -p aarch64-none-elf- --libcxx
-make
-cd ..
-```
-
-Now build the shim:
-
-```sh
+git clone --recursive https://github.com/Xalior/circle-libsdl2.git
 cd circle-libsdl2
-make            # produces libSDL2.a
+make deps       # builds the Circle world, then libSDL2.a
 ```
 
-The Makefiles default to the sibling layout above; a circle-stdlib tree
-anywhere else works with `make CIRCLESTDLIBHOME=/path/to/circle-stdlib`.
+The shim **owns its runtime world**: `circle-stdlib` — the Circle framework
+plus newlib and libc++ — is a nested submodule here, not something you fetch
+and configure alongside. `make deps` fetches libc++ from an immutable LLVM tag
+(Codeberg regenerates its archives, so the tarball route fails its hash check
+on a clean build), configures that world for the Pi 4
+(`-r 4 -p aarch64-none-elf- --libcxx-repo --kernel-max-size 256 -o
+ARM_ALLOW_MULTI_CORE`) and builds it, then builds the shim against it. Cold,
+that is a long build — newlib and libc++ from source. Afterwards, a plain
+`make` rebuilds just `libSDL2.a`.
+
+The world is configured **multicore** (`ARM_ALLOW_MULTI_CORE`) because the
+applications built on this shim need a multicore-capable Circle build; a
+single-core world is not interchangeable with it. A world elsewhere on disk
+works with `make CIRCLESTDLIBHOME=/path/to/circle-stdlib`, provided it was
+configured the same way.
 
 Applications link by including `sdl-app.mk` after Circle's `Rules.mk`
 (see any Makefile under `test/`): it links with `sdl-app.ld` — required
