@@ -15,22 +15,10 @@ platform call marshalled back to core 0. That is the *core split*, and it is
 the heart of this library; a single-core build is the same code with the
 marshalling switched off. See [The core split](#the-core-split).
 
-## What it is proven on
-
-Its founding use case is [**pi-mame**](https://github.com/Xalior/pi-mame):
-MAME's emulation core, running bare-metal on a Raspberry Pi 4 with no
-operating system underneath it at all. Not a demo of one machine — pi-mame
-ships whole vendor platforms, home computers and consoles alike, and every
-machine on every one of them reaches the hardware through this shim. Which
-machines those are is pi-mame's business, and its documentation is where they
-are listed.
-
-A demanding application asks for all of it, which is what makes it a good
-proof: one fullscreen framebuffer at a resolution fixed by boot config, a
-software renderer, USB HID keyboards, HDMI audio, and files read off the SD
-card — with the application itself running on a CPU core of its own and
-touching none of that hardware directly. Nothing about the shim is specific to
-MAME, or to emulators: any SDL2 application gets the same surface.
+Proven in anger by [pi-mame](https://github.com/Xalior/pi-mame), which runs
+MAME's core on bare metal through this library — a real application, leaning on
+the whole surface at once: fullscreen software rendering, USB HID keyboards,
+HDMI audio, files off the SD card, and the core split under all of it.
 
 ## What works
 
