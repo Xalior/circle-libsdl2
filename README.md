@@ -9,6 +9,12 @@ This is **not a port of SDL**. It is a from-scratch implementation of the
 SDL2 API surface that real applications call, mapped directly onto Circle's
 bare-metal drivers.
 
+And it will give your application **a CPU core of its own** — no interrupts, no
+device work, no scheduler on it — with presentation on a second core and every
+platform call marshalled back to core 0. That is the *core split*, and it is
+the heart of this library; a single-core build is the same code with the
+marshalling switched off. See [The core split](#the-core-split).
+
 ## What it is proven on
 
 Its founding use case is [**pi-mame**](https://github.com/Xalior/pi-mame):
@@ -19,64 +25,87 @@ machine on every one of them reaches the hardware through this shim. Which
 machines those are is pi-mame's business, and its documentation is where they
 are listed.
 
-What that port leans on is the interesting part, because a demanding
-application asks for all of it: one fullscreen framebuffer at a resolution
-fixed by boot config, a software renderer, USB HID keyboards, HDMI audio, disk
-images and cartridges read off the SD card, and a per-frame heartbeat that
-keeps a cooperatively scheduled machine alive. None of it is MAME-specific —
-an ordinary SDL2 application gets the same surface.
+A demanding application asks for all of it, which is what makes it a good
+proof: one fullscreen framebuffer at a resolution fixed by boot config, a
+software renderer, USB HID keyboards, HDMI audio, and files read off the SD
+card — with the application itself running on a CPU core of its own and
+touching none of that hardware directly. Nothing about the shim is specific to
+MAME, or to emulators: any SDL2 application gets the same surface.
 
 ## What works
 
 | SDL2 subsystem | Circle backing |
 |---|---|
-| Video: fullscreen window, software `SDL_Renderer`, streaming ARGB8888 textures, alpha blending | `CBcmFrameBuffer` — double-buffered, vsync page flip |
+| Video: fullscreen window, software `SDL_Renderer`, streaming ARGB8888 textures, alpha blending | `CBcmFrameBuffer` — double-buffered, vsync page flip. Split: draw calls become a command list the presentation core executes |
 | Display/renderer queries (modes, bounds, formats, masks) | single HDMI panel |
-| Keyboard → SDL events, `SDL_GetKeyboardState`, modifiers | Circle USB HID (raw reports; SDL scancodes *are* USB usage codes) |
-| Audio: `SDL_OpenAudioDevice` callback API | `CHDMISoundBaseDevice`, ~100 ms hardware queue |
-| Events: queue, `SDL_PumpEvents`, window focus | also the USB plug-and-play pump and cooperative-scheduler yield point |
-| Timers: `SDL_GetTicks64`, performance counter, `SDL_Delay` | Circle system timer (µs) |
+| Keyboard → SDL events, `SDL_GetKeyboardState`, modifiers | Circle USB HID (raw reports; SDL scancodes *are* USB usage codes). Split: USB lives on core 0, events cross by ring |
+| Audio: `SDL_OpenAudioDevice` callback API | `CHDMISoundBaseDevice`, ~100 ms hardware queue. Split: your callback fills a ring, core 0's servo feeds the device |
+| Events: queue, `SDL_PumpEvents`, window focus | the per-frame heartbeat: USB pump and scheduler yield single-core, ring drain and liveness beat under the split |
+| Timers: `SDL_GetTicks64`, performance counter, `SDL_Delay` | Circle system timer (µs); `SDL_Delay` off core 0 is a plain timed wait — the scheduler is core-0-only |
+| Files: an I/O service callable from any core | FatFs on core 0, marshalled (`SDL2Circle_IO*`) — for applications whose own file layer must not touch the card directly |
 | Init/error/version/hints | — |
 
 Not yet: mouse, game controllers, haptics, OpenGL (the Pi 4 has no
 bare-metal GPU driver — software rendering is the design, not a stopgap).
 
+## The core split
+
+**Your application gets a CPU core to itself.** Call `SDL2Circle_SplitInit`
+(`SDL2/SDL_circle.h`) and the shim takes the platform off it:
+
+| core | role |
+|---|---|
+| 0 | the Circle world — every device, the scheduler, a servo task that feeds the sound device, and a watchdog |
+| app | your code, alone: no interrupts, no device work, no scheduler |
+| presentation | blit and page flip, nothing else |
+
+Your core never touches hardware. It reaches it through lock-free single
+producer/consumer rings — events in, audio out — a one-deep frame mailbox
+(post a frame, the presentation core executes it while you build the next),
+and a call mailbox for the rare marshalled call: device bring-up, framebuffer
+allocation, file I/O. The consequences are worth stating plainly, because they
+invert what a single-core SDL app assumes:
+
+- **The pump stops doing the work.** On your core, `SDL_PumpEvents` only
+  touches shared memory — drain the event ring, mirror key state, bump a
+  heartbeat. USB plug-and-play and HID translation stay on core 0.
+- **Audio inverts from pull to push.** Your callback runs on your core into
+  the audio ring; core 0's servo feeds the sound device at its own cadence.
+- **The watchdog goes cross-core.** Core 0 watches your heartbeat and reports
+  a stalled core instead of the whole board dying in silence.
+
+**Single-core is the same code, degenerate.** Without `SplitInit` there is no
+ring and no mailbox: every call executes directly, the pump does the work
+itself, audio pulls, and the watchdog is an in-band timer that dumps the
+scheduler's task list if the main loop goes quiet for 30 seconds. One codebase,
+one set of call sites, a branch on `SplitActive()`. The split needs a multicore
+Circle world — see Building.
+
 ## Design
 
-- **The app owns the main loop; the shim rides it.** `SDL_PumpEvents`
-  (called by `SDL_PollEvent`) services USB plug-and-play, translates HID
-  reports into events, tops up the audio queue by running your audio
-  callback, and yields to Circle's cooperative scheduler. Any app that
-  polls events or presents frames keeps the whole machine alive — audio
+- **The app owns the main loop; the shim rides it.** Everything the shim does
+  per frame hangs off `SDL_PumpEvents` (called by `SDL_PollEvent`) and
+  `SDL_RenderPresent`. An app that polls events and presents frames keeps the
+  whole machine alive; one that stops doing either wedges a cooperatively
+  scheduled board, which is what the watchdog exists to report. Audio
   callbacks never run in interrupt context.
-- **The heartbeat is also the watchdog.** Nothing preempts under a
-  cooperative scheduler, so a main loop that stops pumping takes the whole
-  board down silently. The pump ticks the host kernel's CPU throttle (Circle
-  requires periodic `Update()` calls, or thermal management never runs), logs
-  a liveness beat, and re-arms a kernel timer that fires from IRQ context if
-  the pump goes quiet for 30 seconds — dumping the scheduler's task list, so
-  a wedged system writes its own post-mortem instead of just stopping.
-- **The core split: your application gets a core to itself.** Call
-  `SDL2Circle_SplitInit` (`SDL2/SDL_circle.h`) and the shim moves the platform
-  off your back: core 0 keeps the Circle world — devices, scheduler, a servo
-  task and a cross-core watchdog — a presentation core does the blit and the
-  page flip, and your application runs alone on a core of its own, reaching
-  the hardware through lock-free rings (events in, audio out), a one-deep
-  frame mailbox, and a call mailbox for the rare marshalled call (device
-  bring-up, file I/O). Single-core is the same code path, degenerate: without
-  `SplitInit` every call executes directly, exactly as before. Multicore
-  Circle is required — see Building.
+- **The CPU throttle gets ticked.** Circle needs periodic `CCPUThrottle`
+  updates or thermal management never runs, and the host kernel has no loop of
+  its own to do it in — so the shim does it, from the pump.
 - **Self-contained payloads.** The shim brings up everything it needs
   (USB host controller, framebuffer, sound) inside `SDL_Init`. Host-kernel
   contract: initialize `CInterruptSystem` and `CTimer` before `SDL_Init`;
   run a `CScheduler` if your app uses `std::thread`
   (via [circle-stdlib](https://codeberg.org/larchcone/circle-stdlib)'s
-  libc++ threading).
+  libc++ threading). To run split, the host kernel also starts the secondary
+  cores and hands one to `SDL2Circle_SplitPresentCore` — the shim marshals,
+  it does not own the cores.
 - **Honest headers.** `include/SDL2/` is the official SDL2 2.32.4 header
   set (zlib license, see `SDL2-LICENSE.txt`) with one substitution: an
   `SDL_config.h` for AArch64/newlib/Circle. Your app compiles against the
   genuine SDL2 API; unimplemented entry points fail at link time instead
-  of surprising you at runtime.
+  of surprising you at runtime. The split's own surface is the one addition,
+  and it is deliberately outside the SDL2 namespace: `SDL2/SDL_circle.h`.
 
 ## Building
 
