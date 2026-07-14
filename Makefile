@@ -1,10 +1,11 @@
 #
 # circle-libsdl2 — SDL2-compatible shim over the Circle bare-metal framework.
-# Builds libSDL2.a against its OWN multicore circle-stdlib submodule (the shim's
-# core-split needs the second physical core, so the world is configured
-# ARM_ALLOW_MULTI_CORE). `make deps` builds that world then the shim; a plain
-# `make` builds the shim once the world is configured. Override the world's
-# location with `make CIRCLESTDLIBHOME=/path/to/circle-stdlib` if needed.
+# Builds libSDL2.a against its OWN circle-stdlib submodule, configured
+# ARM_ALLOW_MULTI_CORE: the applications built on this shim need a
+# multicore-capable Circle world, and a single-core one will not serve them.
+# `make deps` builds that world then the shim; a plain `make` builds the shim
+# once the world is configured. Override the world's location with
+# `make CIRCLESTDLIBHOME=/path/to/circle-stdlib` if needed.
 #
 CIRCLESTDLIBHOME ?= $(CURDIR)/circle-stdlib
 
