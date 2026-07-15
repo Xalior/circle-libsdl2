@@ -4,3 +4,21 @@
 *.elf
 *.img
 *.lst
+
+# Per-board shim object tree (build/rpi3, build/rpi4, build/rpi5).
+/build/
+
+# Each circle-stdlib-rpi{3,4,5} world's build tree + its LLVM checkout
+# (large; produced by the `deps`/`world` targets, not source).
+circle-stdlib-rpi3/build/
+circle-stdlib-rpi3/install*/
+circle-stdlib-rpi3/Config.mk
+circle-stdlib-rpi3/libs/llvm-project/
+circle-stdlib-rpi4/build/
+circle-stdlib-rpi4/install*/
+circle-stdlib-rpi4/Config.mk
+circle-stdlib-rpi4/libs/llvm-project/
+circle-stdlib-rpi5/build/
+circle-stdlib-rpi5/install*/
+circle-stdlib-rpi5/Config.mk
+circle-stdlib-rpi5/libs/llvm-project/

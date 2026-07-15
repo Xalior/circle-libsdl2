@@ -1,3 +1,9 @@
-[submodule "circle-stdlib"]
-	path = circle-stdlib
+[submodule "circle-stdlib-rpi4"]
+	path = circle-stdlib-rpi4
+	url = https://codeberg.org/larchcone/circle-stdlib.git
+[submodule "circle-stdlib-rpi3"]
+	path = circle-stdlib-rpi3
+	url = https://codeberg.org/larchcone/circle-stdlib.git
+[submodule "circle-stdlib-rpi5"]
+	path = circle-stdlib-rpi5
 	url = https://codeberg.org/larchcone/circle-stdlib.git
