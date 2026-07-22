@@ -333,6 +333,30 @@ static void create_window_on0(void *p)
     win->h = (int)fb->GetHeight();
     win->flags = a->flags | SDL_WINDOW_FULLSCREEN | SDL_WINDOW_SHOWN;
 
+    // Believe the GRANT for the window too. Boards whose firmware honors
+    // the request (Pi 3/4) grant pitch == width*4 and nothing changes
+    // here. The Pi 5 grants its one native-mode 32bpp surface whatever
+    // was asked (card/config.txt framebuffer_depth=32 makes the display
+    // controller scan 32bpp in hardware): the pitch disagrees with the
+    // requested width, and the real surface — pitch/4 pixels by
+    // size/pitch rows — is the only thing that can be presented into.
+    // Adopt it as the window, so MAME scales to the glass (that board's
+    // build bakes -keepaspect) while cmdline.txt keeps carrying the PAL
+    // canvas for the boards that output it as the signal.
+    if (fb->GetPitch() != (u32)win->w * 4)
+    {
+        unsigned nRealW = fb->GetPitch() / 4;
+        unsigned nRealH = fb->GetPitch() != 0 ? fb->GetSize() / fb->GetPitch() : 0;
+        if (nRealW > 0 && nRealH > 0)
+        {
+            CLogger::Get()->Write("sdl2video", LogWarning,
+                                  "grant %ux%u differs from request %dx%d: window follows the grant",
+                                  nRealW, nRealH, win->w, win->h);
+            win->w = (int)nRealW;
+            win->h = (int)nRealH;
+        }
+    }
+
     // Publish the presentation geometry before the window becomes visible
     // to the app core or the worker.
     s_fb_base = (u8 *)(uintptr)fb->GetBuffer();
