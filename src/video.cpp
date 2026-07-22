@@ -166,8 +166,20 @@ void SDL2Circle_VideoExecCmd(const SDL2CirclePresentCmd *cmd, unsigned half)
 // callers (single presentation owner at a time).
 void SDL2Circle_VideoFlip(unsigned half)
 {
-    if (s_window)
-        s_window->fb->SetVirtualOffset(0, half * (unsigned)s_fb_h);
+    if (!s_window)
+        return;
+    boolean ok = s_window->fb->SetVirtualOffset(0, half * (unsigned)s_fb_h);
+    // One-shot diagnostic: a firmware that refuses the pan (it reports the
+    // granted offset back) silently breaks the page flip — the visible
+    // half then only ever receives alternate frames.
+    static bool s_flip_logged = false;
+    if (!s_flip_logged)
+    {
+        s_flip_logged = true;
+        CLogger::Get()->Write("sdl2video", LogNotice,
+                              "first flip to half %u: SetVirtualOffset %s",
+                              half, ok ? "ok" : "REFUSED");
+    }
 }
 
 // Record a command (core split) or execute it into the back half now.
@@ -300,9 +312,16 @@ static void create_window_on0(void *p)
     s_window = win;
 
     // The one line that proves the geometry chain: boot config (or panel)
-    // -> display mode -> window -> this allocation.
-    CLogger::Get()->Write("sdl2video", LogNotice, "framebuffer %ux%u",
-                          fb->GetWidth(), fb->GetHeight());
+    // -> display mode -> window -> this allocation. Virtual height and
+    // pitch expose what the firmware really granted: the double-buffer
+    // flip needs virt == 2*h, and a pitch wider than the width means the
+    // buffer lives inside a native-mode surface (observed on the Pi 5,
+    // whose firmware ignores mode requests).
+    CLogger::Get()->Write("sdl2video", LogNotice,
+                          "framebuffer %ux%u virt %ux%u pitch %u size %u",
+                          fb->GetWidth(), fb->GetHeight(),
+                          fb->GetVirtWidth(), fb->GetVirtHeight(),
+                          fb->GetPitch(), fb->GetSize());
 
     // The window is the whole display: it is shown and focused from birth.
     // Consumers (MAME's OSD among them) gate keyboard input on having seen
