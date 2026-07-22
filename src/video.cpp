@@ -99,6 +99,10 @@ static void resolve_display_size(void)
 static u8 *s_fb_base = nullptr;
 static unsigned s_fb_pitch = 0;
 static int s_fb_w = 0, s_fb_h = 0;
+// 2 = page-flip between stacked halves; 1 = the firmware's grant cannot hold
+// two halves, draw and scan half 0 only (single-buffered, tears instead of
+// corrupting memory past the buffer).
+static unsigned s_fb_halves = 2;
 
 // Execute one present command into a framebuffer half. Runs on the caller
 // single-core, and on the presentation worker under the core split.
@@ -309,6 +313,19 @@ static void create_window_on0(void *p)
     s_fb_pitch = fb->GetPitch();
     s_fb_w = win->w;
     s_fb_h = win->h;
+
+    // Believe the GRANT, not the request: double buffering draws and pans
+    // across 2*h rows, and a firmware that grants fewer rows than that (the
+    // Pi 5 grants the native mode's row count regardless of the virtual
+    // height it acknowledges) would have every second frame written partly
+    // past the buffer and scanned out of it. Fall back to a single half.
+    unsigned nRowsGranted = s_fb_pitch != 0 ? fb->GetSize() / s_fb_pitch : 0;
+    s_fb_halves = nRowsGranted >= 2u * (unsigned)win->h ? 2 : 1;
+    if (s_fb_halves == 1)
+        CLogger::Get()->Write("sdl2video", LogWarning,
+                              "granted %u rows < %u: single-buffered, no page flip",
+                              nRowsGranted, 2u * (unsigned)win->h);
+
     s_window = win;
 
     // The one line that proves the geometry chain: boot config (or panel)
@@ -397,7 +414,9 @@ extern "C" SDL_Renderer *SDL_CreateRenderer(SDL_Window *win, int, Uint32 flags)
     ren->window = win;
     ren->base = (u8 *)(uintptr)win->fb->GetBuffer();
     ren->pitch = win->fb->GetPitch();
-    ren->back = 1;   // half 0 is visible after init; draw into half 1 first
+    // Half 0 is visible after init, so draw into half 1 first -- unless the
+    // grant forced single-buffering, where half 0 is all there is.
+    ren->back = s_fb_halves == 2 ? 1 : 0;
     ren->vsync = (flags & SDL_RENDERER_PRESENTVSYNC) != 0;
     ren->r = ren->g = ren->b = 0;
     ren->a = 255;
@@ -681,7 +700,8 @@ extern "C" void SDL_RenderPresent(SDL_Renderer *ren)
     {
         SDL2Circle_PresentPost(ren->cmds, ren->ncmds, ren->back);
         ren->ncmds = 0;
-        ren->back ^= 1;
+        if (s_fb_halves == 2)
+            ren->back ^= 1;
         return;
     }
 
@@ -692,5 +712,6 @@ extern "C" void SDL_RenderPresent(SDL_Renderer *ren)
         fb->WaitForVerticalSync();   // only when the app asked for vsync:
                                      // throttled apps pace themselves, and
                                      // blocking here would double-throttle
-    ren->back ^= 1;
+    if (s_fb_halves == 2)
+        ren->back ^= 1;
 }
