@@ -73,6 +73,7 @@ static void resolve_display_size(void)
     if (s_display_w > 0 && s_display_h > 0)
         return;
 
+    const char *source;
     CBcmPropertyTags Tags;
     TPropertyTagDisplayDimensions Dim;
     if (Tags.GetTag(PROPTAG_GET_DISPLAY_DIMENSIONS, &Dim, sizeof Dim)
@@ -81,19 +82,28 @@ static void resolve_display_size(void)
     {
         s_display_w = (int)Dim.nWidth;
         s_display_h = (int)Dim.nHeight;
-        return;
+        source = "firmware probe";
     }
-
-    CKernelOptions *opts = CKernelOptions::Get();
-    if (opts && opts->GetWidth() > 0 && opts->GetHeight() > 0)
+    else
     {
-        s_display_w = (int)opts->GetWidth();
-        s_display_h = (int)opts->GetHeight();
-        return;
+        CKernelOptions *opts = CKernelOptions::Get();
+        if (opts && opts->GetWidth() > 0 && opts->GetHeight() > 0)
+        {
+            s_display_w = (int)opts->GetWidth();
+            s_display_h = (int)opts->GetHeight();
+            source = "cmdline";
+        }
+        else
+        {
+            s_display_w = 640;
+            s_display_h = 480;
+            source = "default floor";
+        }
     }
 
-    s_display_w = 640;
-    s_display_h = 480;
+    CLogger::Get()->Write("sdl2video", LogNotice,
+                          "display size %dx%d (%s)",
+                          s_display_w, s_display_h, source);
 }
 
 // Presentation geometry, published when the window exists: the worker core
