@@ -56,12 +56,15 @@ struct SDL_Texture
 // size once it exists, and with the panel default before that.
 static SDL_Window *s_window = nullptr;
 
-// The display size is platform boot configuration, consumed the way
-// Circle's own samples consume it: `width=`/`height=` in the FAT-root
-// cmdline.txt (circle/doc/cmdline.txt) through CKernelOptions. Without
-// boot config the panel's own size is used — the same probe (and the
-// same sanity clamp) CBcmFrameBuffer performs when constructed with 0x0.
-// The VideoCore scaler stretches the framebuffer to the panel.
+// The display size feeds the consumer's monitor geometry (MAME derives
+// its keepaspect monitor aspect from it, BEFORE any window exists), so
+// it must be the DISPLAY's truth, not the request's echo: the firmware
+// dimension probe reports the actual current mode on every board — on
+// Pi 3/4 that equals the cmdline width=/height= the firmware output as
+// the signal, and on the Pi 5 it reports the one native-EDID mode the
+// firmware locked at its own boot (the cmdline there sizes only logical
+// consoles, and trusting it skews every aspect computation). cmdline is
+// the fallback for firmware that cannot answer, then a sane floor.
 static int s_display_w = 0, s_display_h = 0;
 static const int DEFAULT_HZ = 60;
 
@@ -69,14 +72,6 @@ static void resolve_display_size(void)
 {
     if (s_display_w > 0 && s_display_h > 0)
         return;
-
-    CKernelOptions *opts = CKernelOptions::Get();
-    if (opts && opts->GetWidth() > 0 && opts->GetHeight() > 0)
-    {
-        s_display_w = (int)opts->GetWidth();
-        s_display_h = (int)opts->GetHeight();
-        return;
-    }
 
     CBcmPropertyTags Tags;
     TPropertyTagDisplayDimensions Dim;
@@ -86,6 +81,14 @@ static void resolve_display_size(void)
     {
         s_display_w = (int)Dim.nWidth;
         s_display_h = (int)Dim.nHeight;
+        return;
+    }
+
+    CKernelOptions *opts = CKernelOptions::Get();
+    if (opts && opts->GetWidth() > 0 && opts->GetHeight() > 0)
+    {
+        s_display_w = (int)opts->GetWidth();
+        s_display_h = (int)opts->GetHeight();
         return;
     }
 
