@@ -8,7 +8,6 @@
 #include <SDL2/SDL.h>
 #include "sdl2circle.h"
 #include <circle/bcmframebuffer.h>
-#include <circle/bcmpropertytags.h>
 #include <circle/koptions.h>
 #include <circle/logger.h>
 #include <cstring>
@@ -58,47 +57,87 @@ static SDL_Window *s_window = nullptr;
 
 // The display size feeds the consumer's monitor geometry (MAME derives
 // its keepaspect monitor aspect from it, BEFORE any window exists), so
-// it must be the DISPLAY's truth, not the request's echo: the firmware
-// dimension probe reports the actual current mode on every board — on
-// Pi 3/4 that equals the cmdline width=/height= the firmware output as
-// the signal, and on the Pi 5 it reports the one native-EDID mode the
-// firmware locked at its own boot (the cmdline there sizes only logical
-// consoles, and trusting it skews every aspect computation). cmdline is
-// the fallback for firmware that cannot answer, then a sane floor.
+// it must be the DISPLAY's truth. The dimensions QUERY is not that
+// truth on every board: the Pi 5 firmware answered the probe with the
+// 720x576 cmdline canvas while scanning out its locked 1920x1080
+// native mode (bench, 2026-07-22), and MAME's aspect math skewed by
+// exactly that ratio. A real allocation's pitch and size did describe
+// the actual surface on every board tried — so the display size is
+// derived from THE framebuffer grant, and the one allocation happens
+// here, before any window exists.
 static int s_display_w = 0, s_display_h = 0;
 static const int DEFAULT_HZ = 60;
+
+// The one CBcmFrameBuffer, allocated at whichever comes first of the
+// display-size resolve and window creation, and never freed: Circle's
+// destructor cannot return the firmware's allocation, so a second
+// allocation would leak GPU memory. The window adopts this grant.
+static CBcmFrameBuffer *s_fb0 = nullptr;
+
+struct AcquireFbArgs { int w, h; };
+
+// The allocation (a firmware mailbox transaction plus Circle device
+// bookkeeping) runs on core 0, as window creation always has; callers
+// marshal here via SDL2Circle_CallOn0.
+static void acquire_fb_on0(void *p)
+{
+    if (s_fb0)
+        return;
+    auto *a = (AcquireFbArgs *)p;
+    CBcmFrameBuffer *fb =
+        new CBcmFrameBuffer(a->w, a->h, 32, 0, 0, 0, TRUE /*double buffered*/);
+    if (!fb->Initialize())
+    {
+        delete fb;
+        return;
+    }
+    s_fb0 = fb;
+}
 
 static void resolve_display_size(void)
 {
     if (s_display_w > 0 && s_display_h > 0)
         return;
 
-    const char *source;
-    CBcmPropertyTags Tags;
-    TPropertyTagDisplayDimensions Dim;
-    if (Tags.GetTag(PROPTAG_GET_DISPLAY_DIMENSIONS, &Dim, sizeof Dim)
-        && Dim.nWidth >= 640 && Dim.nWidth <= 4096
-        && Dim.nHeight >= 480 && Dim.nHeight <= 2160)
+    // Request the boot canvas (cmdline width=/height=); the GRANT decides.
+    int req_w = 640, req_h = 480;
+    CKernelOptions *opts = CKernelOptions::Get();
+    if (opts && opts->GetWidth() > 0 && opts->GetHeight() > 0)
     {
-        s_display_w = (int)Dim.nWidth;
-        s_display_h = (int)Dim.nHeight;
-        source = "firmware probe";
+        req_w = (int)opts->GetWidth();
+        req_h = (int)opts->GetHeight();
+    }
+
+    AcquireFbArgs a{req_w, req_h};
+    SDL2Circle_CallOn0(acquire_fb_on0, &a);
+
+    const char *source;
+    if (s_fb0 && s_fb0->GetPitch() == s_fb0->GetWidth() * 4)
+    {
+        // pitch agrees with the acknowledged width: take the
+        // acknowledged mode as the display. Not size/pitch — size spans
+        // every granted row, which is 2*h when the double-buffer
+        // virtual height was granted, not the display height.
+        s_display_w = (int)s_fb0->GetWidth();
+        s_display_h = (int)s_fb0->GetHeight();
+        source = "grant, request honored";
+    }
+    else if (s_fb0 && s_fb0->GetPitch() != 0)
+    {
+        // pitch disagrees with the acknowledged width: pitch/4 columns
+        // by size/pitch rows is the surface actually granted (observed
+        // on the Pi 5: acknowledged 720x576 virt 720x1152, granted
+        // pitch 7680 size 8294400 = 1920x1080, its native mode).
+        s_display_w = (int)(s_fb0->GetPitch() / 4);
+        s_display_h = (int)(s_fb0->GetSize() / s_fb0->GetPitch());
+        source = "grant, native surface";
     }
     else
     {
-        CKernelOptions *opts = CKernelOptions::Get();
-        if (opts && opts->GetWidth() > 0 && opts->GetHeight() > 0)
-        {
-            s_display_w = (int)opts->GetWidth();
-            s_display_h = (int)opts->GetHeight();
-            source = "cmdline";
-        }
-        else
-        {
-            s_display_w = 640;
-            s_display_h = 480;
-            source = "default floor";
-        }
+        // No grant at all: report the request, the least-wrong answer.
+        s_display_w = req_w;
+        s_display_h = req_h;
+        source = "no grant, cmdline request";
     }
 
     CLogger::Get()->Write("sdl2video", LogNotice,
@@ -331,11 +370,15 @@ static void create_window_on0(void *p)
     auto *a = (CreateWindowArgs *)p;
     a->result = nullptr;
 
-    CBcmFrameBuffer *fb =
-        new CBcmFrameBuffer(a->w, a->h, 32, 0, 0, 0, TRUE /*double buffered*/);
-    if (!fb->Initialize())
+    // Adopt THE framebuffer — usually already allocated by the display-
+    // size resolve (this is the one place a first allocation can still
+    // happen, when a consumer creates a window without ever asking for
+    // the display size).
+    AcquireFbArgs fa{a->w, a->h};
+    acquire_fb_on0(&fa);
+    CBcmFrameBuffer *fb = s_fb0;
+    if (!fb)
     {
-        delete fb;
         SDL_SetError("CBcmFrameBuffer::Initialize failed (%dx%d)", a->w, a->h);
         return;
     }
@@ -452,7 +495,9 @@ extern "C" void SDL_DestroyWindow(SDL_Window *win)
         s_window = nullptr;
         s_fb_base = nullptr;
     }
-    delete win->fb;
+    // win->fb is THE framebuffer (s_fb0), kept for the process lifetime:
+    // deleting it cannot return the firmware's allocation, and the next
+    // window must adopt the same grant rather than allocate a leak.
     delete win;
 }
 
