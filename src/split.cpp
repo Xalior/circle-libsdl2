@@ -569,6 +569,13 @@ public:
             // USB plug-and-play + HID -> event ring.
             SDL2Circle_InputPump();
 
+            // Debug-UART robot hands -> event ring. Like InputPump, this reads
+            // hardware (the serial RX), so it MUST run on core 0: the app core's
+            // pump early-returns past it. Its synthesized key events go through
+            // SDL_PushEvent, which on core 0 publishes to the same ring the app
+            // core drains. (Inert unless --rapi-debug-uart armed it.)
+            SDL2Circle_InjectPump();
+
             // Audio ring -> sound device.
             SDL2Circle_AudioDrain();
 
