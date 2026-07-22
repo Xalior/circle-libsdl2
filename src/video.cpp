@@ -57,14 +57,11 @@ static SDL_Window *s_window = nullptr;
 
 // The display size feeds the consumer's monitor geometry (MAME derives
 // its keepaspect monitor aspect from it, BEFORE any window exists), so
-// it must be the DISPLAY's truth. The dimensions QUERY is not that
-// truth on every board: the Pi 5 firmware answered the probe with the
-// 720x576 cmdline canvas while scanning out its locked 1920x1080
-// native mode (bench, 2026-07-22), and MAME's aspect math skewed by
-// exactly that ratio. A real allocation's pitch and size did describe
-// the actual surface on every board tried — so the display size is
-// derived from THE framebuffer grant, and the one allocation happens
-// here, before any window exists.
+// it must be the DISPLAY's truth. The firmware's geometry answers (the
+// display-dimensions query, an allocation's acknowledged width/height)
+// do not reliably describe the scanout mode; a grant's pitch and size
+// do. So the display size is derived from THE framebuffer grant, and
+// the one allocation happens here, before any window exists.
 static int s_display_w = 0, s_display_h = 0;
 static const int DEFAULT_HZ = 60;
 
@@ -124,10 +121,9 @@ static void resolve_display_size(void)
     }
     else if (s_fb0 && s_fb0->GetPitch() != 0)
     {
-        // pitch disagrees with the acknowledged width: pitch/4 columns
-        // by size/pitch rows is the surface actually granted (observed
-        // on the Pi 5: acknowledged 720x576 virt 720x1152, granted
-        // pitch 7680 size 8294400 = 1920x1080, its native mode).
+        // pitch disagrees with the acknowledged width: the acknowledged
+        // mode was not granted. pitch/4 columns by size/pitch rows is
+        // the surface actually granted (on the Pi 5, the native mode).
         s_display_w = (int)(s_fb0->GetPitch() / 4);
         s_display_h = (int)(s_fb0->GetSize() / s_fb0->GetPitch());
         source = "grant, native surface";
