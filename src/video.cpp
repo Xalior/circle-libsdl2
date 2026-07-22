@@ -100,9 +100,12 @@ static u8 *s_fb_base = nullptr;
 static unsigned s_fb_pitch = 0;
 static int s_fb_w = 0, s_fb_h = 0;
 // 2 = page-flip between stacked halves; 1 = the firmware's grant cannot hold
-// two halves, draw and scan half 0 only (single-buffered, tears instead of
-// corrupting memory past the buffer).
+// two halves: present commands render into a SHADOW back buffer instead,
+// blitted into the granted surface on flip -- true double buffering (no
+// partial frame is ever scanned) without touching memory past the grant.
 static unsigned s_fb_halves = 2;
+static u8 *s_shadow = nullptr;         // back buffer when s_fb_halves == 1
+static unsigned s_shadow_pitch = 0;
 
 // Execute one present command into a framebuffer half. Runs on the caller
 // single-core, and on the presentation worker under the core split.
@@ -110,12 +113,23 @@ void SDL2Circle_VideoExecCmd(const SDL2CirclePresentCmd *cmd, unsigned half)
 {
     if (!s_fb_base)
         return;
-    u8 *dst0 = s_fb_base + (size_t)half * s_fb_h * s_fb_pitch;
+    u8 *dst0;
+    unsigned dpitch;
+    if (s_shadow)
+    {
+        dst0 = s_shadow;               // both halves render into the shadow
+        dpitch = s_shadow_pitch;
+    }
+    else
+    {
+        dst0 = s_fb_base + (size_t)half * s_fb_h * s_fb_pitch;
+        dpitch = s_fb_pitch;
+    }
 
     if (cmd->op == SDL2CirclePresentCmd::FILL)
     {
-        u8 *dst = dst0 + (size_t)cmd->dy * s_fb_pitch + (size_t)cmd->dx * 4;
-        for (int row = 0; row < cmd->h; row++, dst += s_fb_pitch)
+        u8 *dst = dst0 + (size_t)cmd->dy * dpitch + (size_t)cmd->dx * 4;
+        for (int row = 0; row < cmd->h; row++, dst += dpitch)
         {
             u32 *d = (u32 *)dst;
             for (int i = 0; i < cmd->w; i++)
@@ -126,7 +140,7 @@ void SDL2Circle_VideoExecCmd(const SDL2CirclePresentCmd *cmd, unsigned half)
 
     // COPY, with straight-alpha blending when the texture asked for it.
     const u8 *src = cmd->src;
-    u8 *dst = dst0 + (size_t)cmd->dy * s_fb_pitch + (size_t)cmd->dx * 4;
+    u8 *dst = dst0 + (size_t)cmd->dy * dpitch + (size_t)cmd->dx * 4;
 
     if (!cmd->blend && cmd->alphamod == 255)
     {
@@ -134,7 +148,7 @@ void SDL2Circle_VideoExecCmd(const SDL2CirclePresentCmd *cmd, unsigned half)
         {
             memcpy(dst, src, (size_t)cmd->w * 4);
             src += cmd->srcpitch;
-            dst += s_fb_pitch;
+            dst += dpitch;
         }
         return;
     }
@@ -162,7 +176,7 @@ void SDL2Circle_VideoExecCmd(const SDL2CirclePresentCmd *cmd, unsigned half)
             }
         }
         src += cmd->srcpitch;
-        dst += s_fb_pitch;
+        dst += dpitch;
     }
 }
 
@@ -172,6 +186,18 @@ void SDL2Circle_VideoFlip(unsigned half)
 {
     if (!s_window)
         return;
+    if (s_shadow)
+    {
+        // Shadow-buffered present: the finished back buffer becomes visible
+        // by one blit into the granted surface. The vsync wait (honored
+        // where the firmware implements it) keeps the blit off the raster.
+        s_window->fb->WaitForVerticalSync();
+        const u8 *src = s_shadow;
+        u8 *dst = s_fb_base;
+        for (int y = 0; y < s_fb_h; y++, src += s_shadow_pitch, dst += s_fb_pitch)
+            memcpy(dst, src, (size_t)s_fb_w * 4);
+        return;
+    }
     boolean ok = s_window->fb->SetVirtualOffset(0, half * (unsigned)s_fb_h);
     // One-shot diagnostic: a firmware that refuses the pan (it reports the
     // granted offset back) silently breaks the page flip — the visible
@@ -322,9 +348,13 @@ static void create_window_on0(void *p)
     unsigned nRowsGranted = s_fb_pitch != 0 ? fb->GetSize() / s_fb_pitch : 0;
     s_fb_halves = nRowsGranted >= 2u * (unsigned)win->h ? 2 : 1;
     if (s_fb_halves == 1)
+    {
+        s_shadow_pitch = (unsigned)win->w * 4;
+        s_shadow = (u8 *)calloc((size_t)s_shadow_pitch, win->h);
         CLogger::Get()->Write("sdl2video", LogWarning,
-                              "granted %u rows < %u: single-buffered, no page flip",
+                              "granted %u rows < %u: shadow-buffered present",
                               nRowsGranted, 2u * (unsigned)win->h);
+    }
 
     s_window = win;
 
@@ -706,10 +736,12 @@ extern "C" void SDL_RenderPresent(SDL_Renderer *ren)
     }
 
     ren->ncmds = 0;   // commands were executed as they were emitted
-    CBcmFrameBuffer *fb = ren->window->fb;
-    fb->SetVirtualOffset(0, ren->back * ren->window->h);
+    // One presentation path for page-flip and shadow-buffered surfaces
+    // alike: VideoFlip pans, or blits the shadow, as the grant dictates.
+    SDL2Circle_VideoFlip(ren->back);
     if (ren->vsync)
-        fb->WaitForVerticalSync();   // only when the app asked for vsync:
+        ren->window->fb->WaitForVerticalSync();
+                                     // only when the app asked for vsync:
                                      // throttled apps pace themselves, and
                                      // blocking here would double-throttle
     if (s_fb_halves == 2)
