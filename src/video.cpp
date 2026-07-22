@@ -335,10 +335,10 @@ static void create_window_on0(void *p)
     // buffer lives inside a native-mode surface (observed on the Pi 5,
     // whose firmware ignores mode requests).
     CLogger::Get()->Write("sdl2video", LogNotice,
-                          "framebuffer %ux%u virt %ux%u pitch %u size %u",
+                          "framebuffer %ux%u virt %ux%u depth %u pitch %u size %u",
                           fb->GetWidth(), fb->GetHeight(),
                           fb->GetVirtWidth(), fb->GetVirtHeight(),
-                          fb->GetPitch(), fb->GetSize());
+                          fb->GetDepth(), fb->GetPitch(), fb->GetSize());
 
     // The window is the whole display: it is shown and focused from birth.
     // Consumers (MAME's OSD among them) gate keyboard input on having seen
