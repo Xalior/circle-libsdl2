@@ -35,6 +35,15 @@ ifneq ($(GETOPT_BIN),)
 export PATH := $(GETOPT_BIN):$(PATH)
 endif
 
+# A modern bash (5+) for `bash ./configure` (macOS ships 3.2, which lacks
+# mapfile; the invocation is PATH-resolved for exactly this reason). Same
+# conditional shape as gnu-getopt: prepend brew's bin only where a brew bash
+# exists; no-op on Linux/CI.
+BASH5_BIN := $(firstword $(wildcard /opt/homebrew/bin/bash /usr/local/bin/bash))
+ifneq ($(BASH5_BIN),)
+export PATH := $(patsubst %/,%,$(dir $(BASH5_BIN))):$(PATH)
+endif
+
 CIRCLE_STDLIB     = circle-stdlib-$(BOARD)
 CIRCLESTDLIBHOME ?= $(CURDIR)/$(CIRCLE_STDLIB)
 
