@@ -1113,9 +1113,14 @@ extern "C" int SDL_RenderDrawRect(SDL_Renderer *ren, const SDL_Rect *rect)
     return 0;
 }
 
+// Presented-frame counter, read by the pump's heartbeat so the frame rate
+// is on the serial log without the app's help.
+unsigned g_SDL2CirclePresents = 0;
+
 extern "C" void SDL_RenderPresent(SDL_Renderer *ren)
 {
     SDL2CirclePerfScope perf(SDL2CIRCLE_PERF_RENDER);
+    g_SDL2CirclePresents++;
 
     // Core split: hand the recorded frame to the presentation worker (blit
     // + flip happen off-core; the post waits only for the PREVIOUS frame's

@@ -90,6 +90,15 @@ void SDL2Circle_PerfTick(void)
     if (!total)
         return;
 
+    // Presented frames since the last report, for the frame rate: the
+    // counter lives beside SDL_RenderPresent and costs one increment.
+    extern unsigned g_SDL2CirclePresents;
+    static unsigned s_lastPresents;
+    unsigned frames = g_SDL2CirclePresents - s_lastPresents;
+    s_lastPresents = g_SDL2CirclePresents;
+    u64 elapsedTicks = now - s_lastReportTicks;
+    unsigned fps10 = (unsigned)((u64)frames * 10 * cntfrq() / elapsedTicks);
+
     u64 render = s_acc[SDL2CIRCLE_PERF_RENDER];
     u64 audio = s_acc[SDL2CIRCLE_PERF_AUDIO];
     u64 input = s_acc[SDL2CIRCLE_PERF_INPUT];
@@ -100,7 +109,8 @@ void SDL2Circle_PerfTick(void)
     // Per-mille for one decimal of percent without floats.
     auto pm = [total](u64 v) { return (unsigned)(v * 1000 / total); };
     CLogger::Get()->Write("sdl2perf", LogNotice,
-                          "cycles %lluM: app %u.%u%% render %u.%u%% audio %u.%u%% input %u.%u%% yield %u.%u%%",
+                          "%u.%u fps, cycles %lluM: app %u.%u%% render %u.%u%% audio %u.%u%% input %u.%u%% yield %u.%u%%",
+                          fps10 / 10, fps10 % 10,
                           total / 1000000,
                           pm(app) / 10, pm(app) % 10,
                           pm(render) / 10, pm(render) % 10,

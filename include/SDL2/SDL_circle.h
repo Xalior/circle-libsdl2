@@ -43,6 +43,14 @@ void SDL2Circle_SplitPresentCore(void);
 // Non-zero once SDL2Circle_SplitInit has run.
 int SDL2Circle_SplitActive(void);
 
+// Performance receipts on the serial log: every nSeconds, one line with the
+// presented frame rate and a PMU cycle split across the shim's instrumented
+// sections (render, audio, input, yield) with the remainder attributed to
+// the application's own compute. Costs one branch per section while off.
+// Zero disables. Host kernels typically arm it from a boot option
+// (cmdline.txt `perfstats=10`) so one binary serves bench and product.
+void SDL2Circle_SetPerfInterval(unsigned nSeconds);
+
 // ---- I/O service (any core) -------------------------------------------------
 
 // Open flags.
