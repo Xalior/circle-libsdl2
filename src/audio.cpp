@@ -166,6 +166,11 @@ extern "C" void SDL_PauseAudioDevice(SDL_AudioDeviceID, int pause_on)
 extern "C" void SDL_LockAudioDevice(SDL_AudioDeviceID)   { s_lock++; }
 extern "C" void SDL_UnlockAudioDevice(SDL_AudioDeviceID) { if (s_lock > 0) s_lock--; }
 
+// SDL2's older, device-less spelling of the same lock. There is one audio
+// device here, so both spellings guard the same callback.
+extern "C" void SDL_LockAudio(void)   { SDL_LockAudioDevice(1); }
+extern "C" void SDL_UnlockAudio(void) { SDL_UnlockAudioDevice(1); }
+
 extern "C" void SDL_CloseAudioDevice(SDL_AudioDeviceID)
 {
     if (!s_device)

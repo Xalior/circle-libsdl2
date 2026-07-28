@@ -797,6 +797,25 @@ extern "C" int SDL_RenderDrawLine(SDL_Renderer *ren, int x1, int y1,
     return 0;
 }
 
+extern "C" int SDL_RenderDrawRect(SDL_Renderer *ren, const SDL_Rect *rect)
+{
+    // The outline of a rectangle is its four edges. Without a rectangle SDL
+    // outlines the whole target, which here is the whole window.
+    SDL_Rect r = rect ? *rect
+                      : SDL_Rect{ 0, 0, ren->window->w, ren->window->h };
+    if (r.w <= 0 || r.h <= 0)
+        return 0;
+
+    int right  = r.x + r.w - 1;
+    int bottom = r.y + r.h - 1;
+    if (SDL_RenderDrawLine(ren, r.x, r.y, right, r.y) < 0
+        || SDL_RenderDrawLine(ren, r.x, bottom, right, bottom) < 0
+        || SDL_RenderDrawLine(ren, r.x, r.y, r.x, bottom) < 0
+        || SDL_RenderDrawLine(ren, right, r.y, right, bottom) < 0)
+        return -1;
+    return 0;
+}
+
 extern "C" void SDL_RenderPresent(SDL_Renderer *ren)
 {
     SDL2CirclePerfScope perf(SDL2CIRCLE_PERF_RENDER);
