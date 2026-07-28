@@ -27,7 +27,7 @@ never touches a device.
 
 | SDL2 subsystem | Circle backing |
 |---|---|
-| Video: fullscreen window, software `SDL_Renderer`, streaming ARGB8888 textures, alpha blending | `CBcmFrameBuffer` — double-buffered, vsync page flip. Off core 0: draw calls become a command list the presentation core executes |
+| Video: fullscreen window, software `SDL_Renderer`, streaming ARGB8888 textures, alpha blending, scaled `SDL_RenderCopy` | `CBcmFrameBuffer` — double-buffered, vsync page flip. Off core 0: draw calls become a command list the presentation core executes |
 | Display/renderer queries (modes, bounds, formats, masks) | single HDMI panel |
 | Keyboard → SDL events, `SDL_GetKeyboardState`, modifiers | Circle USB HID (raw reports; SDL scancodes *are* USB usage codes). Off core 0: USB stays on core 0, events cross by ring |
 | Audio: `SDL_OpenAudioDevice` callback API | `CHDMISoundBaseDevice`, ~100 ms hardware queue. Off core 0: your callback fills a ring, core 0's servo feeds the device |
@@ -45,6 +45,57 @@ depth has been exercised on real hardware.
 
 Not yet: mouse, game controllers, haptics, OpenGL (the Pi 4 has no
 bare-metal GPU driver — software rendering is the design, not a stopgap).
+
+## Presentation geometry
+
+Three resolutions are always in play on a bare-metal Pi, and the library
+names all three rather than blurring them together.
+
+**The scanout** is what the display hardware really puts on the wire. The
+library derives it from the framebuffer the firmware actually granted — a
+grant's pitch and size, never the width and height the firmware echoes back,
+which are not reliable. On a Pi 3 or Pi 4 the firmware honors the boot
+request, so the scanout is whatever `config.txt` asked for. A Pi 5 ignores
+mode requests while still acknowledging them, and scans out the mode its
+display reports; the grant is the only place that shows up.
+
+**The canvas** is the resolution the operator asked for, from `cmdline.txt`
+`width=` and `height=`. It is the world the application is given, and its
+shape against the scanout's decides the letterboxing. **Leave it unset and
+the canvas becomes the scanout** — the canvas step disappears, nothing needs
+configuring, and this is the default on every board.
+
+**The application's own resolution** is whatever it renders at. It calls
+`SDL_CreateWindow` and `SDL_RenderCopy` as usual, and the rectangles it
+passes are canvas coordinates, because the canvas is the window. An
+application never learns what the glass is doing.
+
+A frame therefore travels application → canvas → scanout, and **the library
+composes both steps into a single resampling pass** at present time — on the
+presentation core when the core split is active, inline otherwise. The canvas
+contributes arithmetic, never an intermediate copy.
+
+- **`SDL_RenderCopy` honors its rectangles.** A destination the same size as
+  the source, on a canvas that is the scanout, is the same unscaled blit as
+  ever — the same bytes, on the same path. Anything else resamples.
+- **Nearest neighbour, and only nearest neighbour.** Per-axis index tables
+  are built once per geometry and reused; an exact integer ratio skips the
+  tables and replicates. `SDL_HINT_RENDER_SCALE_QUALITY` is stored like any
+  other hint and **has no effect** — `"linear"` is a later phase, not a
+  silent fallback.
+- **Fit is the default placement.** The canvas is scaled up as far as it
+  fits, centered, and the remainder of the scanout stays black. Put
+  `canvas=stretch` in `cmdline.txt` to fill the scanout instead and let the
+  aspect ratio go.
+
+The library logs the whole chain once at startup and once per distinct
+geometry, so a serial console tells you what happened without guessing:
+
+```
+sdl2video: scanout 1920x1080 (grant, native surface), canvas 720x576 (cmdline width=/height=)
+sdl2video: canvas 720x576 on scanout 1920x1080: fit -> 1350x1080+285+0
+sdl2video: copy src 320x224 -> canvas 720x504+0+36 -> scanout 1350x945+285+67 (nearest)
+```
 
 ## Running off core 0
 

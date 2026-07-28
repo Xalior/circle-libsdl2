@@ -69,10 +69,16 @@ enum
 struct SDL2CirclePresentCmd
 {
     enum { FILL, COPY } op;
-    int dx, dy, w, h;             // destination rectangle
+    int dx, dy, w, h;             // destination rectangle, SCANOUT coordinates
     u32 color;                    // FILL
     const u8 *src;                // COPY: pixel buffer (frozen for the frame)
     int srcpitch;
+    int sw, sh;                   // COPY: source extent. Equal to w,h means an
+                                  // unscaled blit; otherwise the executor
+                                  // resamples sw x sh onto w x h, which already
+                                  // composes both geometry hops (application
+                                  // frame into the canvas, canvas onto the
+                                  // scanout) into ONE pass.
     u8 blend;                     // COPY: straight-alpha blend requested
     u8 alphamod;
 };

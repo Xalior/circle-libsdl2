@@ -55,14 +55,39 @@ struct SDL_Texture
 // size once it exists, and with the panel default before that.
 static SDL_Window *s_window = nullptr;
 
-// The display size feeds the consumer's monitor geometry (MAME derives
-// its keepaspect monitor aspect from it, BEFORE any window exists), so
-// it must be the DISPLAY's truth. The firmware's geometry answers (the
-// display-dimensions query, an allocation's acknowledged width/height)
-// do not reliably describe the scanout mode; a grant's pitch and size
-// do. So the display size is derived from THE framebuffer grant, and
-// the one allocation happens here, before any window exists.
-static int s_display_w = 0, s_display_h = 0;
+// Three resolutions are in play, and every piece of geometry below belongs
+// to exactly one of them.
+//
+//   SCANOUT   what the display hardware really scans out. The firmware's
+//             geometry answers (the display-dimensions query, an
+//             allocation's acknowledged width/height) do not reliably
+//             describe it; a grant's pitch and size do. So it is derived
+//             from THE framebuffer grant, and the one allocation happens
+//             during the display-size resolve, before any window exists.
+//             Boards whose firmware honors the boot request (Pi 3, Pi 4)
+//             land here on the requested mode; a board whose firmware
+//             ignores mode requests (Pi 5) lands on the panel's own mode.
+//
+//   CANVAS    the resolution the operator asked for, from cmdline.txt
+//             width=/height=. It is the world the application is given and
+//             the shape that decides the letterboxing. Unset means "no
+//             opinion": the canvas becomes the scanout and the canvas hop
+//             disappears, which is the autodetected default.
+//
+//   APPLICATION  whatever SDL_CreateWindow was asked for, and whatever
+//             rectangles SDL_RenderCopy is handed. Those rectangles are
+//             CANVAS coordinates, because the canvas is the window.
+//
+// The frame travels application -> canvas -> scanout, and the two hops are
+// composed into a single resampling pass at present time.
+static int s_scanout_w = 0, s_scanout_h = 0;
+static int s_canvas_w = 0, s_canvas_h = 0;
+
+// The canvas rectangle on the scanout, and whether the two coincide (the
+// hop is then arithmetically absent, not merely cheap).
+static int s_place_x = 0, s_place_y = 0, s_place_w = 0, s_place_h = 0;
+static bool s_place_identity = true;
+
 static const int DEFAULT_HZ = 60;
 
 // The one CBcmFrameBuffer, allocated at whichever comes first of the
@@ -91,13 +116,62 @@ static void acquire_fb_on0(void *p)
     s_fb0 = fb;
 }
 
+// Place the canvas on the scanout. Fit — aspect preserved, centered, the
+// remainder left black — is the default; cmdline.txt `canvas=stretch` asks
+// for the whole scanout instead. Called once, when both resolutions exist.
+static void resolve_placement(void)
+{
+    const char *mode;
+    if (s_canvas_w == s_scanout_w && s_canvas_h == s_scanout_h)
+    {
+        s_place_identity = true;
+        mode = "identity";
+    }
+    else
+    {
+        s_place_identity = false;
+        const char *want = nullptr;
+        CKernelOptions *opts = CKernelOptions::Get();
+        if (opts)
+            want = opts->GetAppOptionString("canvas", nullptr);
+        mode = (want && strcmp(want, "stretch") == 0) ? "stretch" : "fit";
+    }
+
+    if (s_place_identity || strcmp(mode, "stretch") == 0)
+    {
+        s_place_x = 0;
+        s_place_y = 0;
+        s_place_w = s_scanout_w;
+        s_place_h = s_scanout_h;
+    }
+    else
+    {
+        // 16.16 fixed point: the smaller axis ratio is the one that fits,
+        // and it must survive the divide before it multiplies back out.
+        u32 rx = ((u32)s_scanout_w << 16) / (u32)s_canvas_w;
+        u32 ry = ((u32)s_scanout_h << 16) / (u32)s_canvas_h;
+        u32 r = rx < ry ? rx : ry;
+        s_place_w = (int)(((u64)s_canvas_w * r) >> 16);
+        s_place_h = (int)(((u64)s_canvas_h * r) >> 16);
+        s_place_x = (s_scanout_w - s_place_w) / 2;
+        s_place_y = (s_scanout_h - s_place_h) / 2;
+    }
+
+    CLogger::Get()->Write("sdl2video", LogNotice,
+                          "canvas %dx%d on scanout %dx%d: %s -> %dx%d+%d+%d",
+                          s_canvas_w, s_canvas_h, s_scanout_w, s_scanout_h,
+                          mode, s_place_w, s_place_h, s_place_x, s_place_y);
+}
+
 static void resolve_display_size(void)
 {
-    if (s_display_w > 0 && s_display_h > 0)
+    if (s_canvas_w > 0 && s_canvas_h > 0)
         return;
 
-    // Request the boot canvas (cmdline width=/height=); the GRANT decides.
-    int req_w = 640, req_h = 480;
+    // Request the boot canvas (cmdline width=/height=); the GRANT decides
+    // the scanout. An unset canvas still needs a request to allocate
+    // against, and the grant overrules it either way.
+    int req_w = 0, req_h = 0;
     CKernelOptions *opts = CKernelOptions::Get();
     if (opts && opts->GetWidth() > 0 && opts->GetHeight() > 0)
     {
@@ -105,18 +179,18 @@ static void resolve_display_size(void)
         req_h = (int)opts->GetHeight();
     }
 
-    AcquireFbArgs a{req_w, req_h};
+    AcquireFbArgs a{req_w > 0 ? req_w : 640, req_h > 0 ? req_h : 480};
     SDL2Circle_CallOn0(acquire_fb_on0, &a);
 
     const char *source;
     if (s_fb0 && s_fb0->GetPitch() == s_fb0->GetWidth() * 4)
     {
         // pitch agrees with the acknowledged width: take the
-        // acknowledged mode as the display. Not size/pitch — size spans
+        // acknowledged mode as the scanout. Not size/pitch — size spans
         // every granted row, which is 2*h when the double-buffer
         // virtual height was granted, not the display height.
-        s_display_w = (int)s_fb0->GetWidth();
-        s_display_h = (int)s_fb0->GetHeight();
+        s_scanout_w = (int)s_fb0->GetWidth();
+        s_scanout_h = (int)s_fb0->GetHeight();
         source = "grant, request honored";
     }
     else if (s_fb0 && s_fb0->GetPitch() != 0)
@@ -124,21 +198,36 @@ static void resolve_display_size(void)
         // pitch disagrees with the acknowledged width: the acknowledged
         // mode was not granted. pitch/4 columns by size/pitch rows is
         // the surface actually granted (on the Pi 5, the native mode).
-        s_display_w = (int)(s_fb0->GetPitch() / 4);
-        s_display_h = (int)(s_fb0->GetSize() / s_fb0->GetPitch());
+        s_scanout_w = (int)(s_fb0->GetPitch() / 4);
+        s_scanout_h = (int)(s_fb0->GetSize() / s_fb0->GetPitch());
         source = "grant, native surface";
     }
     else
     {
         // No grant at all: report the request, the least-wrong answer.
-        s_display_w = req_w;
-        s_display_h = req_h;
+        s_scanout_w = a.w;
+        s_scanout_h = a.h;
         source = "no grant, cmdline request";
     }
 
+    // No canvas asked for means no opinion: the canvas IS the scanout and
+    // the canvas hop costs nothing, with nothing to configure.
+    const char *csource = "cmdline width=/height=";
+    if (req_w <= 0 || req_h <= 0)
+    {
+        req_w = s_scanout_w;
+        req_h = s_scanout_h;
+        csource = "unset, follows the scanout";
+    }
+    s_canvas_w = req_w;
+    s_canvas_h = req_h;
+
     CLogger::Get()->Write("sdl2video", LogNotice,
-                          "display size %dx%d (%s)",
-                          s_display_w, s_display_h, source);
+                          "scanout %dx%d (%s), canvas %dx%d (%s)",
+                          s_scanout_w, s_scanout_h, source,
+                          s_canvas_w, s_canvas_h, csource);
+
+    resolve_placement();
 }
 
 // Presentation geometry, published when the window exists: the worker core
@@ -154,6 +243,112 @@ static int s_fb_w = 0, s_fb_h = 0;
 static unsigned s_fb_halves = 2;
 static u8 *s_shadow = nullptr;         // back buffer when s_fb_halves == 1
 static unsigned s_shadow_pitch = 0;
+
+// ---- the scaler -------------------------------------------------------------
+//
+// Nearest-neighbour resampling with precomputed per-axis index tables. The
+// tables depend only on the source and destination extents, so a steady
+// stream of identical frames builds them once and reuses them; a consumer
+// that changes geometry pays one rebuild.
+//
+// Only the presentation owner ever runs a command — the worker core under
+// the core split, the calling core without it — so a single set of tables
+// is enough and no lock is needed. There is never a second scaler in
+// flight.
+static const int SCALE_MAP_MAX = 8192;   // covers any scanout up to 8K
+static u16 s_xmap[SCALE_MAP_MAX];
+static u16 s_ymap[SCALE_MAP_MAX];
+static int s_map_sw = 0, s_map_sh = 0, s_map_dw = 0, s_map_dh = 0;
+
+static void build_scale_maps(int sw, int sh, int dw, int dh)
+{
+    if (s_map_sw == sw && s_map_sh == sh && s_map_dw == dw && s_map_dh == dh)
+        return;
+    for (int i = 0; i < dw; i++)
+        s_xmap[i] = (u16)(((s64)i * sw) / dw);
+    for (int j = 0; j < dh; j++)
+        s_ymap[j] = (u16)(((s64)j * sh) / dh);
+    s_map_sw = sw; s_map_sh = sh; s_map_dw = dw; s_map_dh = dh;
+}
+
+// Resample sw x sh source pixels onto dw x dh destination pixels.
+static void scale_copy(const SDL2CirclePresentCmd *cmd, u8 *dst, unsigned dpitch,
+                       int sw, int sh)
+{
+    const int dw = cmd->w, dh = cmd->h;
+    if (dw > SCALE_MAP_MAX || dh > SCALE_MAP_MAX)
+        return;                          // beyond any real scanout
+    build_scale_maps(sw, sh, dw, dh);
+
+    // An integer horizontal ratio replicates each source pixel a fixed
+    // number of times, which needs no table lookup at all — the common
+    // case for an emulator raster lifted onto a panel.
+    const int xrep = (dw % sw == 0) ? dw / sw : 0;
+
+    if (!cmd->blend && cmd->alphamod == 255)
+    {
+        int prev_srow = -1;
+        const u8 *prev_dst = nullptr;
+        u8 *drow = dst;
+        for (int j = 0; j < dh; j++, drow += dpitch)
+        {
+            int srow = s_ymap[j];
+            if (srow == prev_srow)
+            {
+                // Vertical magnification: this destination row is the one
+                // just built. Copying it back beats resampling it again.
+                memcpy(drow, prev_dst, (size_t)dw * 4);
+                continue;
+            }
+            const u32 *s = (const u32 *)(cmd->src + (size_t)srow * cmd->srcpitch);
+            u32 *d = (u32 *)drow;
+            if (xrep)
+            {
+                for (int i = 0, x = 0; i < sw; i++)
+                {
+                    u32 p = s[i];
+                    for (int r = 0; r < xrep; r++)
+                        d[x++] = p;
+                }
+            }
+            else
+            {
+                for (int i = 0; i < dw; i++)
+                    d[i] = s[s_xmap[i]];
+            }
+            prev_srow = srow;
+            prev_dst = drow;
+        }
+        return;
+    }
+
+    // Blended: the destination is read as well as written, so no row can be
+    // reused — every destination pixel is composited in place.
+    u8 *drow = dst;
+    for (int j = 0; j < dh; j++, drow += dpitch)
+    {
+        const u32 *s = (const u32 *)(cmd->src + (size_t)s_ymap[j] * cmd->srcpitch);
+        u32 *d = (u32 *)drow;
+        for (int i = 0; i < dw; i++)
+        {
+            u32 sp = s[s_xmap[i]];
+            unsigned a = ((sp >> 24) * cmd->alphamod) / 255;
+            if (a == 255)
+            {
+                d[i] = sp;
+            }
+            else if (a != 0)
+            {
+                u32 dp = d[i];
+                u32 srb = sp & 0x00FF00FF, sg = sp & 0x0000FF00;
+                u32 drb = dp & 0x00FF00FF, dg = dp & 0x0000FF00;
+                u32 rb = ((srb * a + drb * (255 - a)) >> 8) & 0x00FF00FF;
+                u32 g = ((sg * a + dg * (255 - a)) >> 8) & 0x0000FF00;
+                d[i] = 0xFF000000u | rb | g;
+            }
+        }
+    }
+}
 
 // Execute one present command into a framebuffer half. Runs on the caller
 // single-core, and on the presentation worker under the core split.
@@ -189,6 +384,17 @@ void SDL2Circle_VideoExecCmd(const SDL2CirclePresentCmd *cmd, unsigned half)
     // COPY, with straight-alpha blending when the texture asked for it.
     const u8 *src = cmd->src;
     u8 *dst = dst0 + (size_t)cmd->dy * dpitch + (size_t)cmd->dx * 4;
+
+    // The destination extent already carries BOTH geometry hops, so one
+    // pass here covers application frame -> canvas -> scanout. Equal
+    // extents are the unscaled blit below, unchanged to the byte.
+    const int sw = cmd->sw > 0 ? cmd->sw : cmd->w;
+    const int sh = cmd->sh > 0 ? cmd->sh : cmd->h;
+    if (sw != cmd->w || sh != cmd->h)
+    {
+        scale_copy(cmd, dst, dpitch, sw, sh);
+        return;
+    }
 
     if (!cmd->blend && cmd->alphamod == 255)
     {
@@ -260,24 +466,84 @@ void SDL2Circle_VideoFlip(unsigned half)
     }
 }
 
-// Record a command (core split) or execute it into the back half now.
+// Canvas coordinates -> scanout coordinates. Both edges are mapped
+// independently rather than mapping the origin and scaling the extent, so
+// rectangles that abut in the canvas still abut on the scanout instead of
+// leaving a seam where the two divisions round apart. A COPY keeps its
+// source extent untouched: the executor resamples straight from the source
+// onto this composed destination, so the canvas contributes arithmetic and
+// never an intermediate copy.
+//
+// Returns false when nothing survives the mapping.
+static bool place_on_scanout(SDL2CirclePresentCmd *cmd)
+{
+    if (cmd->w <= 0 || cmd->h <= 0)
+        return false;
+    if (s_place_identity)
+        return true;
+
+    int x0 = s_place_x + (int)(((s64)cmd->dx * s_place_w) / s_canvas_w);
+    int x1 = s_place_x + (int)(((s64)(cmd->dx + cmd->w) * s_place_w) / s_canvas_w);
+    int y0 = s_place_y + (int)(((s64)cmd->dy * s_place_h) / s_canvas_h);
+    int y1 = s_place_y + (int)(((s64)(cmd->dy + cmd->h) * s_place_h) / s_canvas_h);
+    cmd->dx = x0;
+    cmd->dy = y0;
+    cmd->w = x1 - x0;
+    cmd->h = y1 - y0;
+    return cmd->w > 0 && cmd->h > 0;
+}
+
+// The one line that makes the whole geometry chain readable on a serial
+// console: what the application handed over, and what it becomes on the
+// glass. Once per mapping, because a steady stream repeats it every frame.
+static void log_copy_geometry(const SDL2CirclePresentCmd &app,
+                              const SDL2CirclePresentCmd &out, int sw, int sh)
+{
+    static int last_sw = 0, last_sh = 0, last_dw = 0, last_dh = 0;
+    if (sw == last_sw && sh == last_sh && out.w == last_dw && out.h == last_dh)
+        return;
+    last_sw = sw; last_sh = sh; last_dw = out.w; last_dh = out.h;
+
+    const char *how;
+    if (sw == out.w && sh == out.h)
+        how = "1:1 blit";
+    else if (out.w % sw == 0 && out.h % sh == 0)
+        how = "nearest, integer ratio";
+    else
+        how = "nearest";
+    CLogger::Get()->Write("sdl2video", LogNotice,
+                          "copy src %dx%d -> canvas %dx%d+%d+%d -> scanout %dx%d+%d+%d (%s)",
+                          sw, sh,
+                          app.w, app.h, app.dx, app.dy,
+                          out.w, out.h, out.dx, out.dy, how);
+}
+
+// Record a command (core split) or execute it into the back half now. The
+// canvas hop is resolved here, once, so the recorded command and the
+// directly executed one carry identical geometry.
 static void emit_cmd(SDL_Renderer *ren, const SDL2CirclePresentCmd &cmd)
 {
+    SDL2CirclePresentCmd out = cmd;
+    if (!place_on_scanout(&out))
+        return;
+    if (out.op == SDL2CirclePresentCmd::COPY)
+        log_copy_geometry(cmd, out, cmd.sw, cmd.sh);
+
     if (SDL2Circle_SplitActive() && SDL2Circle_ThisCore() != 0)
     {
         if (ren->ncmds < SDL2CIRCLE_PRESENT_MAX_CMDS)
-            ren->cmds[ren->ncmds++] = cmd;
+            ren->cmds[ren->ncmds++] = out;
         return;
     }
-    SDL2Circle_VideoExecCmd(&cmd, ren->back);
+    SDL2Circle_VideoExecCmd(&out, ren->back);
 }
 
 static void fill_mode(SDL_DisplayMode *mode)
 {
     resolve_display_size();
     mode->format = SDL_PIXELFORMAT_ARGB8888;
-    mode->w = s_window ? s_window->w : s_display_w;
-    mode->h = s_window ? s_window->h : s_display_h;
+    mode->w = s_window ? s_window->w : s_canvas_w;
+    mode->h = s_window ? s_window->h : s_canvas_h;
     mode->refresh_rate = DEFAULT_HZ;
     mode->driverdata = nullptr;
 }
@@ -293,8 +559,8 @@ extern "C" int SDL_GetDisplayBounds(int, SDL_Rect *rect)
     resolve_display_size();
     rect->x = 0;
     rect->y = 0;
-    rect->w = s_window ? s_window->w : s_display_w;
-    rect->h = s_window ? s_window->h : s_display_h;
+    rect->w = s_window ? s_window->w : s_canvas_w;
+    rect->h = s_window ? s_window->h : s_canvas_h;
     return 0;
 }
 
@@ -367,11 +633,11 @@ static void create_window_on0(void *p)
     a->result = nullptr;
 
     // Adopt THE framebuffer — usually already allocated by the display-
-    // size resolve (this is the one place a first allocation can still
-    // happen, when a consumer creates a window without ever asking for
-    // the display size).
-    AcquireFbArgs fa{a->w, a->h};
-    acquire_fb_on0(&fa);
+    // size resolve, which also settles the scanout, the canvas and the
+    // placement between them. A consumer that creates a window without ever
+    // asking for the display size arrives here first; the resolve is
+    // idempotent and this is already core 0, so run it either way.
+    resolve_display_size();
     CBcmFrameBuffer *fb = s_fb0;
     if (!fb)
     {
@@ -379,42 +645,26 @@ static void create_window_on0(void *p)
         return;
     }
 
+    // The window is the CANVAS — the world the operator declared, which on
+    // a board whose firmware granted the boot request is the scanout itself.
+    // What the application asked SDL_CreateWindow for does not enter into
+    // it: there is one screen and the application gets all of it. The shim's
+    // present carries the canvas to the scanout, so an application never has
+    // to learn what the glass is really doing.
     SDL_Window *win = new SDL_Window;
     win->fb = fb;
-    win->w = (int)fb->GetWidth();
-    win->h = (int)fb->GetHeight();
+    win->w = s_canvas_w;
+    win->h = s_canvas_h;
     win->flags = a->flags | SDL_WINDOW_FULLSCREEN | SDL_WINDOW_SHOWN;
 
-    // Believe the GRANT for the window too. Boards whose firmware honors
-    // the request (Pi 3/4) grant pitch == width*4 and nothing changes
-    // here. The Pi 5 grants its one native-mode 32bpp surface whatever
-    // was asked (card/config.txt framebuffer_depth=32 makes the display
-    // controller scan 32bpp in hardware): the pitch disagrees with the
-    // requested width, and the real surface — pitch/4 pixels by
-    // size/pitch rows — is the only thing that can be presented into.
-    // Adopt it as the window, so MAME scales to the glass (that board's
-    // build bakes -keepaspect) while cmdline.txt keeps carrying the PAL
-    // canvas for the boards that output it as the signal.
-    if (fb->GetPitch() != (u32)win->w * 4)
-    {
-        unsigned nRealW = fb->GetPitch() / 4;
-        unsigned nRealH = fb->GetPitch() != 0 ? fb->GetSize() / fb->GetPitch() : 0;
-        if (nRealW > 0 && nRealH > 0)
-        {
-            CLogger::Get()->Write("sdl2video", LogWarning,
-                                  "grant %ux%u differs from request %dx%d: window follows the grant",
-                                  nRealW, nRealH, win->w, win->h);
-            win->w = (int)nRealW;
-            win->h = (int)nRealH;
-        }
-    }
-
     // Publish the presentation geometry before the window becomes visible
-    // to the app core or the worker.
+    // to the app core or the worker. This side is SCANOUT geometry: every
+    // present command has already been mapped out of canvas coordinates by
+    // the time it reaches the framebuffer.
     s_fb_base = (u8 *)(uintptr)fb->GetBuffer();
     s_fb_pitch = fb->GetPitch();
-    s_fb_w = win->w;
-    s_fb_h = win->h;
+    s_fb_w = s_scanout_w;
+    s_fb_h = s_scanout_h;
 
     // Believe the GRANT, not the request: double buffering draws and pans
     // across 2*h rows, and a firmware that grants fewer rows than that (the
@@ -422,14 +672,22 @@ static void create_window_on0(void *p)
     // height it acknowledges) would have every second frame written partly
     // past the buffer and scanned out of it. Fall back to a single half.
     unsigned nRowsGranted = s_fb_pitch != 0 ? fb->GetSize() / s_fb_pitch : 0;
-    s_fb_halves = nRowsGranted >= 2u * (unsigned)win->h ? 2 : 1;
+    s_fb_halves = nRowsGranted >= 2u * (unsigned)s_fb_h ? 2 : 1;
     if (s_fb_halves == 1)
     {
-        s_shadow_pitch = (unsigned)win->w * 4;
-        s_shadow = (u8 *)calloc((size_t)s_shadow_pitch, win->h);
+        s_shadow_pitch = (unsigned)s_fb_w * 4;
+        s_shadow = (u8 *)calloc((size_t)s_shadow_pitch, s_fb_h);
         CLogger::Get()->Write("sdl2video", LogWarning,
                               "granted %u rows < %u: shadow-buffered present",
-                              nRowsGranted, 2u * (unsigned)win->h);
+                              nRowsGranted, 2u * (unsigned)s_fb_h);
+    }
+    else
+    {
+        // Fit leaves borders no command will ever write — every present
+        // command is clipped to the canvas rectangle. Black them once, here,
+        // across every granted row so both halves start clean. (The shadow
+        // path gets this from calloc.)
+        memset(s_fb_base, 0, fb->GetSize());
     }
 
     s_window = win;
@@ -560,6 +818,8 @@ extern "C" int SDL_RenderClear(SDL_Renderer *ren)
     cmd.dy = 0;
     cmd.w = ren->window->w;
     cmd.h = ren->window->h;
+    cmd.sw = 0;
+    cmd.sh = 0;
     cmd.color = ((u32)ren->a << 24) | ((u32)ren->r << 16) |
                 ((u32)ren->g << 8) | ren->b;
     emit_cmd(ren, cmd);
@@ -686,34 +946,69 @@ extern "C" int SDL_LockTexture(SDL_Texture *tex, const SDL_Rect *rect,
 
 extern "C" void SDL_UnlockTexture(SDL_Texture *) {}
 
+// Clip one axis of a scaled blit: trim the destination span to [0, limit)
+// and take the source span with it, in proportion, so the scale factor
+// survives the clip instead of quietly changing.
+static void clip_axis(int &d, int &dlen, int &s, int &slen, int limit)
+{
+    if (d < 0)
+    {
+        int cut = -d;
+        if (cut >= dlen) { dlen = 0; return; }
+        int scut = (int)(((s64)cut * slen) / dlen);
+        s += scut;
+        slen -= scut;
+        dlen -= cut;
+        d = 0;
+    }
+    if (d + dlen > limit)
+    {
+        int cut = d + dlen - limit;
+        if (cut >= dlen) { dlen = 0; return; }
+        slen -= (int)(((s64)cut * slen) / dlen);
+        dlen -= cut;
+    }
+}
+
 extern "C" int SDL_RenderCopy(SDL_Renderer *ren, SDL_Texture *tex,
                               const SDL_Rect *srcrect, const SDL_Rect *dstrect)
 {
     SDL2CirclePerfScope perf(SDL2CIRCLE_PERF_RENDER);
-    // Unscaled blit (MAME's drawsdl renders at output size already), with
-    // straight-alpha blending when the texture asks for it.
-    int dx = dstrect ? dstrect->x : 0;
-    int dy = dstrect ? dstrect->y : 0;
-    int sw = srcrect ? srcrect->w : tex->w;
-    int sh = srcrect ? srcrect->h : tex->h;
+
+    // SDL semantics: absent rectangles mean the whole texture and the whole
+    // render target, and a destination that differs from the source scales.
     int sx = srcrect ? srcrect->x : 0;
     int sy = srcrect ? srcrect->y : 0;
+    int sw = srcrect ? srcrect->w : tex->w;
+    int sh = srcrect ? srcrect->h : tex->h;
+    int dx = dstrect ? dstrect->x : 0;
+    int dy = dstrect ? dstrect->y : 0;
+    int dw = dstrect ? dstrect->w : ren->window->w;
+    int dh = dstrect ? dstrect->h : ren->window->h;
+    if (sw <= 0 || sh <= 0 || dw <= 0 || dh <= 0)
+        return 0;
 
-    int w = sw, h = sh;
-    if (dx + w > ren->window->w) w = ren->window->w - dx;
-    if (dy + h > ren->window->h) h = ren->window->h - dy;
-    if (w <= 0 || h <= 0)
+    // Keep the source inside the texture (reading past a texture allocation
+    // is a fault with nothing underneath to catch it), then the destination
+    // inside the canvas. Each clip carries the other rectangle with it.
+    clip_axis(sx, sw, dx, dw, tex->w);
+    clip_axis(sy, sh, dy, dh, tex->h);
+    clip_axis(dx, dw, sx, sw, ren->window->w);
+    clip_axis(dy, dh, sy, sh, ren->window->h);
+    if (sw <= 0 || sh <= 0 || dw <= 0 || dh <= 0)
         return 0;
 
     SDL2CirclePresentCmd cmd;
     cmd.op = SDL2CirclePresentCmd::COPY;
     cmd.dx = dx;
     cmd.dy = dy;
-    cmd.w = w;
-    cmd.h = h;
+    cmd.w = dw;
+    cmd.h = dh;
     cmd.color = 0;
     cmd.src = tex->pixels[tex->widx] + (size_t)sy * tex->pitch + (size_t)sx * 4;
     cmd.srcpitch = tex->pitch;
+    cmd.sw = sw;
+    cmd.sh = sh;
     cmd.blend = (tex->blend == SDL_BLENDMODE_BLEND) ? 1 : 0;
     cmd.alphamod = tex->alphamod;
     emit_cmd(ren, cmd);
@@ -745,7 +1040,7 @@ extern "C" int SDL_GetRenderDriverInfo(int, SDL_RendererInfo *info)
 
 extern "C" int SDL_RenderSetViewport(SDL_Renderer *, const SDL_Rect *)
 {
-    return 0;   // the target is always the whole framebuffer
+    return 0;   // the target is always the whole canvas
 }
 
 extern "C" int SDL_SetRenderDrawBlendMode(SDL_Renderer *, SDL_BlendMode)
@@ -773,6 +1068,8 @@ extern "C" int SDL_RenderFillRect(SDL_Renderer *ren, const SDL_Rect *rect)
     cmd.dy = y;
     cmd.w = w;
     cmd.h = h;
+    cmd.sw = 0;
+    cmd.sh = 0;
     cmd.color = ((u32)ren->a << 24) | ((u32)ren->r << 16) |
                 ((u32)ren->g << 8) | ren->b;
     emit_cmd(ren, cmd);
