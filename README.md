@@ -36,6 +36,13 @@ never touches a device.
 | Files: an I/O service callable from any core | FatFs on core 0, marshalled (`SDL2Circle_IO*`) — for applications whose own file layer must not touch the card directly |
 | Init/error/version/hints | — |
 
+**All rendering is 32-bit, and only 32-bit is proven.** The framebuffer is
+always allocated at 32 bits per pixel, and the only texture format is
+streaming ARGB8888 — a request for any other depth or format fails with an
+error rather than falling back. Every consumer proven so far (the test
+applications, pi-mame) renders 32-bit ARGB8888 end to end; no other pixel
+depth has been exercised on real hardware.
+
 Not yet: mouse, game controllers, haptics, OpenGL (the Pi 4 has no
 bare-metal GPU driver — software rendering is the design, not a stopgap).
 
