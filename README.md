@@ -166,6 +166,29 @@ scheduler's task list if the main loop goes quiet for 30 seconds. One codebase,
 one set of call sites, a branch on `SplitActive()`. Running off core 0 needs a
 multicore Circle world — see Building.
 
+## Performance receipts
+
+Add `rapi-perf=10` to `cmdline.txt` and the library prints one line to the
+logger every 10 seconds:
+
+```
+sdl2perf: 60.0 fps, cycles 24005M: app 46.0% render 8.1% wait 45.7% audio 0.1% input 0.0% yield 0.0%
+```
+
+The frame rate counts presented frames. The percentages split the core's
+cycles (PMU cycle counter) between the library's instrumented sections —
+`render` is present-path compute, `wait` is blocking time (vertical sync,
+an outstanding DMA transfer), `audio` and `input` are the pumps, `yield`
+is time given to other scheduler tasks — and `app` is everything left,
+which is the application's own compute. `wait` is reported apart from
+`render` on purpose: at a locked frame rate the blocking waits absorb all
+spare time, and folded together they would make the present path look
+saturated when it is mostly idle.
+
+The option absent, the instrument costs one branch per section. Hosts can
+also arm it in code: `SDL2Circle_SetPerfInterval(seconds)` in
+`SDL2/SDL_circle.h`.
+
 ## Design
 
 - **The app owns the main loop; the shim rides it.** Everything the shim does

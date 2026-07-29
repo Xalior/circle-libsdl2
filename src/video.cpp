@@ -493,6 +493,7 @@ void SDL2Circle_VideoFlip(unsigned half)
             // valid once the channel has stopped.
             if (s_dma_busy)
             {
+                SDL2CirclePerfScope wait(SDL2CIRCLE_PERF_WAIT);
                 boolean ok = s_dma->Wait();
                 s_dma_busy = false;
                 static bool s_dma_error_logged = false;
@@ -504,7 +505,10 @@ void SDL2Circle_VideoFlip(unsigned half)
                 }
             }
 
-            s_window->fb->WaitForVerticalSync();
+            {
+                SDL2CirclePerfScope wait(SDL2CIRCLE_PERF_WAIT);
+                s_window->fb->WaitForVerticalSync();
+            }
 
             // The scaler wrote the shadow through the cache. Clean that
             // range — clean, not invalidate, so the lines stay warm for the
@@ -522,7 +526,10 @@ void SDL2Circle_VideoFlip(unsigned half)
             return;
         }
 
-        s_window->fb->WaitForVerticalSync();
+        {
+            SDL2CirclePerfScope wait(SDL2CIRCLE_PERF_WAIT);
+            s_window->fb->WaitForVerticalSync();
+        }
         const u8 *src = s_shadow;
         u8 *dst = s_fb_base;
         for (int y = 0; y < s_fb_h; y++, src += s_shadow_pitch, dst += s_fb_pitch)
@@ -1289,7 +1296,10 @@ extern "C" void SDL_RenderPresent(SDL_Renderer *ren)
     // alike: VideoFlip pans, or blits the shadow, as the grant dictates.
     SDL2Circle_VideoFlip(ren->back);
     if (ren->vsync)
+    {
+        SDL2CirclePerfScope wait(SDL2CIRCLE_PERF_WAIT);
         ren->window->fb->WaitForVerticalSync();
+    }
                                      // only when the app asked for vsync:
                                      // throttled apps pace themselves, and
                                      // blocking here would double-throttle

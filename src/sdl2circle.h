@@ -98,7 +98,12 @@ void SDL2Circle_VideoFlip(unsigned half);
 // section is attributed to the application ("app" = MAME's emulation).
 enum
 {
-    SDL2CIRCLE_PERF_RENDER = 0,   // texture upload + blit + present
+    SDL2CIRCLE_PERF_RENDER = 0,   // texture upload + blit + present compute
+    SDL2CIRCLE_PERF_WAIT,         // blocking inside present: vertical sync,
+                                  // outstanding-DMA wait. Split out because
+                                  // at a locked frame rate these absorb all
+                                  // slack and would otherwise make render
+                                  // impersonate saturation.
     SDL2CIRCLE_PERF_AUDIO,        // audio callback pump
     SDL2CIRCLE_PERF_INPUT,        // USB PnP + HID translation
     SDL2CIRCLE_PERF_YIELD,        // scheduler yield (other tasks' time)

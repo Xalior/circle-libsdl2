@@ -100,20 +100,25 @@ void SDL2Circle_PerfTick(void)
     unsigned fps10 = (unsigned)((u64)frames * 10 * cntfrq() / elapsedTicks);
 
     u64 render = s_acc[SDL2CIRCLE_PERF_RENDER];
+    u64 wait = s_acc[SDL2CIRCLE_PERF_WAIT];
     u64 audio = s_acc[SDL2CIRCLE_PERF_AUDIO];
     u64 input = s_acc[SDL2CIRCLE_PERF_INPUT];
     u64 yield = s_acc[SDL2CIRCLE_PERF_YIELD];
-    u64 accounted = render + audio + input + yield;
+    u64 accounted = render + wait + audio + input + yield;
     u64 app = total > accounted ? total - accounted : 0;
 
-    // Per-mille for one decimal of percent without floats.
+    // Per-mille for one decimal of percent without floats. Wait is printed
+    // apart from render on purpose: at a locked frame rate the blocking
+    // waits absorb every spare cycle, and folded together they would make
+    // the present path impersonate saturation.
     auto pm = [total](u64 v) { return (unsigned)(v * 1000 / total); };
     CLogger::Get()->Write("sdl2perf", LogNotice,
-                          "%u.%u fps, cycles %lluM: app %u.%u%% render %u.%u%% audio %u.%u%% input %u.%u%% yield %u.%u%%",
+                          "%u.%u fps, cycles %lluM: app %u.%u%% render %u.%u%% wait %u.%u%% audio %u.%u%% input %u.%u%% yield %u.%u%%",
                           fps10 / 10, fps10 % 10,
                           total / 1000000,
                           pm(app) / 10, pm(app) % 10,
                           pm(render) / 10, pm(render) % 10,
+                          pm(wait) / 10, pm(wait) % 10,
                           pm(audio) / 10, pm(audio) % 10,
                           pm(input) / 10, pm(input) % 10,
                           pm(yield) / 10, pm(yield) % 10);

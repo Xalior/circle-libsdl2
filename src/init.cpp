@@ -4,6 +4,7 @@
 //
 #include <SDL2/SDL.h>
 #include "sdl2circle.h"
+#include <circle/koptions.h>
 #include <circle/timer.h>
 #include <sys/time.h>
 
@@ -122,6 +123,22 @@ extern "C" int SDL_InitSubSystem(Uint32 flags)
     // kernel's CTimer is guaranteed to exist: the wall clock may delegate
     // from here on.
     s_bKernelTimerUp = true;
+
+    // Performance receipts belong to the library, armed by boot
+    // configuration: `rapi-perf=N` in cmdline.txt puts one line on the
+    // serial log every N seconds — frame rate, then the cycle split.
+    // Absent means silent, and any consumer on any host kernel gets the
+    // instrument without wiring. SetPerfInterval stays public for hosts
+    // that want to arm it programmatically.
+    static bool s_bPerfChecked = false;
+    if (!s_bPerfChecked)
+    {
+        s_bPerfChecked = true;
+        CKernelOptions *opts = CKernelOptions::Get();
+        unsigned nPerf = opts ? opts->GetAppOptionDecimal("rapi-perf", 0) : 0;
+        if (nPerf)
+            SDL2Circle_SetPerfInterval(nPerf);
+    }
 
     s_initialized |= flags;
     return 0;
