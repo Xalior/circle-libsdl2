@@ -23,6 +23,14 @@
 #include "sdl2circle.h"
 #include <circle/logger.h>
 
+// The counter backend is AArch64 system-register assembly (PMCCNTR_EL0 and
+// friends), which does not exist on 32-bit builds. On any other
+// architecture the whole instrument compiles to its inert form: receipts
+// simply never arm, every scope costs its one disabled-branch, and nothing
+// here blocks the build. A 32-bit counter backend is possible later; until
+// someone writes it, absent is the honest state.
+#if AARCH == 64
+
 #define PERF_MAX_CORES 4
 
 struct SPerfBank
@@ -204,3 +212,21 @@ void SDL2Circle_PerfTick(void)
         bank.lastCycles = cycles;
     }
 }
+
+#else // AARCH != 64 — no counter backend: the inert instrument
+
+u64 SDL2Circle_PerfCycles(void) { return 0; }
+bool SDL2Circle_PerfEnabled(void) { return false; }
+void SDL2Circle_PerfAccumulate(unsigned, u64) {}
+u64 SDL2Circle_PerfChildTake(void) { return 0; }
+void SDL2Circle_PerfChildAdd(u64) {}
+void SDL2Circle_PerfTick(void) {}
+
+extern "C" void SDL2Circle_SetPerfInterval(unsigned nSeconds)
+{
+    if (nSeconds)
+        CLogger::Get()->Write("sdl2perf", LogWarning,
+                              "perf receipts unavailable: no cycle-counter backend for this architecture");
+}
+
+#endif
