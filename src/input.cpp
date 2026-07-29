@@ -8,6 +8,7 @@
 //
 #include <SDL2/SDL.h>
 #include "sdl2circle.h"
+#include "shim_internal.h"
 
 #include <circle/interrupt.h>
 #include <circle/timer.h>
@@ -391,6 +392,11 @@ void SDL2Circle_InputPump(void)
         return;
 
     boolean bChanged = s_usb->UpdatePlugAndPlay();
+
+    // Gamepads first, and unconditionally: the keyboard path below returns
+    // early when no new key report has arrived, and a pad's own attach,
+    // detach and report traffic has nothing to do with that.
+    SDL2Circle_JoystickPump(bChanged != FALSE);
 
     if (!s_keyboard && bChanged)
     {

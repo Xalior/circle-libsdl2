@@ -22,3 +22,6 @@ circle-stdlib-rpi5/build/
 circle-stdlib-rpi5/install*/
 circle-stdlib-rpi5/Config.mk
 circle-stdlib-rpi5/libs/llvm-project/
+
+# Linker map files: build spoil, sized in megabytes.
+*.map

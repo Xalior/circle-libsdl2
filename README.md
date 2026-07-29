@@ -30,6 +30,9 @@ never touches a device.
 | Video: fullscreen window, software `SDL_Renderer`, streaming ARGB8888 textures, alpha blending, scaled `SDL_RenderCopy` | `CBcmFrameBuffer` — double-buffered, vsync page flip. Where the firmware grants one screen instead of two, the finished frame is scaled onto it, on a core of the host's choosing |
 | Display/renderer queries (modes, bounds, formats, masks) | single HDMI panel |
 | Keyboard → SDL events, `SDL_GetKeyboardState`, modifiers | Circle USB HID (raw reports; SDL scancodes *are* USB usage codes). Off core 0: USB stays on core 0, events cross by ring |
+| Joysticks, gamepads and wheels: enumeration, hot-plug, axes, hats, buttons, GUIDs, coarse rumble | Circle's USB gamepad drivers — the generic HID one and the five console ones. Off core 0: USB and event synthesis stay on core 0; the readings live in memory both cores see |
+| Game controllers: `gamecontrollerdb.txt` mappings, `SDL_IsGameController`, mapped axes and buttons, controller events | the mapping text is read the way SDL2 reads it, and found by the same joystick GUID SDL2 builds |
+| Files as `SDL_RWops` streams, and streams over memory | the I/O service, so an application off core 0 opens a file with the ordinary SDL call |
 | Audio: `SDL_OpenAudioDevice` callback API | `CHDMISoundBaseDevice`, ~100 ms hardware queue. Off core 0: your callback fills a ring, core 0's servo feeds the device |
 | Events: queue, `SDL_PumpEvents`, window focus | the per-frame heartbeat: USB pump and scheduler yield on core 0, ring drain and liveness beat off it |
 | Timers: `SDL_GetTicks64`, performance counter, `SDL_Delay` | Circle system timer (µs). `SDL_Delay` yields to the scheduler on core 0; off it, spins to a µs-exact deadline — deterministic, but it burns the core |
@@ -43,8 +46,9 @@ error rather than falling back. Every consumer proven so far (the test
 applications, pi-mame) renders 32-bit ARGB8888 end to end; no other pixel
 depth has been exercised on real hardware.
 
-Not yet: mouse, game controllers, haptics, OpenGL (the Pi 4 has no
-bare-metal GPU driver — software rendering is the design, not a stopgap).
+Not yet: mouse, `SDL_Haptic` force feedback, controller motion sensors and
+touchpads, virtual joysticks, OpenGL (the Pi 4 has no bare-metal GPU driver —
+software rendering is the design, not a stopgap).
 
 ## Presentation geometry
 
@@ -117,6 +121,60 @@ sdl2video: copy src 320x224 -> canvas 720x504+0+36 -> scanout 1350x945+285+67 (n
 
 The `present:` line names the path that is actually live — `dma copy` or
 `cpu copy`, and the reason when it is the latter.
+
+## Joysticks and game controllers
+
+SDL has two ways of reading the same piece of hardware, and this library
+offers both.
+
+A **joystick** is the device as it really is: however many axes, hats and
+buttons it happens to have, numbered in the order the device reports them.
+Every pad Circle can bind appears this way — the generic HID driver takes
+anything that looks like a gamepad, and there are drivers for the PlayStation,
+Xbox and Switch pads on top of that. Nothing has to be configured; plug it in
+and it is there.
+
+A **game controller** is the same device seen through a MAPPING: a line of
+text that says which raw axis, button or hat direction plays the part of each
+control on a standard modern pad, so an application can ask for "the A button"
+and get an answer. Mappings come from a database file, the community-maintained
+`gamecontrollerdb.txt`, loaded with `SDL_GameControllerAddMappingsFromFile`.
+
+**A device with no line in that database is not a game controller**, and
+`SDL_IsGameController` says so. It is still a fully working joystick, and an
+application that reads raw axes and buttons works with it perfectly. This is
+the normal answer for anything that is not shaped like a console pad — a
+steering wheel, a flight stick, an arcade panel — and the library gives it
+rather than inventing a layout that would put the accelerator somewhere
+surprising.
+
+Database lines are tagged with the platform they were recorded on, and only
+lines for the running platform load. No published database has ever heard of
+Circle, so lines tagged `Linux` are accepted as well — and they are the right
+ones, because the joystick GUIDs this library builds have exactly the shape
+Linux builds for a USB device, down to the CRC of the device name. An
+unmodified `gamecontrollerdb.txt` therefore works as it stands.
+
+Both layers deliver the SDL events an application expects —
+`SDL_JOYAXISMOTION`, `SDL_JOYBUTTONDOWN`/`UP`, `SDL_JOYHATMOTION`,
+`SDL_CONTROLLERAXISMOTION`, `SDL_CONTROLLERBUTTONDOWN`/`UP` — and both handle
+devices that arrive and leave while the application is running:
+`SDL_JOYDEVICEADDED` carries a device index, `SDL_JOYDEVICEREMOVED` an
+instance ID, exactly as SDL defines them.
+
+**Rumble is coarse, and says so.** Circle offers three settings — off, weak,
+strong — so `SDL_JoystickRumble` and `SDL_GameControllerRumble` take the
+stronger of SDL's two magnitudes and pick one of those three, honouring the
+duration. There is no per-motor control and no envelope underneath to expose.
+`SDL_Haptic` — SDL's force-feedback API, with its effect shapes and
+directions — is **not implemented at all**, because nothing under it could
+carry an effect faithfully, and an effect that silently becomes a buzz is
+worse than one that reports it cannot be played.
+
+Also unimplemented, and reporting failure rather than pretending: controller
+LEDs, trigger rumble, motion sensors, touchpads, and virtual joysticks.
+
+`test/padview` puts all of this on screen — see [Test apps](#test-apps).
 
 ## Running off core 0
 
