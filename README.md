@@ -87,12 +87,19 @@ contributes arithmetic, never an intermediate copy.
   fits, centered, and the remainder of the scanout stays black. Put
   `canvas=stretch` in `cmdline.txt` to fill the scanout instead and let the
   aspect ratio go.
+- **A frame is composed in ordinary memory, never on the glass.** The
+  framebuffer is uncached, and a scaler writing it directly pays that cost
+  once per pixel: on a Pi 4, 26.1 ms for a 1280x720 frame against 1.4 ms
+  into ordinary memory. So a present is composed off-screen and the finished
+  frame is moved out in whole rows — 6.0 ms for the same frame — which is
+  also what keeps the picture whole, because the screen is written by that
+  one move and can never be caught mid-composition.
 - **The copy to the screen runs on the DMA engine where it can.** When the
   firmware grants enough memory for two screens, presenting is a page flip
-  and copies nothing. When it grants only one — a Pi 5 does — the finished
-  frame has to be copied into the granted surface, and that surface is
-  uncached, which makes it far and away the most expensive thing the
-  presentation core does. So the library hands that copy to a DMA channel
+  and the move goes to the half being panned to. When it grants only one — a
+  Pi 5 does — the finished frame goes to the granted surface itself, which is
+  the most expensive thing the presentation core does. So the library hands
+  that copy to a DMA channel
   and returns without waiting for it, scaling the next frame into a second
   buffer while the transfer runs. One frame is in flight at a time. If no
   DMA channel is free, the CPU does the copy exactly as before.
@@ -367,8 +374,10 @@ performance receipts below.
 
 ## Performance receipts
 
-Add `rapi-perf=10` to `cmdline.txt` and the library prints, every 10
-seconds, one line per core that has run instrumented code:
+Call `SDL2Circle_SetPerfInterval(10)` and the library prints, every 10
+seconds, one line per core that has run instrumented code. It is silent
+until a host asks for it, and how a host decides to ask — a boot switch, a
+build option, never — is the host's business, not the library's:
 
 ```
 sdl2perf: 60.0 fps c2: awake 41.2% (9885M of 24005M): app 0.0% render 50.5% dma 6.1% vsync 4.1% wait 0.0% serve 0.0% audio 0.1% input 0.0% yield 0.0%

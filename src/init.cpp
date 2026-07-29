@@ -124,21 +124,11 @@ extern "C" int SDL_InitSubSystem(Uint32 flags)
     // from here on.
     s_bKernelTimerUp = true;
 
-    // Performance receipts belong to the library, armed by boot
-    // configuration: `rapi-perf=N` in cmdline.txt puts one line on the
-    // serial log every N seconds — frame rate, then the cycle split.
-    // Absent means silent, and any consumer on any host kernel gets the
-    // instrument without wiring. SetPerfInterval stays public for hosts
-    // that want to arm it programmatically.
-    static bool s_bPerfChecked = false;
-    if (!s_bPerfChecked)
-    {
-        s_bPerfChecked = true;
-        CKernelOptions *opts = CKernelOptions::Get();
-        unsigned nPerf = opts ? opts->GetAppOptionDecimal("rapi-perf", 0) : 0;
-        if (nPerf)
-            SDL2Circle_SetPerfInterval(nPerf);
-    }
+    // Performance receipts stay silent unless the HOST arms them through
+    // SDL2Circle_SetPerfInterval. The library reads no boot configuration
+    // for this: cmdline.txt describes the machine, and how an instrument
+    // is switched on — a stamped defaults block, a host option, nothing at
+    // all — is the host's design, not the library's.
 
     s_initialized |= flags;
     return 0;
