@@ -596,6 +596,11 @@ templates:
 - `test/gradient` — animated full-screen gradient (video path)
 - `test/keyecho` — scancode display, modifier lights, held-key grid (input)
 - `test/tone` — 1 kHz sine over HDMI via the callback API (audio)
+- `test/padview` — every attached joystick, gamepad and wheel on screen at
+  once: name, GUID, USB IDs, whether the mapping database recognised it, live
+  axis bars, hat and button lights, the mapped controller view where there is
+  one, and a running log of devices arriving and leaving (joystick and game
+  controller)
 
 ## License
 
