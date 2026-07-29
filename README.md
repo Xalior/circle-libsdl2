@@ -27,7 +27,7 @@ never touches a device.
 
 | SDL2 subsystem | Circle backing |
 |---|---|
-| Video: fullscreen window, software `SDL_Renderer`, streaming ARGB8888 textures, alpha blending, scaled `SDL_RenderCopy` | `CBcmFrameBuffer` — double-buffered, vsync page flip. Off core 0: draw calls become a command list the presentation core executes |
+| Video: fullscreen window, software `SDL_Renderer`, streaming ARGB8888 textures, alpha blending, scaled `SDL_RenderCopy` | `CBcmFrameBuffer` — double-buffered, vsync page flip. Where the firmware grants one screen instead of two, the finished frame is scaled onto it, on a core of the host's choosing |
 | Display/renderer queries (modes, bounds, formats, masks) | single HDMI panel |
 | Keyboard → SDL events, `SDL_GetKeyboardState`, modifiers | Circle USB HID (raw reports; SDL scancodes *are* USB usage codes). Off core 0: USB stays on core 0, events cross by ring |
 | Audio: `SDL_OpenAudioDevice` callback API | `CHDMISoundBaseDevice`, ~100 ms hardware queue. Off core 0: your callback fills a ring, core 0's servo feeds the device |
@@ -167,6 +167,42 @@ one set of call sites, a branch on `SplitActive()`. That is also exactly what
 a single-core world builds — the split is compiled out and only the direct
 paths remain. See Building for choosing between the two.
 
+### The three roles
+
+- **The hardware core (core 0).** Circle's world: scheduler, interrupts, USB,
+  the SD card, sound. Every device call from anywhere ends up here.
+- **The main core.** The application, this library, and the C library. **All
+  of SDL runs here** — every call, drawing included, and every one of them has
+  finished the work its API promises by the time it returns.
+- **The hardware output scale core.** It stands in for display hardware this
+  board does not have: a finished frame goes in, a scanout comes out. It runs
+  no part of SDL and knows nothing about it. Pixels only.
+
+**What crosses to that last core is a finished frame — pixels, and where on
+the screen they go. Never a list of drawing to do.** Drawing is SDL's, and
+SDL lives on the main core.
+
+Almost every frame an application draws is the same shape: clear the target,
+then blit one opaque texture over it. This library recognises that shape as it
+records the frame, and reduces it to the texture itself, exactly where it
+already sits in memory — for a game's own raster that is a few hundred
+kilobytes rather than a screenful. The clear reduces to nothing: the only part
+of it anything can see is the border around the placed frame, and a border
+changes when the geometry changes, not sixty times a second.
+
+A frame of any other shape — several draws, a blend over what was already
+there, more draws than the recorder holds — is drawn on the main core into a
+canvas-sized surface, which is then the finished frame. That surface is
+allocated the first time such a frame occurs and never if none ever does. So
+the quick path is something this library notices about a frame, never
+something an application has to know or do: **every drawing sequence is
+correct, and the common one is also cheap.**
+
+The result on a single-screen grant is one pass over the screen instead of
+three: resample the finished frame to scanout size, make it visible. What used
+to be a screen-sized clear, a screen-sized compose and a screen-sized copy is
+now the one resample.
+
 ### Why the split is shaped this way
 
 The goal is native speed on modest hardware, and the way to get it is to
@@ -211,7 +247,9 @@ start-up; only the last two are about this library.
    the moment it starts.
 
 Meanwhile one of your secondary cores runs `SDL2Circle_SplitPresentCore`,
-which never returns. That is the core that scales and presents every frame.
+which never returns. That is the core that scales each finished frame onto the
+screen and makes it visible. It runs no SDL and holds no application state; it
+is display hardware, written in software.
 
 Two details that are easy to get wrong:
 

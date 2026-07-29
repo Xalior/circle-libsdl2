@@ -36,8 +36,10 @@ extern "C" {
 void SDL2Circle_SplitInit(void);
 
 // Presentation-worker entry: run this on the secondary core that owns
-// presentation (CMultiCoreSupport::Run calls it). Blits posted frames into
-// the framebuffer and page-flips. Never returns.
+// presentation (CMultiCoreSupport::Run calls it). It stands in for display
+// hardware the board does not have — a finished frame goes in, a scanout
+// comes out — scaling each posted frame onto the screen and making it
+// visible. No part of SDL runs here. Never returns.
 void SDL2Circle_SplitPresentCore(void);
 
 // Non-zero once SDL2Circle_SplitInit has run.
