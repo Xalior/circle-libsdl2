@@ -166,6 +166,29 @@ scheduler's task list if the main loop goes quiet for 30 seconds. One codebase,
 one set of call sites, a branch on `SplitActive()`. Running off core 0 needs a
 multicore Circle world — see Building.
 
+### Why the split is shaped this way
+
+The goal is native speed on modest hardware, and the way to get it is to
+stop making the application pay for anything that is not the application.
+
+So the split is not a way to use up spare cores. It is a way to **give the
+application core one job**: the program's own main loop, and as near to
+nothing else as can be arranged. Presentation and scaling go to the elected
+presentation core. Devices, files and the sound feed go to core 0. What is
+left on the application core is the program itself, which is the only work
+that cannot be moved.
+
+The other half matters just as much. **The topology is elected, not assumed,
+and the same compiled binary must be able to run every role on a single
+core.** A board with cores to spare and a board with none run the same
+image; only the host kernel's choice differs. Today the single-core case is
+the degenerate path — no ring, no mailbox, every call direct — and the roles
+may later become tasks sharing one core on hardware that cannot spare
+several. That is why every crossing in this library is a mailbox or a ring
+that any core may consume, and why nothing in it is written against a
+particular core number. The library does not decide where anything runs, and
+it must never start assuming.
+
 ### What the host kernel has to do
 
 Four steps, in this order. Everything before step 3 is ordinary Circle
