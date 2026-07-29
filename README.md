@@ -235,8 +235,8 @@ it must never start assuming.
 
 ### What the host kernel has to do
 
-Four steps, in this order. Everything before step 3 is ordinary Circle
-start-up; only the last two are about this library.
+In this order. It is ordinary Circle start-up until the split is armed; only
+the last two steps are about this library.
 
 1. **Finish the world first.** Bring up interrupts, the timer, the serial
    console, the SD card, and mount the filesystem — all on core 0, as normal.
@@ -245,11 +245,19 @@ start-up; only the last two are about this library.
 2. **Start the secondary cores** (`CMultiCoreSupport::Initialize`). Your
    subclass decides what each one does. This library never starts a core and
    never chooses one; the host owns that decision entirely.
-3. **Call `SDL2Circle_SplitInit` once, on core 0.** It creates the servo and
+3. **Call `SDL2Circle_ArmCoreRuntime` as the first statement on every core**,
+   core 0 included. A core that has just started has no thread pointer, and
+   C++ exception state is reached through it, so the first thrown exception
+   dereferences whatever the firmware left in that register. Where the
+   leftover value is zero the read lands in mapped low memory and the throw
+   appears to work — which is why skipping this passes on one board and takes
+   a data abort on the next, on an ordinary throw, looking exactly like a
+   hardware fault. It is one call and it is not optional.
+4. **Call `SDL2Circle_SplitInit` once, on core 0.** It creates the servo and
    the watchdog. Until it has returned, no other core may call `SDL_*`: the
    mailboxes are not armed and the call would run on the wrong core.
-4. **Start the application** on the core you chose for it, after step 3.
-   Because steps 2 and 3 happen in that order, the application core has to
+5. **Start the application** on the core you chose for it, after step 4.
+   Because steps 2 and 4 happen in that order, the application core has to
    wait for a signal — a plain shared flag is enough — rather than beginning
    the moment it starts.
 

@@ -28,6 +28,21 @@ extern "C" {
 
 // ---- core split (host kernel side) -----------------------------------------
 
+// Prepare the CALLING core to run C and C++ code. Call it as the first
+// statement on every core a host hands to an application or to this library,
+// core 0 included, before that core runs anything else.
+//
+// What it settles is the thread pointer, which C++ exception state is
+// reached through. Nothing else in a Circle world writes that register, so a
+// freshly started core holds whatever the firmware left in it — and a throw
+// dereferences that. Where the leftover value happens to be zero the read
+// lands in mapped low memory and the throw appears to work, so a host that
+// skips this can pass on one board and take a data abort on the next, on an
+// ordinary thrown exception, looking for all the world like a hardware fault.
+//
+// Calling it twice on a core does nothing the second time.
+void SDL2Circle_ArmCoreRuntime(void);
+
 // Activate the core split. Call ONCE on core 0, after the filesystem is
 // mounted and the scheduler exists, BEFORE the application starts. Creates
 // the hardware-core servo task (call proxy, I/O service, input pump, audio feed,

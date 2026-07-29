@@ -1,0 +1,91 @@
+//
+// coreruntime.cpp — the per-core C runtime setup a host owes every core it
+// hands to an application.
+//
+// A core started by a host runs with a processor state nobody prepared. Most
+// of it does not matter; one part does. C++ exception state is THREAD-LOCAL,
+// and the first thing a throw does is read the thread pointer and dereference
+// what it finds. Nothing else in a Circle world writes that register: Circle
+// sets it only when switching between its own tasks, and the C library's
+// thread-local setup is not linked into a bare-metal image. So a core running
+// application code holds whatever the firmware left in it at reset.
+//
+// The reason this is not obvious, and the reason it costs a day when it
+// finally bites: a register that reads zero SURVIVES. The dereference lands
+// in low memory, which is mapped, and the throw proceeds over bytes that mean
+// nothing and that nothing checks. Two boards can pass every test while a
+// third — same binary, same library, firmware that left something else in the
+// register — takes a data abort on the first thrown exception. It reads as a
+// board fault. It is not one.
+//
+// So the host arms each core it elects, once, on the core itself, before that
+// core runs anything that can throw. This is deliberately a call and not
+// something done behind a host's back: the library never starts a core, and
+// it has no business writing a system register on a core nobody told it
+// about.
+//
+// The thread pointer needs somewhere real to point. AArch64 puts a thread
+// control block at the pointer and the thread-local variables after it, so
+// each core gets a block of that shape: the image's initialised thread-local
+// data copied in, the rest zeroed. The bounds come from the linker script
+// (sdl-app.ld and anything derived from it), which is where a bare-metal
+// image's thread-local sections are placed.
+//
+#include "sdl2circle.h"
+#include <SDL2/SDL_circle.h>
+#include <circle/types.h>
+#include <string.h>
+
+#if AARCH == 64
+
+// Placed by the linker script: the thread-local image this core needs a
+// private copy of. .tbss follows .tdata, so these three bound both.
+extern "C" u8 __tdata_start, __tdata_end, __tbss_end;
+
+// AArch64's thread pointer addresses a control block; the variables live
+// after it.
+#define TLS_TCB_BYTES 16
+
+#define CORERUNTIME_MAX_CORES 4
+
+// One block per core, kept so a second call on a core is a no-op rather than
+// a leak — and so the block outlives the call, which is the whole point.
+static u8 *s_block[CORERUNTIME_MAX_CORES];
+
+extern "C" void SDL2Circle_ArmCoreRuntime(void)
+{
+    unsigned core = SDL2Circle_ThisCore() % CORERUNTIME_MAX_CORES;
+    if (s_block[core])
+        return;
+
+    size_t nData  = (size_t)(&__tdata_end - &__tdata_start);
+    size_t nTotal = (size_t)(&__tbss_end  - &__tdata_start);
+
+    u8 *p = new u8[TLS_TCB_BYTES + nTotal];
+    if (!p)
+        return;
+    memset(p, 0, TLS_TCB_BYTES + nTotal);
+    if (nData)
+        memcpy(p + TLS_TCB_BYTES, &__tdata_start, nData);
+
+    s_block[core] = p;
+
+    // The register is per core, which is why this must execute ON the core
+    // it arms.
+    asm volatile("msr tpidr_el0, %0" ::"r"(p) : "memory");
+}
+
+#else
+
+#error "circle-libsdl2: no 32-bit backend for the per-core C runtime. \
+A core handed to an application needs its thread pointer set before the \
+application throws, or the first exception dereferences whatever the \
+firmware left in the register. AArch64 writes TPIDR_EL0; a 32-bit build \
+needs the ARM equivalent (TPIDRURO through CP15, and exception globals \
+reached via __aeabi_read_tp rather than a direct read), which is different \
+code and not a recompile of the lines above. Write that backend, or build \
+64-bit. Do NOT make this a silent stub: unarmed, the failure is a data \
+abort on an ordinary throw, on some boards only, and it looks like a \
+hardware fault."
+
+#endif

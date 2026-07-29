@@ -274,6 +274,11 @@ void SDL2Circle_PresentPost(const SDL2CirclePresentCmd *cmds, unsigned ncmds,
 
 extern "C" void SDL2Circle_SplitPresentCore(void)
 {
+    // This core is about to run library code for the rest of its life, so it
+    // arms itself rather than trusting that it was armed. A host that already
+    // did loses nothing: the second call returns.
+    SDL2Circle_ArmCoreRuntime();
+
     u64 done = 0;
     for (;;)
     {

@@ -108,7 +108,7 @@ include $(CIRCLESTDLIBHOME)/Config.mk
 
 SRCS = src/init.cpp src/error.cpp src/timer.cpp src/hints.cpp src/events.cpp \
        src/video.cpp src/surface.cpp src/input.cpp src/audio.cpp src/perf.cpp \
-       src/split.cpp src/log.cpp
+       src/split.cpp src/log.cpp src/coreruntime.cpp
 OBJS = $(SRCS:src/%.cpp=$(OBJDIR)/%.o)
 DEPS = $(OBJS:.o=.d)
 
