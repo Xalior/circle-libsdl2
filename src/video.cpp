@@ -8,8 +8,11 @@
 #include <SDL2/SDL.h>
 #include "sdl2circle.h"
 #include <circle/bcmframebuffer.h>
+#include <circle/dmachannel.h>
 #include <circle/koptions.h>
 #include <circle/logger.h>
+#include <circle/machineinfo.h>
+#include <circle/synchronize.h>
 #include <cstring>
 #include <cstdlib>
 
@@ -243,6 +246,41 @@ static int s_fb_w = 0, s_fb_h = 0;
 static unsigned s_fb_halves = 2;
 static u8 *s_shadow = nullptr;         // back buffer when s_fb_halves == 1
 static unsigned s_shadow_pitch = 0;
+static size_t s_shadow_bytes = 0;
+
+// The shadow-to-framebuffer copy is the whole scanout every frame, and the
+// framebuffer is uncached, so on the CPU it is the most expensive thing the
+// presentation core does. The DMA engine does it instead, asynchronously,
+// while the CPU gets on with the next frame.
+//
+// Only a DMA4 "large address" channel can reach the framebuffer's address
+// range, which is why the request below asks for one specifically. A Pi 3
+// has no such engine — and no shadow path either, because its firmware
+// grants the two halves a page flip needs, so it never arrives here.
+#if RASPPI >= 4
+#define SHADOW_DMA_CHANNEL DMA_CHANNEL_EXTENDED
+#else
+#define SHADOW_DMA_CHANNEL DMA_CHANNEL_NORMAL
+#endif
+
+// Circle's own screen DMA uses a burst length of 2 and its documentation is
+// explicit that more congests the system bus. This copy has no reason to be
+// greedier than the framework it runs inside.
+static const unsigned SHADOW_DMA_BURST = 2;
+
+static CDMAChannel *s_dma = nullptr;   // null: the CPU does the copy
+static bool s_dma_busy = false;        // a transfer is in flight
+
+// Two shadows exist only when the DMA does the copy: the transfer in flight
+// reads one while the scaler writes the other. With the CPU copy there is
+// nothing to overlap and one buffer is enough.
+//
+// Consequence, and it matches the page-flip path exactly: a present hands
+// back a buffer holding an older frame, not the one just shown. SDL says
+// the back buffer's contents are undefined after a present, so an
+// application that wants to keep pixels must draw them.
+static u8 *s_shadow_buf[2] = { nullptr, nullptr };
+static unsigned s_shadow_idx = 0;
 
 // ---- the scaler -------------------------------------------------------------
 //
@@ -443,8 +481,47 @@ void SDL2Circle_VideoFlip(unsigned half)
     if (s_shadow)
     {
         // Shadow-buffered present: the finished back buffer becomes visible
-        // by one blit into the granted surface. The vsync wait (honored
-        // where the firmware implements it) keeps the blit off the raster.
+        // by one copy into the granted surface. The vsync wait (honored
+        // where the firmware implements it) keeps that copy off the raster.
+        if (s_dma)
+        {
+            // The channel has one control block, so the previous transfer
+            // must be finished before this one is programmed. A whole frame
+            // of application work and scaling has happened since it was
+            // started, so in a healthy frame this costs one register read.
+            // There is no cheaper way to ask: Circle's GetStatus is only
+            // valid once the channel has stopped.
+            if (s_dma_busy)
+            {
+                boolean ok = s_dma->Wait();
+                s_dma_busy = false;
+                static bool s_dma_error_logged = false;
+                if (!ok && !s_dma_error_logged)
+                {
+                    s_dma_error_logged = true;
+                    CLogger::Get()->Write("sdl2video", LogError,
+                                          "present: DMA transfer reported an error");
+                }
+            }
+
+            s_window->fb->WaitForVerticalSync();
+
+            // The scaler wrote the shadow through the cache. Clean that
+            // range — clean, not invalidate, so the lines stay warm for the
+            // next frame — or the engine reads stale memory behind it.
+            CleanDataCacheRange((u64)(uintptr)s_shadow, (u64)s_shadow_bytes);
+            s_dma->SetupMemCopy(s_fb_base, s_shadow, s_shadow_bytes,
+                                SHADOW_DMA_BURST, FALSE);
+            s_dma->Start();
+            s_dma_busy = true;
+
+            // Hand the scaler the other shadow and return without waiting:
+            // the transfer reads a surface nobody is about to write.
+            s_shadow_idx ^= 1;
+            s_shadow = s_shadow_buf[s_shadow_idx];
+            return;
+        }
+
         s_window->fb->WaitForVerticalSync();
         const u8 *src = s_shadow;
         u8 *dst = s_fb_base;
@@ -624,6 +701,78 @@ struct CreateWindowArgs
 };
 }
 
+// Bring up the shadow-buffered present: the buffers the scaler writes into,
+// and the DMA channel that carries them to the framebuffer if one can be
+// had. Runs on core 0 at window creation, with the presentation geometry
+// already published.
+static void setup_shadow_present(void)
+{
+    // The shadow and the granted surface agree on stride by construction —
+    // the scanout width is derived from the grant's own pitch — so the
+    // surface is one contiguous block and a flat copy is the whole job.
+    // Should that ever stop holding, decline the engine rather than
+    // transfer the wrong shape.
+    const char *reason = nullptr;
+    if (s_shadow_pitch != s_fb_pitch)
+        reason = "shadow and framebuffer strides differ";
+
+    if (!reason)
+    {
+        // Ask the resource map, then hand the answer straight back and let
+        // CDMAChannel take it by number: the constructor asserts rather
+        // than reports when nothing is free, and this library falls back
+        // instead of dying. Nothing can allocate in between — this is core
+        // 0, before the application runs. The framebuffer's own screen DMA
+        // and the HDMI sound device each hold a channel from the same pool,
+        // which is why this asks rather than assumes.
+        unsigned channel =
+            CMachineInfo::Get()->AllocateDMAChannel(SHADOW_DMA_CHANNEL);
+        if (channel == DMA_CHANNEL_NONE)
+            reason = "no DMA channel available";
+        else
+        {
+            CMachineInfo::Get()->FreeDMAChannel(channel);
+            s_dma = new CDMAChannel(channel);
+            CLogger::Get()->Write("sdl2video", LogNotice,
+                                  "present: dma copy, channel %u, %u bytes, double-shadowed",
+                                  channel, (unsigned)s_shadow_bytes);
+        }
+    }
+
+    s_shadow_buf[0] = (u8 *)calloc(s_shadow_bytes, 1);
+    if (s_dma && s_shadow_buf[0])
+        s_shadow_buf[1] = (u8 *)calloc(s_shadow_bytes, 1);
+
+    if (s_dma && !s_shadow_buf[1])
+    {
+        // Without the second buffer the scaler would overwrite the surface
+        // the engine is reading. Give the channel back and copy on the CPU.
+        delete s_dma;
+        s_dma = nullptr;
+        reason = "second shadow buffer allocation failed";
+    }
+
+    s_shadow_idx = 0;
+    s_shadow = s_shadow_buf[0];
+
+    if (!s_shadow)
+    {
+        // No back buffer at all: present renders straight into the granted
+        // surface and the raster may catch a half-drawn frame.
+        delete s_dma;
+        s_dma = nullptr;
+        CLogger::Get()->Write("sdl2video", LogWarning,
+                              "present: unbuffered, %u bytes of shadow could not be allocated",
+                              (unsigned)s_shadow_bytes);
+        return;
+    }
+
+    if (reason)
+        CLogger::Get()->Write("sdl2video", LogWarning,
+                              "present: cpu copy, %u bytes (%s)",
+                              (unsigned)s_shadow_bytes, reason);
+}
+
 // The framebuffer allocation (a firmware mailbox transaction plus Circle
 // device bookkeeping) runs on core 0; under the core split the window
 // creation marshals there through the call mailbox.
@@ -676,10 +825,11 @@ static void create_window_on0(void *p)
     if (s_fb_halves == 1)
     {
         s_shadow_pitch = (unsigned)s_fb_w * 4;
-        s_shadow = (u8 *)calloc((size_t)s_shadow_pitch, s_fb_h);
+        s_shadow_bytes = (size_t)s_shadow_pitch * s_fb_h;
         CLogger::Get()->Write("sdl2video", LogWarning,
                               "granted %u rows < %u: shadow-buffered present",
                               nRowsGranted, 2u * (unsigned)s_fb_h);
+        setup_shadow_present();
     }
     else
     {

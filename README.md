@@ -87,6 +87,15 @@ contributes arithmetic, never an intermediate copy.
   fits, centered, and the remainder of the scanout stays black. Put
   `canvas=stretch` in `cmdline.txt` to fill the scanout instead and let the
   aspect ratio go.
+- **The copy to the screen runs on the DMA engine where it can.** When the
+  firmware grants enough memory for two screens, presenting is a page flip
+  and copies nothing. When it grants only one — a Pi 5 does — the finished
+  frame has to be copied into the granted surface, and that surface is
+  uncached, which makes it far and away the most expensive thing the
+  presentation core does. So the library hands that copy to a DMA channel
+  and returns without waiting for it, scaling the next frame into a second
+  buffer while the transfer runs. One frame is in flight at a time. If no
+  DMA channel is free, the CPU does the copy exactly as before.
 
 The library logs the whole chain once at startup and once per distinct
 geometry, so a serial console tells you what happened without guessing:
@@ -94,8 +103,13 @@ geometry, so a serial console tells you what happened without guessing:
 ```
 sdl2video: scanout 1920x1080 (grant, native surface), canvas 720x576 (cmdline width=/height=)
 sdl2video: canvas 720x576 on scanout 1920x1080: fit -> 1350x1080+285+0
+sdl2video: granted 1080 rows < 2160: shadow-buffered present
+sdl2video: present: dma copy, channel 11, 8294400 bytes, double-shadowed
 sdl2video: copy src 320x224 -> canvas 720x504+0+36 -> scanout 1350x945+285+67 (nearest)
 ```
+
+The `present:` line names the path that is actually live — `dma copy` or
+`cpu copy`, and the reason when it is the latter.
 
 ## Running off core 0
 
