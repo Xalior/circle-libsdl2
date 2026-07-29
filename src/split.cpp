@@ -253,8 +253,15 @@ void SDL2Circle_PresentPost(const SDL2CirclePresentCmd *cmds, unsigned ncmds,
                             unsigned half)
 {
     u64 seq = g_frame.seq.load(std::memory_order_relaxed);
-    while (g_frame.ack.load(std::memory_order_acquire) < seq)
-        wfe();
+    {
+        // The application core, blocked because the presentation core has
+        // not finished the previous frame. This is the number that says
+        // whether presentation is holding the application up, so it is
+        // accounted as waiting and not as render work.
+        SDL2CirclePerfScope wait(SDL2CIRCLE_PERF_WAIT);
+        while (g_frame.ack.load(std::memory_order_acquire) < seq)
+            wfe();
+    }
 
     if (ncmds > SDL2CIRCLE_PRESENT_MAX_CMDS)
         ncmds = SDL2CIRCLE_PRESENT_MAX_CMDS;
