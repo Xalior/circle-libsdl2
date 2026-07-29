@@ -29,11 +29,9 @@ void SDL2Circle_InjectPump(void);
 // Everything is inert until SDL2Circle_SplitInit (SDL_circle.h) runs; the
 // single-core build keeps today's direct paths.
 
-// Run fn(arg) on core 0 and wait for completion. Direct call when the split
-// is inactive or the caller already is core 0; otherwise marshaled through
-// the call mailbox to the core-0 servo. Rare-call path (init, window/audio
-// creation, file service) — per-frame traffic uses the dedicated rings.
-void SDL2Circle_CallOn0(void (*fn)(void *), void *arg);
+// SDL2Circle_CallOn0 — run fn(arg) on core 0 and wait for completion —
+// is part of the public split surface (SDL2/SDL_circle.h, included above),
+// because a host kernel needs the same mailbox for its own devices.
 
 // Calling core (0 when multicore support is compiled out).
 unsigned SDL2Circle_ThisCore(void);
@@ -115,30 +113,50 @@ bool SDL2Circle_PerfEnabled(void);
 void SDL2Circle_PerfAccumulate(unsigned cat, u64 cycles);
 void SDL2Circle_PerfTick(void);
 
+// Nested-section bookkeeping for the calling core. A scope hands its own
+// elapsed cycles up when it ends and takes back what its children spent, so
+// an inner section's time belongs to the inner category ALONE. Without
+// this, a wait inside a render would be counted in both and the categories
+// would sum past the core's real cycles.
+u64  SDL2Circle_PerfChildTake(void);            // reset and return the tally
+void SDL2Circle_PerfChildAdd(u64 cycles);       // add to the enclosing tally
+
 // Dev instrumentation switch (off by default; internal — the shipped SDL
 // surface carries no host-side knobs): nSeconds > 0 enables the PMU cycle
 // counter and periodic split reports from the pump heartbeat.
 extern "C" void SDL2Circle_SetPerfInterval(unsigned nSeconds);
 
 // Scoped section timer: no-op (one branch) while perf is disabled.
+//
+// Scopes nest — a wait sits inside the present that is waiting — and each
+// one keeps only the cycles its own body spent: it starts its children's
+// tally fresh, subtracts whatever they report, and hands its whole span up
+// to its own parent. So the categories partition a core's cycles instead of
+// overlapping, and what is left over is genuinely uninstrumented.
 class SDL2CirclePerfScope
 {
 public:
     SDL2CirclePerfScope(unsigned cat)
         : m_cat(cat), m_active(SDL2Circle_PerfEnabled()),
-          m_t0(m_active ? SDL2Circle_PerfCycles() : 0)
+          m_t0(m_active ? SDL2Circle_PerfCycles() : 0),
+          m_outerChildren(m_active ? SDL2Circle_PerfChildTake() : 0)
     {
     }
     ~SDL2CirclePerfScope(void)
     {
-        if (m_active)
-            SDL2Circle_PerfAccumulate(m_cat, SDL2Circle_PerfCycles() - m_t0);
+        if (!m_active)
+            return;
+        u64 span = SDL2Circle_PerfCycles() - m_t0;
+        u64 children = SDL2Circle_PerfChildTake();
+        SDL2Circle_PerfAccumulate(m_cat, span > children ? span - children : 0);
+        SDL2Circle_PerfChildAdd(m_outerChildren + span);
     }
 
 private:
     unsigned m_cat;
     bool m_active;
     u64 m_t0;
+    u64 m_outerChildren;
 };
 
 #endif

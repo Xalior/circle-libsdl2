@@ -166,6 +166,104 @@ scheduler's task list if the main loop goes quiet for 30 seconds. One codebase,
 one set of call sites, a branch on `SplitActive()`. Running off core 0 needs a
 multicore Circle world — see Building.
 
+### What the host kernel has to do
+
+Four steps, in this order. Everything before step 3 is ordinary Circle
+start-up; only the last two are about this library.
+
+1. **Finish the world first.** Bring up interrupts, the timer, the serial
+   console, the SD card, and mount the filesystem — all on core 0, as normal.
+   The other cores are about to start asking core 0 for things, so there must
+   be something there to answer with.
+2. **Start the secondary cores** (`CMultiCoreSupport::Initialize`). Your
+   subclass decides what each one does. This library never starts a core and
+   never chooses one; the host owns that decision entirely.
+3. **Call `SDL2Circle_SplitInit` once, on core 0.** It creates the servo and
+   the watchdog. Until it has returned, no other core may call `SDL_*`: the
+   mailboxes are not armed and the call would run on the wrong core.
+4. **Start the application** on the core you chose for it, after step 3.
+   Because steps 2 and 3 happen in that order, the application core has to
+   wait for a signal — a plain shared flag is enough — rather than beginning
+   the moment it starts.
+
+Meanwhile one of your secondary cores runs `SDL2Circle_SplitPresentCore`,
+which never returns. That is the core that scales and presents every frame.
+
+Two details that are easy to get wrong:
+
+- **A core that is given no role must be parked** in a wait loop. Returning
+  from your dispatch function lets a core run off into whatever follows it.
+- **Core 0 must keep yielding for as long as the application runs.** The servo
+  is a scheduler task, so it only runs when something gives up the core. A
+  host that waits for the application by spinning without yielding will
+  deadlock: the application core waits for answers that core 0 is never free
+  to give. Wait in a loop that calls `CScheduler::Yield`.
+
+A host kernel is also the one piece of software that may still need a device
+this library does not own — its own serial port, a GPIO line. For those,
+`SDL2Circle_CallOn0` runs a function on core 0 and waits for it. It is the
+same mailbox the library marshals through, and it is a direct call, costing
+nothing, when the split is inactive or the caller is already core 0.
+
+### What the application needs
+
+Almost nothing. Call plain `SDL_*` and it works on whatever core you were
+placed on. There is exactly one thing the library cannot marshal for you.
+
+**Files.** The C library on this platform drives the SD card directly from
+whichever core calls it, and off core 0 that is not allowed. So an
+application that reads files must reach them through the I/O service in
+`SDL2/SDL_circle.h` — `SDL2Circle_IOOpen`, `IORead`, `IOWrite`, `IOOpenDir`
+and the rest. Every one of them is safe from any core, and every one of them
+becomes an ordinary direct call in a single-core build, so there is no second
+code path to maintain.
+
+If the application has its own file layer — many ports and emulators do —
+point it at these functions and the job is done.
+
+If it does not, and it simply calls `fopen`, `std::ifstream` or `opendir` all
+over its source, **redirect the C library underneath it** instead of editing
+the application. The linker's `--wrap` option does this without touching a
+single vendored file:
+
+```
+# in your kernel's Makefile
+LDFLAGS += --wrap=_open --wrap=_close --wrap=_read --wrap=_write \
+           --wrap=_lseek --wrap=_fstat --wrap=_unlink \
+           --wrap=opendir --wrap=readdir --wrap=closedir
+```
+
+Then write one small file defining `__wrap__open`, `__wrap__read` and so on.
+Each reads the same way:
+
+```c
+long __wrap__read(int fd, void *buf, size_t len)
+{
+    if (on_core_0())                       // or the split is not active
+        return __real__read(fd, buf, len); // the genuine implementation
+    ...                                    // otherwise use the I/O service
+}
+```
+
+Three things make this work, and all three matter:
+
+- **`--wrap` rather than redefining the symbols.** The C library's file
+  syscalls are defined together in one object file. Redefining some of them
+  either collides at link time or, worse, leaves the originals linked in
+  beside your versions with no warning at all.
+- **`__real_*` is the mechanism, not a convenience.** The I/O service does its
+  work by making these same calls once it has reached core 0. Without a route
+  back to the original, the wrapper would call itself forever.
+- **The service names an offset on every read and write; the C library expects
+  a file to remember where it is.** So your wrapper has to keep the position
+  itself, one value per open descriptor, advancing it on each read and write
+  and setting it on each seek. Seeking from the end needs the file's length,
+  which `SDL2Circle_IOOpen` hands back when you ask for it.
+
+Descriptors 0, 1 and 2 are the console rather than files, so they have no
+route through the I/O service. Send those to core 0 with
+`SDL2Circle_CallOn0` and let the original implementation run there.
+
 ## Performance receipts
 
 Add `rapi-perf=10` to `cmdline.txt` and the library prints, every 10
@@ -185,6 +283,11 @@ own core, kernel and servo housekeeping on core 0. `wait` is reported
 apart from `render` on purpose: at a locked frame rate the blocking waits
 absorb all spare time, and folded together they would make the present
 path look saturated when it is mostly idle.
+
+The categories do not overlap. Sections nest — a wait happens inside the
+present that is waiting — and each one is charged only for the cycles its
+own body used, with its children's time handed to them. So the percentages
+partition the core's cycles and `app` is genuinely what is left.
 
 A single-core build reports core 0 alone, which is the whole machine
 there. Under the core split each active core reports its own line, which

@@ -273,12 +273,22 @@ extern "C" void SDL2Circle_SplitPresentCore(void)
         u64 seq = g_frame.seq.load(std::memory_order_acquire);
         if (seq == done)
         {
+            // Idle between frames. Instrumented so this core's receipt says
+            // how much of it was spare: at a locked frame rate that is most
+            // of it, and it must not read as work.
+            SDL2CirclePerfScope wait(SDL2CIRCLE_PERF_WAIT);
             wfe();
             continue;
         }
-        for (unsigned i = 0; i < g_frame.ncmds; i++)
-            SDL2Circle_VideoExecCmd(&g_frame.cmds[i], g_frame.half);
-        SDL2Circle_VideoFlip(g_frame.half);
+        {
+            // The frame's whole compute: the scale, and the present the
+            // grant dictates. VideoFlip accounts its own blocking waits
+            // separately from inside this scope.
+            SDL2CirclePerfScope render(SDL2CIRCLE_PERF_RENDER);
+            for (unsigned i = 0; i < g_frame.ncmds; i++)
+                SDL2Circle_VideoExecCmd(&g_frame.cmds[i], g_frame.half);
+            SDL2Circle_VideoFlip(g_frame.half);
+        }
         done = seq;
         g_frame.ack.store(done, std::memory_order_release);
         publish();

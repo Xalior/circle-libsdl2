@@ -30,6 +30,7 @@ struct SPerfBank
     u64 acc[SDL2CIRCLE_PERF_NCATS];
     u64 stampCycles;    // owning core's latest PMCCNTR observation
     u64 lastCycles;     // ... at the last report
+    u64 children;       // cycles the scopes nested in the current one used
     bool pmuEnabled;    // this core's cycle counter is running
 };
 
@@ -99,6 +100,22 @@ void SDL2Circle_PerfAccumulate(unsigned cat, u64 cycles)
     bank.stampCycles = v;
 }
 
+// Nesting tally, per core and touched only by its owner: a scope takes the
+// running total when it starts (leaving zero for its own children) and adds
+// its whole span back when it ends.
+u64 SDL2Circle_PerfChildTake(void)
+{
+    SPerfBank &bank = s_banks[SDL2Circle_ThisCore() % PERF_MAX_CORES];
+    u64 v = bank.children;
+    bank.children = 0;
+    return v;
+}
+
+void SDL2Circle_PerfChildAdd(u64 cycles)
+{
+    s_banks[SDL2Circle_ThisCore() % PERF_MAX_CORES].children += cycles;
+}
+
 extern "C" void SDL2Circle_SetPerfInterval(unsigned nSeconds)
 {
     s_interval = nSeconds;
@@ -110,6 +127,7 @@ extern "C" void SDL2Circle_SetPerfInterval(unsigned nSeconds)
         for (unsigned i = 0; i < SDL2CIRCLE_PERF_NCATS; i++)
             s_banks[c].acc[i] = 0;
         s_banks[c].lastCycles = s_banks[c].stampCycles;
+        s_banks[c].children = 0;
     }
     s_lastReportTicks = cntvct();
 

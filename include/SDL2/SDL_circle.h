@@ -43,6 +43,19 @@ void SDL2Circle_SplitPresentCore(void);
 // Non-zero once SDL2Circle_SplitInit has run.
 int SDL2Circle_SplitActive(void);
 
+// Run fn(arg) on core 0 and block until it has finished. This is the same
+// one-deep mailbox the library marshals its own platform calls through, and
+// it is offered here for the one thing the library cannot do for a host
+// kernel: reach a device the library does not own. A host that has to touch
+// its own hardware from another core wraps the call in this.
+//
+// Direct call — no mailbox, no cost — when the split is inactive or the
+// caller is already core 0, so the same code serves both builds.
+//
+// Do NOT use it for files: the I/O service below is the file and directory
+// route, and it is valid from any core already.
+void SDL2Circle_CallOn0(void (*fn)(void *), void *arg);
+
 // Performance receipts on the serial log: every nSeconds, one line with the
 // presented frame rate and a PMU cycle split across the shim's instrumented
 // sections (render, audio, input, yield) with the remainder attributed to
