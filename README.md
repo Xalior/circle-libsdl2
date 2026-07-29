@@ -168,22 +168,28 @@ multicore Circle world — see Building.
 
 ## Performance receipts
 
-Add `rapi-perf=10` to `cmdline.txt` and the library prints one line to the
-logger every 10 seconds:
+Add `rapi-perf=10` to `cmdline.txt` and the library prints, every 10
+seconds, one line per core that has run instrumented code:
 
 ```
-sdl2perf: 60.0 fps, cycles 24005M: app 46.0% render 8.1% wait 45.7% audio 0.1% input 0.0% yield 0.0%
+sdl2perf: 60.0 fps c0: cycles 24005M: app 38.9% render 50.5% wait 10.2% audio 0.1% input 0.0% yield 0.0%
 ```
 
-The frame rate counts presented frames. The percentages split the core's
-cycles (PMU cycle counter) between the library's instrumented sections —
-`render` is present-path compute, `wait` is blocking time (vertical sync,
-an outstanding DMA transfer), `audio` and `input` are the pumps, `yield`
-is time given to other scheduler tasks — and `app` is everything left,
-which is the application's own compute. `wait` is reported apart from
-`render` on purpose: at a locked frame rate the blocking waits absorb all
-spare time, and folded together they would make the present path look
-saturated when it is mostly idle.
+The frame rate counts presented frames. The percentages split that core's
+cycles (each core's own PMU cycle counter) between the library's
+instrumented sections — `render` is present-path compute, `wait` is
+blocking time (vertical sync, an outstanding DMA transfer), `audio` and
+`input` are the pumps, `yield` is time given to other scheduler tasks —
+and `app` is the core's uninstrumented remainder: the application on its
+own core, kernel and servo housekeeping on core 0. `wait` is reported
+apart from `render` on purpose: at a locked frame rate the blocking waits
+absorb all spare time, and folded together they would make the present
+path look saturated when it is mostly idle.
+
+A single-core build reports core 0 alone, which is the whole machine
+there. Under the core split each active core reports its own line, which
+is how a question like "how busy is the presentation core, could it
+afford filtering" gets a measured answer.
 
 The option absent, the instrument costs one branch per section. Hosts can
 also arm it in code: `SDL2Circle_SetPerfInterval(seconds)` in
