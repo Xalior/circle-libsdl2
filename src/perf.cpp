@@ -22,7 +22,6 @@
 //
 #include "sdl2circle.h"
 #include <SDL2/SDL_circle.h>
-#include <circle/cputhrottle.h>
 #include <circle/logger.h>
 #include <atomic>
 
@@ -53,16 +52,19 @@ static std::atomic<unsigned> s_interval{0};   // seconds; 0 = disabled
 static u64 s_lastReportTicks;     // CNTVCT at last report
 
 // The processor clock, needed to turn wall time into the cycles a core
-// WOULD have counted had it never slept. Read once through the hardware
-// core (it is a firmware mailbox query) and cached, because the reporter
-// may run anywhere.
+// WOULD have counted had it never slept.
+//
+// MEASURED, not asked for. It used to come from a firmware query, and a
+// firmware query can answer zero — which divides into an awake figure of
+// exactly 100% on every core, indistinguishable from a machine that never
+// sleeps. A number the whole receipt is divided by must not have a failure
+// mode that looks like an answer.
+//
+// Counting cycles against the system counter over a short interval cannot
+// fail and cannot return zero, needs nothing outside the core it runs on,
+// and uses the very two counters the receipt already compares. It costs one
+// millisecond, once.
 static unsigned s_cpuHz;
-
-static void read_cpu_hz(void *p)
-{
-    CCPUThrottle *throttle = CCPUThrottle::Get();
-    *(unsigned *)p = throttle ? throttle->GetClockRate() : 0;
-}
 
 static inline u64 cntvct(void)
 {
@@ -193,9 +195,23 @@ void SDL2Circle_PerfTick(void)
     unsigned fps10 = (unsigned)((u64)frames * 10 * cntfrq() / elapsed);
     s_lastReportTicks = now;
 
-    // One firmware query, the first time a report is printed.
+    // Measured once, the first time a report is printed, on whichever core
+    // reports — they all run at the same clock, and a spinning core is
+    // awake by definition for as long as it takes.
     if (!s_cpuHz)
-        SDL2Circle_CallOn0(read_cpu_hz, &s_cpuHz);
+    {
+        u64 t0 = cntvct();
+        u64 c0 = SDL2Circle_PerfCycles();
+        u64 span = cntfrq() / 1000;              // one millisecond
+        while (cntvct() - t0 < span)
+            ;
+        u64 ticks = cntvct() - t0;
+        u64 cycles = SDL2Circle_PerfCycles() - c0;
+        if (ticks)
+            s_cpuHz = (unsigned)((__uint128_t)cycles * cntfrq() / ticks);
+        SDL2Circle_Log("sdl2perf", SDL2CIRCLE_LOG_NOTICE,
+                       "processor clock measured at %u MHz", s_cpuHz / 1000000);
+    }
 
     unsigned self = SDL2Circle_ThisCore() % PERF_MAX_CORES;
 
