@@ -9,7 +9,7 @@
 //             sound device from the audio ring, ticks the CPU throttle) and
 //             the WATCHDOG task (dumps state when the app's heartbeat
 //             stalls).
-//   app core  the application, alone. Calls plain SDL_* functions; the shim
+//   application core  the application, alone. Calls plain SDL_* functions; the shim
 //             marshals here. Its per-frame pump touches nothing but shared
 //             memory (rings, atomics) — no Circle service is ever called
 //             off core 0 except the documented multicore-safe mailbox.
@@ -81,7 +81,7 @@ static inline void idle_wait(void)
 }
 
 // ---------------------------------------------------------------------------
-// Cross-core spin lock (client side of the shared mailboxes: the app core
+// Cross-core spin lock (client side of the shared mailboxes: the application core
 // and any worker thread may issue calls concurrently).
 // ---------------------------------------------------------------------------
 
@@ -144,7 +144,7 @@ void SDL2Circle_CallOn0(void (*fn)(void *), void *arg)
 }
 
 // ---------------------------------------------------------------------------
-// Event ring: core 0 (USB input pump, window events) -> app core.
+// Event ring: core 0 (USB input pump, window events) -> application core.
 // ---------------------------------------------------------------------------
 
 static const unsigned EVENT_RING_SIZE = 256;   // power of two
@@ -188,7 +188,7 @@ int SDL2Circle_EventRingPop(SDL_Event *ev)
 }
 
 // ---------------------------------------------------------------------------
-// Audio ring: app core (callback output) -> core 0 (sound device feeder).
+// Audio ring: application core (callback output) -> core 0 (sound device feeder).
 // Byte-granular SPSC; sized to carry the underrun budget between servo
 // visits on top of the device's own queue.
 // ---------------------------------------------------------------------------
@@ -233,7 +233,7 @@ unsigned SDL2Circle_AudioRingRead(unsigned char *data, unsigned maxbytes)
 }
 
 // ---------------------------------------------------------------------------
-// Present mailbox: app core -> presentation worker. One frame in flight:
+// Present mailbox: application core -> presentation worker. One frame in flight:
 // the poster waits for the worker's previous ACK before publishing, so two
 // texture buffers are provably enough.
 // ---------------------------------------------------------------------------
@@ -303,9 +303,9 @@ extern "C" void SDL2Circle_SplitPresentCore(void)
 }
 
 // ---------------------------------------------------------------------------
-// Heartbeat: the app core bumps it once per pump; the watchdog task dumps
+// Heartbeat: the application core bumps it once per pump; the watchdog task dumps
 // state when it stalls — the split's replacement for the in-band pump
-// deadman, and it can see a wedged app core the in-band version couldn't.
+// deadman, and it can see a wedged application core the in-band version couldn't.
 // ---------------------------------------------------------------------------
 
 static std::atomic<u64> g_heartbeat{0};
@@ -587,7 +587,7 @@ public:
             SDL2Circle_InputPump();
 
             // Debug-UART robot hands -> event ring. Like InputPump, this reads
-            // hardware (the serial RX), so it MUST run on core 0: the app core's
+            // hardware (the serial RX), so it MUST run on core 0: the application core's
             // pump early-returns past it. Its synthesized key events go through
             // SDL_PushEvent, which on core 0 publishes to the same ring the app
             // core drains. (Inert unless --rapi-debug-uart armed it.)
@@ -595,6 +595,18 @@ public:
 
             // Audio ring -> sound device.
             SDL2Circle_AudioDrain();
+
+            // Every other core's log lines -> the console. This core owns
+            // the serial device, so this is the only place they can reach
+            // it, and it is why a core that logs never has to block.
+            SDL2Circle_LogDrain();
+
+            // Performance receipts. The pump's tail call never runs under
+            // the split (the application core's pump early-returns after its
+            // shared-memory work), so the reporter's home is here on the
+            // hardware core: the logger is core 0's device, and the other
+            // cores' banks are shared memory read by their stamps.
+            SDL2Circle_PerfTick();
 
             // Thermal management (Circle requires periodic Update()).
             CCPUThrottle *throttle = CCPUThrottle::Get();

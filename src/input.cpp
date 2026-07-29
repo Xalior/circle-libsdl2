@@ -509,7 +509,7 @@ void SDL2Circle_InjectPump(void)
     }
 }
 
-// Core split: the app core mirrors keyboard state from the events it drains
+// Core split: the application core mirrors keyboard state from the events it drains
 // off the cross-core ring, so SDL_GetKeyboardState / SDL_GetModState answer
 // from core-local memory. The producer-side state above keeps serving the
 // diffing logic on core 0.

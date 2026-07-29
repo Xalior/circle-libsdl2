@@ -23,7 +23,7 @@ unsigned s_count = 0;
 extern "C" int SDL_PushEvent(SDL_Event *event)
 {
     // Core split: producers on core 0 (USB input pump, window events from
-    // proxied calls) publish through the cross-core ring; the app core's
+    // proxied calls) publish through the cross-core ring; the application core's
     // pump drains it into this local queue.
     if (SDL2Circle_SplitActive() && SDL2Circle_ThisCore() == 0)
         return SDL2Circle_EventRingPush(event)
@@ -38,7 +38,7 @@ extern "C" int SDL_PushEvent(SDL_Event *event)
 
 extern "C" void SDL_PumpEvents(void)
 {
-    // Core split: the app core's pump touches nothing but shared memory.
+    // Core split: the application core's pump touches nothing but shared memory.
     // Everything the single-core pump did on the platform's behalf (USB
     // PnP, scheduler yield, throttle tick, deadman) belongs to the core-0
     // servo and watchdog now; here the pump drains the event ring, mirrors
@@ -57,6 +57,23 @@ extern "C" void SDL_PumpEvents(void)
         }
 
         SDL2Circle_AudioPump();
+
+        // The same liveness beacon the single-core pump prints below. It
+        // used to be unreachable here, because printing meant touching the
+        // console and this is not the core that owns it; the log ring
+        // removes that objection. The deadman itself stays on core 0 — the
+        // watchdog task is the split's version of it, and it can see a
+        // wedged application core that an in-band timer cannot.
+        {
+            static u64 lastBeat = 0;
+            u64 now = CTimer::GetClockTicks64();
+            if (now - lastBeat > 10000000)
+            {
+                lastBeat = now;
+                SDL2Circle_Log("sdl2", SDL2CIRCLE_LOG_DEBUG, "pump alive t=%us",
+                               (unsigned)(now / 1000000));
+            }
+        }
         return;
     }
 
@@ -80,7 +97,7 @@ extern "C" void SDL_PumpEvents(void)
         if (now - lastBeat > 10000000)
         {
             lastBeat = now;
-            CLogger::Get()->Write("sdl2", LogDebug, "pump alive t=%us",
+            SDL2Circle_Log("sdl2", SDL2CIRCLE_LOG_DEBUG, "pump alive t=%us",
                                   (unsigned)(now / 1000000));
 
             if (deadman != 0)
@@ -88,7 +105,7 @@ extern "C" void SDL_PumpEvents(void)
             deadman = CTimer::Get()->StartKernelTimer(
                 30 * HZ,
                 [](TKernelTimerHandle, void *, void *) {
-                    CLogger::Get()->Write("sdl2", LogError,
+                    SDL2Circle_Log("sdl2", SDL2CIRCLE_LOG_ERROR,
                                           "PUMP STALLED 30s -- task dump:");
                     if (CScheduler::IsActive())
                         CScheduler::Get()->ListTasks(CLogger::Get()->GetTarget());

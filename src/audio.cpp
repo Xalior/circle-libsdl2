@@ -94,8 +94,8 @@ void SDL2Circle_AudioPump(void)
     if (!s_device || s_paused || !s_spec.callback || s_lock > 0)
         return;
 
-    // Core split inverts audio from pull to push: the app core runs its
-    // callback into the cross-core sample ring; the core-0 servo feeds the
+    // Core split inverts audio from pull to push: the application core runs its
+    // callback into the cross-core sample ring; the hardware-core servo feeds the
     // device from the ring at its own cadence (SDL2Circle_AudioDrain).
     // Audio stops being hostage to frame granularity.
     if (SDL2Circle_SplitActive() && SDL2Circle_ThisCore() != 0)

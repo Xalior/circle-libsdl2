@@ -160,7 +160,7 @@ static void resolve_placement(void)
         s_place_y = (s_scanout_h - s_place_h) / 2;
     }
 
-    CLogger::Get()->Write("sdl2video", LogNotice,
+    SDL2Circle_Log("sdl2video", SDL2CIRCLE_LOG_NOTICE,
                           "canvas %dx%d on scanout %dx%d: %s -> %dx%d+%d+%d",
                           s_canvas_w, s_canvas_h, s_scanout_w, s_scanout_h,
                           mode, s_place_w, s_place_h, s_place_x, s_place_y);
@@ -225,7 +225,7 @@ static void resolve_display_size(void)
     s_canvas_w = req_w;
     s_canvas_h = req_h;
 
-    CLogger::Get()->Write("sdl2video", LogNotice,
+    SDL2Circle_Log("sdl2video", SDL2CIRCLE_LOG_NOTICE,
                           "scanout %dx%d (%s), canvas %dx%d (%s)",
                           s_scanout_w, s_scanout_h, source,
                           s_canvas_w, s_canvas_h, csource);
@@ -235,7 +235,7 @@ static void resolve_display_size(void)
 
 // Presentation geometry, published when the window exists: the worker core
 // executes commands against these (it must never touch SDL structs that the
-// app core mutates).
+// application core mutates).
 static u8 *s_fb_base = nullptr;
 static unsigned s_fb_pitch = 0;
 static int s_fb_w = 0, s_fb_h = 0;
@@ -500,7 +500,7 @@ void SDL2Circle_VideoFlip(unsigned half)
                 if (!ok && !s_dma_error_logged)
                 {
                     s_dma_error_logged = true;
-                    CLogger::Get()->Write("sdl2video", LogError,
+                    SDL2Circle_Log("sdl2video", SDL2CIRCLE_LOG_ERROR,
                                           "present: DMA transfer reported an error");
                 }
             }
@@ -544,7 +544,7 @@ void SDL2Circle_VideoFlip(unsigned half)
     if (!s_flip_logged)
     {
         s_flip_logged = true;
-        CLogger::Get()->Write("sdl2video", LogNotice,
+        SDL2Circle_Log("sdl2video", SDL2CIRCLE_LOG_NOTICE,
                               "first flip to half %u: SetVirtualOffset %s",
                               half, ok ? "ok" : "REFUSED");
     }
@@ -595,7 +595,7 @@ static void log_copy_geometry(const SDL2CirclePresentCmd &app,
         how = "nearest, integer ratio";
     else
         how = "nearest";
-    CLogger::Get()->Write("sdl2video", LogNotice,
+    SDL2Circle_Log("sdl2video", SDL2CIRCLE_LOG_NOTICE,
                           "copy src %dx%d -> canvas %dx%d+%d+%d -> scanout %dx%d+%d+%d (%s)",
                           sw, sh,
                           app.w, app.h, app.dx, app.dy,
@@ -740,7 +740,7 @@ static void setup_shadow_present(void)
         {
             CMachineInfo::Get()->FreeDMAChannel(channel);
             s_dma = new CDMAChannel(channel);
-            CLogger::Get()->Write("sdl2video", LogNotice,
+            SDL2Circle_Log("sdl2video", SDL2CIRCLE_LOG_NOTICE,
                                   "present: dma copy, channel %u, %u bytes, double-shadowed",
                                   channel, (unsigned)s_shadow_bytes);
         }
@@ -768,14 +768,14 @@ static void setup_shadow_present(void)
         // surface and the raster may catch a half-drawn frame.
         delete s_dma;
         s_dma = nullptr;
-        CLogger::Get()->Write("sdl2video", LogWarning,
+        SDL2Circle_Log("sdl2video", SDL2CIRCLE_LOG_WARNING,
                               "present: unbuffered, %u bytes of shadow could not be allocated",
                               (unsigned)s_shadow_bytes);
         return;
     }
 
     if (reason)
-        CLogger::Get()->Write("sdl2video", LogWarning,
+        SDL2Circle_Log("sdl2video", SDL2CIRCLE_LOG_WARNING,
                               "present: cpu copy, %u bytes (%s)",
                               (unsigned)s_shadow_bytes, reason);
 }
@@ -814,7 +814,7 @@ static void create_window_on0(void *p)
     win->flags = a->flags | SDL_WINDOW_FULLSCREEN | SDL_WINDOW_SHOWN;
 
     // Publish the presentation geometry before the window becomes visible
-    // to the app core or the worker. This side is SCANOUT geometry: every
+    // to the application core or the worker. This side is SCANOUT geometry: every
     // present command has already been mapped out of canvas coordinates by
     // the time it reaches the framebuffer.
     s_fb_base = (u8 *)(uintptr)fb->GetBuffer();
@@ -833,7 +833,7 @@ static void create_window_on0(void *p)
     {
         s_shadow_pitch = (unsigned)s_fb_w * 4;
         s_shadow_bytes = (size_t)s_shadow_pitch * s_fb_h;
-        CLogger::Get()->Write("sdl2video", LogWarning,
+        SDL2Circle_Log("sdl2video", SDL2CIRCLE_LOG_WARNING,
                               "granted %u rows < %u: shadow-buffered present",
                               nRowsGranted, 2u * (unsigned)s_fb_h);
         setup_shadow_present();
@@ -855,7 +855,7 @@ static void create_window_on0(void *p)
     // flip needs virt == 2*h, and a pitch wider than the width means the
     // buffer lives inside a native-mode surface (observed on the Pi 5,
     // whose firmware ignores mode requests).
-    CLogger::Get()->Write("sdl2video", LogNotice,
+    SDL2Circle_Log("sdl2video", SDL2CIRCLE_LOG_NOTICE,
                           "framebuffer %ux%u virt %ux%u depth %u pitch %u size %u",
                           fb->GetWidth(), fb->GetHeight(),
                           fb->GetVirtWidth(), fb->GetVirtHeight(),

@@ -33,26 +33,34 @@ void SDL2Circle_InjectPump(void);
 // is part of the public split surface (SDL2/SDL_circle.h, included above),
 // because a host kernel needs the same mailbox for its own devices.
 
+// Drain every core's log ring into the logger. Core-0 servo only; a no-op
+// when the split is inactive, because then nothing rings.
+void SDL2Circle_LogDrain(void);
+
+// va_list form of SDL2Circle_Log (SDL2/SDL_circle.h).
+extern "C" void SDL2Circle_LogV(const char *from, unsigned severity,
+                                const char *fmt, __builtin_va_list args);
+
 // Calling core (0 when multicore support is compiled out).
 unsigned SDL2Circle_ThisCore(void);
 
-// Cross-core event ring (core 0 producer -> app core consumer).
+// Cross-core event ring (core 0 producer -> application core consumer).
 union SDL_Event;
 int  SDL2Circle_EventRingPush(const union SDL_Event *ev);   // 0 if full
 int  SDL2Circle_EventRingPop(union SDL_Event *ev);          // 0 if empty
 
-// Consumer-side key/modifier state replay (src/input.cpp): the app core
+// Consumer-side key/modifier state replay (src/input.cpp): the application core
 // mirrors keyboard state from the events it drains, so SDL_GetKeyboardState
 // answers locally.
 void SDL2Circle_ApplyEventState(const union SDL_Event *ev);
 
-// Audio sample ring (app core producer -> core-0 device feeder).
+// Audio sample ring (application core producer -> hardware-core device feeder).
 unsigned SDL2Circle_AudioRingSpace(void);
 void     SDL2Circle_AudioRingWrite(const unsigned char *data, unsigned bytes);
 unsigned SDL2Circle_AudioRingRead(unsigned char *data, unsigned maxbytes);
-void     SDL2Circle_AudioDrain(void);   // core-0 servo: ring -> sound device
+void     SDL2Circle_AudioDrain(void);   // hardware-core servo: ring -> sound device
 
-// App heartbeat: the app core bumps it once per pump; the core-0 watchdog
+// App heartbeat: the application core bumps it once per pump; the hardware-core watchdog
 // dumps state when it stalls (the split's replacement for the in-band pump
 // deadman).
 void SDL2Circle_HeartbeatBump(void);
@@ -93,7 +101,7 @@ void SDL2Circle_VideoFlip(unsigned half);
 
 // Perf accounting (src/perf.cpp): PMCCNTR-based category split, reported
 // through the logger by the pump. Everything not inside an instrumented
-// section is attributed to the application ("app" = MAME's emulation).
+// section is attributed to the application ("app" = the application itself).
 enum
 {
     SDL2CIRCLE_PERF_RENDER = 0,   // texture upload + blit + present compute

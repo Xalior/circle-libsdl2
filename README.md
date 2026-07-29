@@ -288,6 +288,45 @@ Descriptors 0, 1 and 2 are the console rather than files, so they have no
 route through the I/O service. Send those to core 0 with
 `SDL2Circle_CallOn0` and let the original implementation run there.
 
+## Logging from any core
+
+The serial console is a device, so only the hardware core may write to it.
+That would leave every other core unable to say anything — and the cores that
+have the most to report, the application core and the elected presentation
+core, are exactly the ones that may not speak.
+
+So they do not write. **Each core formats its line into a ring of its own and
+returns**, and the hardware core's servo drains every ring into the logger.
+Nothing crosses but memory. A core that logs never touches the console and is
+never held up by one that is printing.
+
+```c
+#include <SDL2/SDL_circle.h>
+
+SDL2Circle_Log("mygame", SDL2CIRCLE_LOG_NOTICE, "level %d loaded", n);
+```
+
+- **It never blocks, and it never lies.** If a ring is full the line is
+  dropped and counted, and the next drain prints how many were lost from
+  which core. Waiting would put the calling core to sleep for the sake of a
+  diagnostic, and overwriting would silently corrupt the record.
+- **`from` is stored as a pointer**, so it must outlive the call — a string
+  literal, never a buffer on the stack. It is printed later, on another core.
+- **Byte output has its own entry point.** `SDL2Circle_LogBytes` takes output
+  in whatever pieces it was written in — an application's `stdout` — and
+  assembles it into lines, publishing each one as it completes. A log carries
+  lines and has nowhere to put half of one.
+- **The hardware core writes straight through**, and so does every core when
+  the split is inactive. That keeps the boot log immediate, before any servo
+  exists to drain anything, and it means a single-core build pays nothing at
+  all for this.
+
+Lines from other cores appear when the servo next drains, so they carry the
+drain's timestamp rather than the moment they were produced, and they are
+ordered per core rather than against each other. For working out what
+happened that is enough; for measuring how long something took, use the
+performance receipts below.
+
 ## Performance receipts
 
 Add `rapi-perf=10` to `cmdline.txt` and the library prints, every 10

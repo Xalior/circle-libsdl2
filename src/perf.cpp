@@ -196,7 +196,7 @@ void SDL2Circle_PerfTick(void)
         // together they would make the present path impersonate
         // saturation.
         auto pm = [total](u64 v) { return (unsigned)(v * 1000 / total); };
-        CLogger::Get()->Write("sdl2perf", LogNotice,
+        SDL2Circle_Log("sdl2perf", SDL2CIRCLE_LOG_NOTICE,
                               "%u.%u fps c%u: cycles %lluM: app %u.%u%% render %u.%u%% wait %u.%u%% audio %u.%u%% input %u.%u%% yield %u.%u%%",
                               fps10 / 10, fps10 % 10, c,
                               total / 1000000,
@@ -225,7 +225,7 @@ void SDL2Circle_PerfTick(void) {}
 extern "C" void SDL2Circle_SetPerfInterval(unsigned nSeconds)
 {
     if (nSeconds)
-        CLogger::Get()->Write("sdl2perf", LogWarning,
+        SDL2Circle_Log("sdl2perf", SDL2CIRCLE_LOG_WARNING,
                               "perf receipts unavailable: no cycle-counter backend for this architecture");
 }
 

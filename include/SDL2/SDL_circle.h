@@ -11,7 +11,7 @@
 //
 //   Applications (or their platform adapters) get the I/O SERVICE: a small
 //   blocking file/directory API valid from ANY core. Off core 0 the call is
-//   marshaled to the core-0 servo, which is the only context that ever
+//   marshaled to the hardware-core servo, which is the only context that ever
 //   touches the filesystem stack (FatFs/EMMC interrupts live on core 0).
 //
 // Everything here is a no-op / direct call in single-core builds: the split
@@ -30,7 +30,7 @@ extern "C" {
 
 // Activate the core split. Call ONCE on core 0, after the filesystem is
 // mounted and the scheduler exists, BEFORE the application starts. Creates
-// the core-0 servo task (call proxy, I/O service, input pump, audio feed,
+// the hardware-core servo task (call proxy, I/O service, input pump, audio feed,
 // CPU-throttle tick) and the watchdog task (dumps state when the
 // application's per-frame heartbeat stalls).
 void SDL2Circle_SplitInit(void);
@@ -64,6 +64,36 @@ void SDL2Circle_CallOn0(void (*fn)(void *), void *arg);
 // (cmdline.txt `perfstats=10`) so one binary serves bench and product.
 void SDL2Circle_SetPerfInterval(unsigned nSeconds);
 
+// ---- logging (any core) -----------------------------------------------------
+//
+// The serial console is a device, so only core 0 may write to it. These put
+// a line on it from ANY core: the calling core formats into a ring of its
+// own and returns, and core 0's servo drains every ring into the logger.
+// The caller never touches the hardware and is never blocked by it.
+//
+// When a ring is full the line is DROPPED and counted, and the count is
+// printed with the next drain — logging never stalls the core that logs,
+// and never quietly loses anything without saying so.
+//
+// Without the split active these write straight to the logger, so the same
+// call sites serve a single-core build at no extra cost.
+//
+// `from` is the subsystem tag Circle's logger prints. It is stored by
+// POINTER and printed later, so it must outlive the call: a string literal,
+// never a buffer on the stack.
+
+#define SDL2CIRCLE_LOG_ERROR    1
+#define SDL2CIRCLE_LOG_WARNING  2
+#define SDL2CIRCLE_LOG_NOTICE   3
+#define SDL2CIRCLE_LOG_DEBUG    4
+
+void SDL2Circle_Log(const char *from, unsigned severity, const char *fmt, ...);
+
+// Byte-oriented output — an application's stdout, arriving in whatever
+// pieces it was written in. Lines are assembled and published one at a
+// time, because a log carries lines and has nowhere to put half of one.
+void SDL2Circle_LogBytes(const char *from, const char *bytes, unsigned len);
+
 // ---- I/O service (any core) -------------------------------------------------
 
 // Open flags.
@@ -86,7 +116,7 @@ typedef struct SDL2Circle_IODirEntry
     int64_t  mtime;
 } SDL2Circle_IODirEntry;
 
-// All calls block until the core-0 servo answers; results are plain values
+// All calls block until the hardware-core servo answers; results are plain values
 // (>= 0) or a negated errno (< 0) — never the caller's errno, which is not
 // core-safe here.
 int      SDL2Circle_IOOpen(const char *path, unsigned flags, uint64_t *size_out);
