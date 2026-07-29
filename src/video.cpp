@@ -519,7 +519,7 @@ void SDL2Circle_VideoFlip(unsigned half)
             // valid once the channel has stopped.
             if (s_dma_busy)
             {
-                SDL2CirclePerfScope wait(SDL2CIRCLE_PERF_WAIT);
+                SDL2CirclePerfScope wait(SDL2CIRCLE_PERF_WAIT_DMA);
                 boolean ok = s_dma->Wait();
                 s_dma_busy = false;
                 static bool s_dma_error_logged = false;
@@ -532,7 +532,7 @@ void SDL2Circle_VideoFlip(unsigned half)
             }
 
             {
-                SDL2CirclePerfScope wait(SDL2CIRCLE_PERF_WAIT);
+                SDL2CirclePerfScope wait(SDL2CIRCLE_PERF_WAIT_VSYNC);
                 s_window->fb->WaitForVerticalSync();
             }
 
@@ -553,7 +553,7 @@ void SDL2Circle_VideoFlip(unsigned half)
         }
 
         {
-            SDL2CirclePerfScope wait(SDL2CIRCLE_PERF_WAIT);
+            SDL2CirclePerfScope wait(SDL2CIRCLE_PERF_WAIT_VSYNC);
             s_window->fb->WaitForVerticalSync();
         }
         const u8 *src = s_shadow;
@@ -1519,7 +1519,7 @@ extern "C" void SDL_RenderPresent(SDL_Renderer *ren)
         SDL2Circle_VideoFlip(ren->back);
         if (ren->vsync)
         {
-            SDL2CirclePerfScope wait(SDL2CIRCLE_PERF_WAIT);
+            SDL2CirclePerfScope wait(SDL2CIRCLE_PERF_WAIT_VSYNC);
             ren->window->fb->WaitForVerticalSync();
         }
         ren->back ^= 1;
@@ -1554,7 +1554,7 @@ extern "C" void SDL_RenderPresent(SDL_Renderer *ren)
     SDL2Circle_VideoFlip(ren->back);
     if (ren->vsync)
     {
-        SDL2CirclePerfScope wait(SDL2CIRCLE_PERF_WAIT);
+        SDL2CirclePerfScope wait(SDL2CIRCLE_PERF_WAIT_VSYNC);
         ren->window->fb->WaitForVerticalSync();
     }
     if (s_fb_halves == 2)

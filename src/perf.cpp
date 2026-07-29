@@ -213,12 +213,14 @@ void SDL2Circle_PerfTick(void)
             continue;
 
         u64 render = bank.acc[SDL2CIRCLE_PERF_RENDER];
+        u64 wdma = bank.acc[SDL2CIRCLE_PERF_WAIT_DMA];
+        u64 wvsync = bank.acc[SDL2CIRCLE_PERF_WAIT_VSYNC];
         u64 wait = bank.acc[SDL2CIRCLE_PERF_WAIT];
         u64 audio = bank.acc[SDL2CIRCLE_PERF_AUDIO];
         u64 input = bank.acc[SDL2CIRCLE_PERF_INPUT];
         u64 serve = bank.acc[SDL2CIRCLE_PERF_SERVE];
         u64 yield = bank.acc[SDL2CIRCLE_PERF_YIELD];
-        u64 accounted = render + wait + audio + input + serve + yield;
+        u64 accounted = render + wdma + wvsync + wait + audio + input + serve + yield;
         u64 app = total > accounted ? total - accounted : 0;
 
         // AWAKE against WALL, and this is the whole point of the line.
@@ -245,12 +247,14 @@ void SDL2Circle_PerfTick(void)
         // saturation.
         auto pm = [total](u64 v) { return (unsigned)(v * 1000 / total); };
         SDL2Circle_Log("sdl2perf", SDL2CIRCLE_LOG_NOTICE,
-                              "%u.%u fps c%u: awake %u.%u%% (%lluM of %lluM): app %u.%u%% render %u.%u%% wait %u.%u%% serve %u.%u%% audio %u.%u%% input %u.%u%% yield %u.%u%%",
+                              "%u.%u fps c%u: awake %u.%u%% (%lluM of %lluM): app %u.%u%% render %u.%u%% dma %u.%u%% vsync %u.%u%% wait %u.%u%% serve %u.%u%% audio %u.%u%% input %u.%u%% yield %u.%u%%",
                               fps10 / 10, fps10 % 10, c,
                               awakePm / 10, awakePm % 10,
                               total / 1000000, wallCycles / 1000000,
                               pm(app) / 10, pm(app) % 10,
                               pm(render) / 10, pm(render) % 10,
+                              pm(wdma) / 10, pm(wdma) % 10,
+                              pm(wvsync) / 10, pm(wvsync) % 10,
                               pm(wait) / 10, pm(wait) % 10,
                               pm(serve) / 10, pm(serve) % 10,
                               pm(audio) / 10, pm(audio) % 10,

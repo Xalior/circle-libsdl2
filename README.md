@@ -371,7 +371,7 @@ Add `rapi-perf=10` to `cmdline.txt` and the library prints, every 10
 seconds, one line per core that has run instrumented code:
 
 ```
-sdl2perf: 60.0 fps c1: awake 41.2% (9885M of 24005M): app 38.9% render 50.5% wait 10.2% serve 0.0% audio 0.1% input 0.0% yield 0.0%
+sdl2perf: 60.0 fps c2: awake 41.2% (9885M of 24005M): app 0.0% render 50.5% dma 6.1% vsync 4.1% wait 0.0% serve 0.0% audio 0.1% input 0.0% yield 0.0%
 ```
 
 The frame rate counts presented frames.
@@ -384,15 +384,20 @@ what tells them apart is `awake`, which is the counted cycles measured
 against the wall clock, and the wall clock never stops. Read the line as
 "this core was awake 41% of the time, and here is what it did while it was".
 
-The categories: `render` is present-path compute, `wait` is blocking time
-(vertical sync, an outstanding DMA transfer, a core waiting on another
-core), `serve` is the hardware core doing another core's work — the call
-mailbox and the log drain — `audio` and `input` are the pumps, `yield` is
-time given to other scheduler tasks, and `app` is whatever is left, which
-is the application itself on its own core. `wait` is reported apart from
-`render` on purpose: at a locked frame rate the blocking waits absorb all
-spare time, and folded together they would make the present path look
-saturated when it is mostly idle.
+The categories: `render` is present-path compute; `serve` is the hardware
+core doing another core's work, the call mailbox and the log drain; `audio`
+and `input` are the pumps; `yield` is time given to other scheduler tasks;
+and `app` is whatever is left, which is the application itself on its own
+core.
+
+Blocking is reported in three parts, because they have three different
+cures. `dma` is waiting for the transfer into the framebuffer to finish.
+`vsync` is waiting for the raster to reach the vertical blanking interval.
+`wait` is one core waiting on another across the frame mailbox — a wait on
+software rather than on the display. All three are kept apart from `render`
+on purpose: at a locked frame rate the blocking absorbs every spare cycle,
+and folded into `render` it would make the present path look saturated when
+it is mostly idle.
 
 The wall figure assumes the processor clock reported at the first report
 holds for the run. A board that is thermally throttling is changing that

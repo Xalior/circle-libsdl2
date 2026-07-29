@@ -105,7 +105,15 @@ void SDL2Circle_VideoFlip(unsigned half);
 enum
 {
     SDL2CIRCLE_PERF_RENDER = 0,   // texture upload + blit + present compute
-    SDL2CIRCLE_PERF_WAIT,         // blocking inside present: vertical sync,
+    SDL2CIRCLE_PERF_WAIT_DMA,     // blocking on the outstanding transfer to
+                                  // the framebuffer finishing
+    SDL2CIRCLE_PERF_WAIT_VSYNC,   // blocking on the raster reaching the
+                                  // vertical blanking interval
+    SDL2CIRCLE_PERF_WAIT,         // blocking on another core: the frame
+                                  // mailbox in both directions. Kept apart
+                                  // from the two above because it is a wait
+                                  // on software, not on the display.
+                                  // Historically: blocking inside present,
                                   // outstanding-DMA wait. Split out because
                                   // at a locked frame rate these absorb all
                                   // slack and would otherwise make render
