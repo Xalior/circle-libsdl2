@@ -59,8 +59,18 @@ OBJDIR = build/$(BOARD)
 # drifting their SHA from the pin, so a clean --libcxx build fails its hash
 # check. An immutable tag reproduces from a fresh clone. The checkout lands in
 # the gitignored libs/llvm-project that --libcxx-repo reads.
-LLVM_REPO = https://codeberg.org/larchcone/llvm-project.git
-LLVM_TAG  = circle-stdlib-22.1.3-v2
+#
+# It is on Codeberg because that is the only place it exists: the tag names a
+# tree carrying the bare-metal patches, and neither the tag nor its commits
+# are in llvm/llvm-project. Codeberg times out often enough to fail a build
+# that would otherwise have worked, so override LLVM_REPO to clone from a
+# mirror of your own.
+LLVM_REPO ?= https://codeberg.org/larchcone/llvm-project.git
+LLVM_TAG  ?= circle-stdlib-22.1.3-v2
+
+# How many times to try that clone before giving up. A gateway timeout on a
+# 3 GB fetch is a bad reason to lose a whole dependency build.
+LLVM_CLONE_TRIES ?= 3
 
 # deps splits into two phases so a parallel build is safe: the git-heavy FETCH
 # (nested-submodule init + LLVM clone) is lock-prone and runs serially, one
@@ -79,8 +89,18 @@ deps:
 .PHONY: world-fetch
 world-fetch:
 	git submodule update --init --recursive $(CIRCLE_STDLIB)
-	@[ -f $(CIRCLE_STDLIB)/libs/llvm-project/runtimes/CMakeLists.txt ] || \
-		git clone --depth 1 --branch $(LLVM_TAG) $(LLVM_REPO) $(CIRCLE_STDLIB)/libs/llvm-project
+	@[ -f $(CIRCLE_STDLIB)/libs/llvm-project/runtimes/CMakeLists.txt ] || { \
+		n=1; \
+		until git clone --depth 1 --branch $(LLVM_TAG) $(LLVM_REPO) \
+				$(CIRCLE_STDLIB)/libs/llvm-project; do \
+			rm -rf $(CIRCLE_STDLIB)/libs/llvm-project; \
+			if [ $$n -ge $(LLVM_CLONE_TRIES) ]; then \
+				echo "  LLVM  clone failed $$n times from $(LLVM_REPO)"; \
+				exit 1; \
+			fi; \
+			echo "  LLVM  clone failed, retrying ($$n of $(LLVM_CLONE_TRIES))"; \
+			n=$$((n+1)); sleep 15; \
+		done; }
 
 # COMPILE (isolated per world, safe to run in parallel across boards). Idempotent:
 # skips re-configure when Config.mk is already present.
