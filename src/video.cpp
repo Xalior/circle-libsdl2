@@ -290,10 +290,21 @@ static size_t s_shadow_bytes = 0;
 #define SHADOW_DMA_CHANNEL DMA_CHANNEL_NORMAL
 #endif
 
-// Circle's own screen DMA uses a burst length of 2 and its documentation is
-// explicit that more congests the system bus. This copy has no reason to be
-// greedier than the framework it runs inside.
-static const unsigned SHADOW_DMA_BURST = 2;
+// Beats per bus transaction, where a beat is 128 bits. Circle's screen DMA
+// uses 2 and its documentation says more than that congests the bus — but
+// that is written for console scrolling: a small, frequent move sharing the
+// bus with everything else, where latency matters and total time does not.
+//
+// This is the opposite job. One bulk move of a whole screen, once a frame,
+// which has to finish inside the frame. At 2 beats a transaction carries 32
+// bytes, and the measured result was a screen taking about 14.5 ms — around
+// 450 MB/s, which is a transaction-rate limit and nothing to do with what
+// the memory can do.
+//
+// 8 beats is 128 bytes a transaction: two cache lines, four times the
+// payload, and still well under the 15 the controller allows, which leaves
+// room to go further if a receipt ever asks for it.
+static const unsigned SHADOW_DMA_BURST = 8;
 
 static CDMAChannel *s_dma = nullptr;   // null: the CPU does the copy
 static bool s_dma_busy = false;        // a transfer is in flight
