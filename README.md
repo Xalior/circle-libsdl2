@@ -163,8 +163,9 @@ What changes for your code, once it is off core 0:
 ring and no mailbox: every call executes directly, the pump does the platform
 work itself, audio pulls, and the watchdog is an in-band timer that dumps the
 scheduler's task list if the main loop goes quiet for 30 seconds. One codebase,
-one set of call sites, a branch on `SplitActive()`. Running off core 0 needs a
-multicore Circle world — see Building.
+one set of call sites, a branch on `SplitActive()`. That is also exactly what
+a single-core world builds — the split is compiled out and only the direct
+paths remain. See Building for choosing between the two.
 
 ### Why the split is shaped this way
 
@@ -376,15 +377,35 @@ ARM_ALLOW_MULTI_CORE`) and builds it, then builds the shim against it. Cold,
 that is a long build — newlib and libc++ from source. Afterwards, a plain
 `make` rebuilds just `libSDL2.a`.
 
-The world is configured **multicore** (`ARM_ALLOW_MULTI_CORE`) because the core
-split needs the other cores; a single-core world cannot serve this shim. A
-world elsewhere on disk works with `make CIRCLESTDLIBHOME=/path/to/circle-stdlib`,
-provided it was configured the same way.
+### Choosing single-core or multicore
+
+**You choose when you configure the world, and the choice is fixed when you
+build.** Both are supported and the application's source is the same either
+way.
+
+- **A single-core world** — configured without `ARM_ALLOW_MULTI_CORE` — builds
+  this library with the core split compiled out. Every call runs directly, on
+  the one core, through the same call sites. This is the build for single-core
+  hardware and for older boards, and it is what the library did for its whole
+  first life.
+- **A multicore world** — configured with `ARM_ALLOW_MULTI_CORE`, which is what
+  `make deps` does — builds the split as well. Nothing is forced on by
+  building it: the split stays inert until a host kernel calls
+  `SDL2Circle_SplitInit`, so one image can still run everything on core 0.
+
+The API is identical. `SDL2Circle_SplitInit` exists in both builds; in a
+single-core one it reports that there is no multicore world to split into and
+changes nothing, and `SDL2Circle_SplitActive` keeps answering no, which is the
+answer every call site already handles.
+
+A world elsewhere on disk works with
+`make CIRCLESTDLIBHOME=/path/to/circle-stdlib`.
 
 Building through Circle's `Rules.mk` — as the test apps do — you get the
-world's own `DEFINE`, `-DARM_ALLOW_MULTI_CORE` included, and there is nothing
-to think about. **If you compile any translation unit outside it** — a foreign
-build system with its own flag list — it must carry that define too. Circle's
+world's own `DEFINE`, whichever way it was configured, and there is nothing to
+think about. **If you compile any translation unit outside it** — a foreign
+build system with its own flag list — it must match the world it will link
+against. Circle's
 headers change shape on it (spinlocks, atomics, memory layout), so an object
 compiled without it disagrees with the library it links against, and nothing
 tells you: it builds, it links, and it is wrong at runtime.
