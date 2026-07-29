@@ -110,8 +110,11 @@ enum
                                   // at a locked frame rate these absorb all
                                   // slack and would otherwise make render
                                   // impersonate saturation.
-    SDL2CIRCLE_PERF_AUDIO,        // audio callback pump
+    SDL2CIRCLE_PERF_AUDIO,        // audio callback pump, and the feed to
+                                  // the sound device on the hardware core
     SDL2CIRCLE_PERF_INPUT,        // USB PnP + HID translation
+    SDL2CIRCLE_PERF_SERVE,        // hardware core answering another core:
+                                  // the call mailbox and the log drain
     SDL2CIRCLE_PERF_YIELD,        // scheduler yield (other tasks' time)
     SDL2CIRCLE_PERF_NCATS
 };

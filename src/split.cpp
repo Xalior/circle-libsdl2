@@ -287,18 +287,50 @@ extern "C" void SDL2Circle_SplitPresentCore(void)
             wfe();
             continue;
         }
+        // Everything the mailbox owns is read into locals FIRST. Past the
+        // acknowledgement below the application core may overwrite the box,
+        // so nothing after it may still be reading out of one.
+        const unsigned ncmds = g_frame.ncmds;
+        const unsigned half = g_frame.half;
+
         {
-            // The frame's whole compute: the scale, and the present the
-            // grant dictates. VideoFlip accounts its own blocking waits
-            // separately from inside this scope.
+            // Consuming the frame: the scale, reading the command list and
+            // the texture buffers the application core posted.
             SDL2CirclePerfScope render(SDL2CIRCLE_PERF_RENDER);
-            for (unsigned i = 0; i < g_frame.ncmds; i++)
-                SDL2Circle_VideoExecCmd(&g_frame.cmds[i], g_frame.half);
-            SDL2Circle_VideoFlip(g_frame.half);
+            for (unsigned i = 0; i < ncmds; i++)
+                SDL2Circle_VideoExecCmd(&g_frame.cmds[i], half);
         }
+
+        // RELEASE THE APPLICATION CORE HERE, and not one line later.
+        //
+        // The scale above is the last thing that reads anything the
+        // application core owns: the command list is consumed, and every
+        // texture buffer a command pointed at has been read to the end. So
+        // this is the earliest point at which the next frame may be posted,
+        // and posting is what the application core is blocked on.
+        //
+        // What follows is the OUTPUT side — waiting for the previous
+        // transfer, waiting for the raster, starting the next transfer —
+        // and it touches only the shadow this core owns and the framebuffer.
+        // None of it is the application's business, so none of it belongs
+        // inside the window the application is waiting on. Holding the
+        // acknowledgement until after it cost the application core a whole
+        // frame's output latency on top of its own work, which is what kept
+        // the split below the frame rate a single core managed.
+        //
+        // The double-buffered texture is what makes the early release safe:
+        // released now, the application core writes the OTHER buffer, never
+        // the one just read. The worker stays sequential — the next frame's
+        // scale cannot start until this flip returns — so the shadow it is
+        // about to hand the engine is never written behind it either.
         done = seq;
         g_frame.ack.store(done, std::memory_order_release);
         publish();
+
+        {
+            SDL2CirclePerfScope render(SDL2CIRCLE_PERF_RENDER);
+            SDL2Circle_VideoFlip(half);
+        }
     }
 }
 
@@ -574,9 +606,13 @@ public:
         for (;;)
         {
             // Call mailbox (init, window/audio creation, I/O service).
+            // Scoped because on the hardware core this is not housekeeping,
+            // it is another core's work being done here — and how much of
+            // it there is, is the question a split receipt exists to answer.
             u64 req = g_call.req.load(std::memory_order_acquire);
             if (req > g_call.ack.load(std::memory_order_relaxed))
             {
+                SDL2CirclePerfScope serve(SDL2CIRCLE_PERF_SERVE);
                 g_call.fn(g_call.arg);
                 g_calls_served.fetch_add(1, std::memory_order_relaxed);
                 g_call.ack.store(req, std::memory_order_release);
@@ -584,22 +620,36 @@ public:
             }
 
             // USB plug-and-play + HID -> event ring.
-            SDL2Circle_InputPump();
+            {
+                SDL2CirclePerfScope input(SDL2CIRCLE_PERF_INPUT);
+                SDL2Circle_InputPump();
+            }
 
             // Debug-UART robot hands -> event ring. Like InputPump, this reads
             // hardware (the serial RX), so it MUST run on core 0: the application core's
             // pump early-returns past it. Its synthesized key events go through
             // SDL_PushEvent, which on core 0 publishes to the same ring the app
             // core drains. (Inert unless --rapi-debug-uart armed it.)
-            SDL2Circle_InjectPump();
+            {
+                SDL2CirclePerfScope input(SDL2CIRCLE_PERF_INPUT);
+                SDL2Circle_InjectPump();
+            }
 
             // Audio ring -> sound device.
-            SDL2Circle_AudioDrain();
+            {
+                SDL2CirclePerfScope audio(SDL2CIRCLE_PERF_AUDIO);
+                SDL2Circle_AudioDrain();
+            }
 
             // Every other core's log lines -> the console. This core owns
             // the serial device, so this is the only place they can reach
-            // it, and it is why a core that logs never has to block.
-            SDL2Circle_LogDrain();
+            // it, and it is why a core that logs never has to block. It is
+            // charged as service because that is what it is: printing on
+            // another core's behalf.
+            {
+                SDL2CirclePerfScope serve(SDL2CIRCLE_PERF_SERVE);
+                SDL2Circle_LogDrain();
+            }
 
             // Performance receipts. The pump's tail call never runs under
             // the split (the application core's pump early-returns after its
@@ -620,7 +670,10 @@ public:
                 }
             }
 
-            CScheduler::Get()->Yield();
+            {
+                SDL2CirclePerfScope yield(SDL2CIRCLE_PERF_YIELD);
+                CScheduler::Get()->Yield();
+            }
         }
     }
 };

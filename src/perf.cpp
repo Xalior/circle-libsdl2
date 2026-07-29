@@ -21,7 +21,10 @@
 // logger from the pump's heartbeat.
 //
 #include "sdl2circle.h"
+#include <SDL2/SDL_circle.h>
+#include <circle/cputhrottle.h>
 #include <circle/logger.h>
+#include <atomic>
 
 // The counter backend is AArch64 system-register assembly (PMCCNTR_EL0 and
 // friends), which does not exist on 32-bit builds. On any other
@@ -46,8 +49,20 @@ struct SPerfBank
 // others' banks as plain aligned loads (single-copy atomic on AArch64,
 // and diagnostics tolerate a frame of staleness).
 static SPerfBank s_banks[PERF_MAX_CORES];
-static unsigned s_interval;       // seconds; 0 = disabled
+static std::atomic<unsigned> s_interval{0};   // seconds; 0 = disabled
 static u64 s_lastReportTicks;     // CNTVCT at last report
+
+// The processor clock, needed to turn wall time into the cycles a core
+// WOULD have counted had it never slept. Read once through the hardware
+// core (it is a firmware mailbox query) and cached, because the reporter
+// may run anywhere.
+static unsigned s_cpuHz;
+
+static void read_cpu_hz(void *p)
+{
+    CCPUThrottle *throttle = CCPUThrottle::Get();
+    *(unsigned *)p = throttle ? throttle->GetClockRate() : 0;
+}
 
 static inline u64 cntvct(void)
 {
@@ -92,7 +107,10 @@ u64 SDL2Circle_PerfCycles(void)
 
 bool SDL2Circle_PerfEnabled(void)
 {
-    return s_interval != 0;
+    // Global intent, read by every core. Arming is one core's decision and
+    // every other core has to see it, or it never starts its own counter
+    // and never appears in the receipt at all.
+    return s_interval.load(std::memory_order_acquire) != 0;
 }
 
 void SDL2Circle_PerfAccumulate(unsigned cat, u64 cycles)
@@ -126,9 +144,11 @@ void SDL2Circle_PerfChildAdd(u64 cycles)
 
 extern "C" void SDL2Circle_SetPerfInterval(unsigned nSeconds)
 {
-    s_interval = nSeconds;
     if (!nSeconds)
+    {
+        s_interval.store(0, std::memory_order_release);
         return;
+    }
 
     for (unsigned c = 0; c < PERF_MAX_CORES; c++)
     {
@@ -138,6 +158,11 @@ extern "C" void SDL2Circle_SetPerfInterval(unsigned nSeconds)
         s_banks[c].children = 0;
     }
     s_lastReportTicks = cntvct();
+    s_cpuHz = 0;
+
+    // Published last: a core that sees the interval must already be able to
+    // see the zeroed banks behind it.
+    s_interval.store(nSeconds, std::memory_order_release);
 
     // Arm the calling core now; other cores arm themselves on first use.
     u64 base = SDL2Circle_PerfCycles();
@@ -150,11 +175,12 @@ extern "C" void SDL2Circle_SetPerfInterval(unsigned nSeconds)
 // line per core that has run instrumented code since arming.
 void SDL2Circle_PerfTick(void)
 {
-    if (!s_interval)
+    unsigned interval = s_interval.load(std::memory_order_acquire);
+    if (!interval)
         return;
 
     u64 now = cntvct();
-    if (now - s_lastReportTicks < (u64)s_interval * cntfrq())
+    if (now - s_lastReportTicks < (u64)interval * cntfrq())
         return;
 
     // Presented frames since the last report, for the frame rate: the
@@ -163,9 +189,13 @@ void SDL2Circle_PerfTick(void)
     static unsigned s_lastPresents;
     unsigned frames = g_SDL2CirclePresents - s_lastPresents;
     s_lastPresents = g_SDL2CirclePresents;
-    u64 elapsedTicks = now - s_lastReportTicks;
-    unsigned fps10 = (unsigned)((u64)frames * 10 * cntfrq() / elapsedTicks);
+    u64 elapsed = now - s_lastReportTicks;
+    unsigned fps10 = (unsigned)((u64)frames * 10 * cntfrq() / elapsed);
     s_lastReportTicks = now;
+
+    // One firmware query, the first time a report is printed.
+    if (!s_cpuHz)
+        SDL2Circle_CallOn0(read_cpu_hz, &s_cpuHz);
 
     unsigned self = SDL2Circle_ThisCore() % PERF_MAX_CORES;
 
@@ -186,9 +216,27 @@ void SDL2Circle_PerfTick(void)
         u64 wait = bank.acc[SDL2CIRCLE_PERF_WAIT];
         u64 audio = bank.acc[SDL2CIRCLE_PERF_AUDIO];
         u64 input = bank.acc[SDL2CIRCLE_PERF_INPUT];
+        u64 serve = bank.acc[SDL2CIRCLE_PERF_SERVE];
         u64 yield = bank.acc[SDL2CIRCLE_PERF_YIELD];
-        u64 accounted = render + wait + audio + input + yield;
+        u64 accounted = render + wait + audio + input + serve + yield;
         u64 app = total > accounted ? total - accounted : 0;
+
+        // AWAKE against WALL, and this is the whole point of the line.
+        //
+        // The cycle counter stops while a core is asleep in WFE, so `total`
+        // is not elapsed time — it is only the time this core was awake.
+        // Percentages of it answer "of the work this core did, how much was
+        // what", which is worth knowing but is NOT "how busy was this core".
+        // A core parked 92% of a frame and a core saturated flat out can
+        // print identical splits. So the split is stated as what it is — a
+        // division of the awake portion — and the awake portion itself is
+        // stated against the wall clock, which never stops.
+        u64 wallCycles = s_cpuHz
+                         ? (u64)((__uint128_t)elapsed * s_cpuHz / cntfrq())
+                         : 0;
+        unsigned awakePm = (wallCycles && total < wallCycles)
+                           ? (unsigned)(total * 1000 / wallCycles)
+                           : 1000;
 
         // Per-mille for one decimal of percent without floats. Wait is
         // printed apart from render on purpose: at a locked frame rate
@@ -197,12 +245,14 @@ void SDL2Circle_PerfTick(void)
         // saturation.
         auto pm = [total](u64 v) { return (unsigned)(v * 1000 / total); };
         SDL2Circle_Log("sdl2perf", SDL2CIRCLE_LOG_NOTICE,
-                              "%u.%u fps c%u: cycles %lluM: app %u.%u%% render %u.%u%% wait %u.%u%% audio %u.%u%% input %u.%u%% yield %u.%u%%",
+                              "%u.%u fps c%u: awake %u.%u%% (%lluM of %lluM): app %u.%u%% render %u.%u%% wait %u.%u%% serve %u.%u%% audio %u.%u%% input %u.%u%% yield %u.%u%%",
                               fps10 / 10, fps10 % 10, c,
-                              total / 1000000,
+                              awakePm / 10, awakePm % 10,
+                              total / 1000000, wallCycles / 1000000,
                               pm(app) / 10, pm(app) % 10,
                               pm(render) / 10, pm(render) % 10,
                               pm(wait) / 10, pm(wait) % 10,
+                              pm(serve) / 10, pm(serve) % 10,
                               pm(audio) / 10, pm(audio) % 10,
                               pm(input) / 10, pm(input) % 10,
                               pm(yield) / 10, pm(yield) % 10);
