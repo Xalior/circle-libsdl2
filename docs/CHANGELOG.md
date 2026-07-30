@@ -8,7 +8,7 @@ Anything marked **Consumers must act** changes what a host kernel has to do,
 and will stop an existing kernel from building or running until it is
 followed.
 
-## vPoC2 — unreleased
+## vPoC2
 
 ### Joysticks and game controllers
 
