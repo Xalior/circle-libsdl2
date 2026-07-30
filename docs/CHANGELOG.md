@@ -122,6 +122,8 @@ archive rather than leave the previous build under the same name.
 
 No count has been measured against a real workload.
 
+`e92239f`, `90e78a2`
+
 ### A picture that fits exactly now fills the screen exactly
 
 Placing the canvas on the scanout formed the scale factor as a 16.16
