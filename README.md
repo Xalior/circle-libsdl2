@@ -369,9 +369,11 @@ and only the direct paths remain. See Building for choosing between the two.
   this board does not have: a finished frame goes in, a scanout comes out. It
   runs no part of SDL and knows nothing about it. Pixels only.
 
-**What crosses to that last core is a finished frame — pixels, and where on
-the screen they go. Never a list of drawing to do.** Drawing is SDL's, and
-SDL runs on the main core.
+**By default what crosses to that last core is a finished frame — pixels, and
+where on the screen they go, rather than a list of drawing to do.** Drawing
+is SDL's, and SDL runs on the main core. A build may raise the crossing count
+and send short frames as a command list instead; see
+[Choosing what crosses](#choosing-what-crosses-the-crossing-count).
 
 Almost every frame an application draws is the same shape: clear the target,
 then blit one opaque texture over it. This library recognises that shape as it
@@ -469,9 +471,10 @@ it nor need to match it; and because every count shares one archive name,
 changing it deletes the archive so the previous build cannot be quietly
 reused.
 
-**No count has been measured against a real workload.** The recorder has held
-sixteen since the core split was written, and the default of zero is what the
-library has effectively always done on the board it ships on.
+The recorder has held sixteen since the core split was written. A count of
+zero is the default because it is what this library did before the count was
+adjustable, on any board whose firmware grants a single screen rather than
+two.
 
 ### Why the split is shaped this way
 
@@ -500,7 +503,7 @@ it must never start assuming.
 ### What the host kernel has to do
 
 In this order. It is ordinary Circle start-up until the split is armed; only
-the last two steps are about this library.
+steps 3 and 4 are calls into this library.
 
 1. **Initialise the platform first.** Bring up interrupts, the timer, the
    serial console, the SD card, and mount the filesystem — all on core 0, as
@@ -731,16 +734,20 @@ configuration for this.
   watchdog exists to report. Audio callbacks never run in interrupt context.
 - **The CPU clock and the case fan belong to this library.** Circle's
   `CCPUThrottle` is both of those in one class: it sets the clock rate, and
-  where `cmdline.txt` names a fan pin with `gpiofanpin=` it switches a case
-  fan instead. Circle creates neither for itself — it requires that a system
+  it decides what happens when the processor passes `socmaxtemp`. With no fan
+  pin named, it reduces the clock to idle until the chip cools. Where
+  `cmdline.txt` names one with `gpiofanpin=`, it leaves the clock alone and
+  switches the fan on instead. Circle creates neither for itself — it requires
+  that a system
   holds exactly one such object and that something calls it regularly, or
   none of that management ever happens. A host kernel has no per-frame loop
   to call from and this library already runs one, so **the library owns the
   object** and drives it from whichever per-frame service point is active:
   the servo on the hardware core under the split, `SDL_PumpEvents` otherwise.
   There is one update policy and it belongs with the owner, because Circle's
-  `Update()` already limits itself to one measurement every few seconds, and
-  a second interval at a call site would only conflict with that one.
+  `Update()` already does its work at most once every four seconds and costs
+  a clock read the rest of the time, and a second interval at a call site
+  would only conflict with that one.
 - **A host kernel must not create a `CCPUThrottle` of its own.** Circle
   allows exactly one, and constructing a second stops the machine. Nor can
   this library compensate for a host that does: Circle offers no safe way to
@@ -802,20 +809,40 @@ configuration for this.
 ```sh
 git clone --recursive https://github.com/Xalior/circle-libsdl2.git
 cd circle-libsdl2
-make deps       # builds the Circle world, then libSDL2.a
+make deps       # builds all three Circle worlds, then all three archives
 ```
 
 This library **supplies its own runtime world** — the configured
 `circle-stdlib` build it compiles and links against. `circle-stdlib` is the
 Circle framework plus newlib and libc++, and it is a nested submodule here,
-not something you fetch and configure alongside. `make deps` fetches libc++
-from an immutable LLVM tag (Codeberg regenerates its archives, so downloading
-the tarball fails its hash check on a clean build), configures that world for
-the Pi 4
-(`-r 4 -p aarch64-none-elf- --libcxx-repo --kernel-max-size 256 -o
-ARM_ALLOW_MULTI_CORE`) and builds it, then builds this library against it. The
-first build is long — newlib and libc++ are compiled from source. Afterwards,
-a plain `make` rebuilds just `libSDL2.a`.
+not something you fetch and configure alongside.
+
+**There is one world and one archive per board**, because each is compiled
+for its own processor and its own `RASPPI` value, and an object built for one
+board is not usable on another:
+
+| Board | World | Archive |
+|---|---|---|
+| Pi 3 | `circle-stdlib-rpi3` | `libSDL2-rpi3.a` |
+| Pi 4 | `circle-stdlib-rpi4` | `libSDL2-rpi4.a` |
+| Pi 5 | `circle-stdlib-rpi5` | `libSDL2-rpi5.a` |
+
+`make deps` does all three. For each board it fetches the world's sources —
+including libc++ from an immutable LLVM tag, because Codeberg regenerates its
+archives and downloading the tarball fails its hash check on a clean build —
+then configures that world (`-r <board> -p aarch64-none-elf- --libcxx-repo
+--kernel-max-size 256 -o ARM_ALLOW_MULTI_CORE`) and builds it, and finally
+builds this library against each. The first build is long: newlib and libc++
+are compiled from source, once per board.
+
+Afterwards, a plain `make` rebuilds one board's archive — `BOARD` selects
+which, and defaults to `rpi4`:
+
+```sh
+make                  # libSDL2-rpi4.a
+make BOARD=rpi5       # libSDL2-rpi5.a
+make all-boards       # all three
+```
 
 ### Choosing single-core or multicore
 
@@ -837,6 +864,15 @@ single-core one it reports that there is no multicore world to split into and
 changes nothing, and `SDL2Circle_SplitActive` continues to answer no, which is
 the answer every call site already handles.
 
+Building through Circle's `Rules.mk` — as the examples do — you get
+`ARM_ALLOW_MULTI_CORE` from the world itself, whichever way it was
+configured, and there is nothing to think about. **If you compile any
+translation unit outside `Rules.mk`** — a foreign build system with its own
+flag list — that flag must match the world the object will link against.
+Circle's headers change shape on it (spinlocks, atomics, memory layout), so
+an object compiled without it disagrees with the library it links against,
+and nothing tells you: it builds, it links, and it is wrong at runtime.
+
 A world elsewhere on disk works with
 `make CIRCLESTDLIBHOME=/path/to/circle-stdlib`.
 
@@ -849,15 +885,6 @@ picture — see
 is compiled into the archive, objects are kept in per-count trees so builds
 never mix, and changing it deletes the archive rather than risk returning
 the previous count's build under the same name.
-
-Building through Circle's `Rules.mk` — as the examples do — you get the
-world's own `DEFINE`, whichever way it was configured, and there is nothing to
-think about. **If you compile any translation unit outside it** — a foreign
-build system with its own flag list — it must match the world it will link
-against. Circle's headers change shape on it (spinlocks, atomics, memory
-layout), so an object compiled without it disagrees with the library it links
-against, and nothing tells you: it builds, it links, and it is wrong at
-runtime.
 
 Applications link by including `sdl-app.mk` after Circle's `Rules.mk`
 (see any Makefile under `examples/`): it links with `sdl-app.ld` — required
@@ -925,3 +952,7 @@ templates, and the way a change is proven before it ships:
 ## License
 
 zlib, matching SDL itself — see `LICENSE`.
+
+One file is an exception. `sdl-app.ld`, the linker script an application
+links with, is derived from Circle's `circle.ld` and remains GPLv3; its own
+header says so.
