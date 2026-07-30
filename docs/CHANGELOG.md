@@ -110,7 +110,7 @@ Circle's "no size requested", which takes the display's own dimensions — and
 the panel keeps the mode it already had. Where the operator does name one it
 is asked for exactly as before.
 
-`1c83bcf`, `6741ffe`
+`1c83bcf`, `6741ffe`, `88817b2`
 
 ## vPoC2
 
