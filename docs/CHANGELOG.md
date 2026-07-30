@@ -10,7 +10,11 @@ followed.
 
 ## vPoC3
 
-### An application can declare the display it is given
+### An application declares the display it is given
+
+**Consumers must act:** every consumer must now call
+`SDL2Circle_DeclareVirtualDevice(32, width, height)` before `SDL_Init`.
+`SDL_Init` fails without it. An existing kernel will not run until it does.
 
 There are two display resolutions on a bare-metal Pi, they do two different
 jobs, and this version separates them properly.
@@ -49,14 +53,27 @@ refused rather than rounded to this one. Width and height must both be above
 zero. A refusal returns -1 with `SDL_GetError` giving the reason, changes
 nothing, and leaves any earlier accepted declaration standing.
 
-**An application that declares nothing is given the physical display**, and
-there is nothing to scale. `width=` and `height=` had been quietly serving as
+**There is no fallback.** `width=` and `height=` had been quietly serving as
 both the firmware's mode request and the application's world; they are the
-mode request alone now, and never set what the application is given.
+mode request alone now, and never set what the application is given. Nothing
+replaces them: a consumer that declares no virtual device has not said what
+display its application is to be given, and the library refuses to start
+rather than invent one. `SDL_Init` returns failure with `SDL_GetError`
+explaining, and names the missing call on the console.
 
-`test/virtdev` is a bootable example: it declares a device, checks every SDL
-answer about the display against what it declared, and makes each declaration
-the library refuses so the reason for each is on the serial log.
+An application wanting its virtual display to match the panel asks the
+firmware itself and declares the answer — a handful of lines against Circle's
+public property tags, needing nothing from this library.
+`test/gradient`, `test/keyecho`, `test/tone`, `test/padview` and
+`test/videocycle` each carry that query in their own source, written out in
+full rather than shared, so every one stands alone as a worked answer.
+`test/videocycle` also shows what an application off core 0 needs, the
+firmware mailbox being core 0's.
+
+`test/virtdev` is the opposite demonstration: it declares a size matching
+nothing on the board, checks every SDL answer about the display against what
+it declared, and makes each declaration the library refuses so the reason for
+each is on the serial log.
 
 `b2eca5c`, `1c83bcf`
 
@@ -81,10 +98,6 @@ two screens on a double-buffered grant.
 Asking the firmware makes a Pi 5 — which acknowledges a mode request and then
 scans out its display's own mode regardless — describe itself correctly
 without the library inferring anything.
-
-Where the reported mode is larger than the memory the same firmware granted,
-the geometry is held to the grant and a warning says so. That is a bound on
-what may be written, not a second way of working the resolution out.
 
 `1c83bcf`
 

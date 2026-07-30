@@ -12,6 +12,12 @@
 #include <circle/types.h>
 #include <SDL2/SDL_circle.h>   // the public split/I-O surface backing this glue
 
+// Whether SDL2Circle_DeclareVirtualDevice (SDL_circle.h) has been called and
+// accepted. SDL_Init asks before it brings anything up: the virtual display
+// is what the library is built around and there is no fallback for it, so a
+// consumer that has not declared one cannot be started.
+bool SDL2Circle_VirtualDeviceDeclared(void);
+
 void SDL2Circle_InputInit(void);   // bring up USB (idempotent)
 void SDL2Circle_InputPump(void);   // PnP + translate HID reports to events
 void SDL2Circle_AudioPump(void);   // run app audio callback into the queue

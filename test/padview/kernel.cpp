@@ -18,6 +18,8 @@
 //
 #include "kernel.h"
 #include <SDL2/SDL.h>
+#include <SDL2/SDL_circle.h>
+#include <circle/bcmpropertytags.h>
 #include <cstring>
 #include <cstdio>
 #include <cstdarg>
@@ -26,7 +28,29 @@ static const char From[] = "padview";
 
 // Drawn at 1280x720 and scaled to whatever the display really is, so the text
 // stays chunky enough to read across a room.
-static const int W = 1280, H = 720;
+// The virtual display, settled at start-up from the physical one.
+static int W = 0, H = 0;
+// The physical display, asked of the firmware directly. This is the
+// EXAMPLE's own query, not something the library provides: the library is
+// told what virtual display to present and never goes looking for one, so a
+// consumer that wants the two to match asks for itself. This is the whole of
+// what that takes, and it uses nothing but Circle's public property tags.
+//
+// FALSE when the firmware will not answer.
+static boolean PhysicalDisplaySize(int *pWidth, int *pHeight)
+{
+    CBcmPropertyTags Tags;
+    TPropertyTagDisplayDimensions Dim;
+    memset(&Dim, 0, sizeof Dim);
+    if (!Tags.GetTag(PROPTAG_GET_DISPLAY_DIMENSIONS, &Dim, sizeof Dim))
+        return FALSE;
+    if (Dim.nWidth == 0 || Dim.nHeight == 0)
+        return FALSE;
+    *pWidth  = (int) Dim.nWidth;
+    *pHeight = (int) Dim.nHeight;
+    return TRUE;
+}
+
 
 static const Uint32 COL_BG      = 0xFF0C0C12;
 static const Uint32 COL_PANEL   = 0xFF181822;
@@ -451,6 +475,24 @@ boolean CKernel::Initialize(void)
 TShutdownMode CKernel::Run(void)
 {
     m_Logger.Write(From, LogNotice, "circle-libsdl2 padview test");
+
+    // Match the virtual display to the physical one: ask the firmware what
+    // the panel is, then declare that. The declaration is required and has no
+    // fallback, so an example that cannot learn the size has nothing honest
+    // to declare and stops here rather than guessing one.
+    if (!PhysicalDisplaySize(&W, &H))
+    {
+        m_Logger.Write(From, LogError,
+                       "the firmware will not report the display size");
+        return ShutdownHalt;
+    }
+    if (SDL2Circle_DeclareVirtualDevice(32, W, H) != 0)
+    {
+        m_Logger.Write(From, LogError, "virtual device: %s", SDL_GetError());
+        return ShutdownHalt;
+    }
+    m_Logger.Write(From, LogNotice, "virtual display %dx%d, matching the panel",
+                   W, H);
 
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_JOYSTICK | SDL_INIT_GAMECONTROLLER) != 0)
     {

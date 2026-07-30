@@ -69,9 +69,8 @@ themselves, so the library asks rather than guesses.
 **The canvas is the virtual display** — the world the application is given,
 and its shape against the scanout's decides the letterboxing. **The
 application declares it**, in its own code, before `SDL_Init` — see
-[Declaring the display](#declaring-the-display). Declare nothing and the
-canvas is the scanout: there are not two resolutions, and the library has
-nothing to scale.
+[Declaring the display](#declaring-the-display). It is required, and there
+is no fallback: without it the library refuses to start.
 
 **These are two numbers doing two jobs, and they coexist.** Neither is a
 fallback for the other and there is no order of precedence between them. One
@@ -142,13 +141,12 @@ The `present:` line names the path that is actually live — `dma copy` or
 
 ### Declaring the display
 
-Some applications cannot take whatever display they are handed. A game with a
-fixed layout, a port that was written for one resolution, an emulator whose
-raster is a fact about the machine it emulates — each of these has to draw in
-a display of one particular size, whatever panel it is plugged into.
-
-Such an application declares the display it needs, in its own code, before
-`SDL_Init`:
+**Every application declares the display it is to be given**, in its own
+code, before `SDL_Init`. This is not optional and there is no fallback of any
+kind — not the boot command line, not the panel. A consumer that has not
+declared one has not said what display its application is to be given, and
+the library will not invent one, so `SDL_Init` fails and says why on the
+console.
 
 ```c
 #include <SDL2/SDL_circle.h>
@@ -182,17 +180,46 @@ placement rules above put that world on the glass.
   `cmdline.txt` and granted, or not, by the firmware. Declaring a virtual
   device asks the firmware for nothing; it says what the application is to be
   shown, and the library scales.
-- **Declaring nothing is entirely ordinary.** An application that makes no
-  declaration is given the physical display, and there is nothing to scale.
+- **Without it the library does not start.** `SDL_Init` returns failure with
+  `SDL_GetError` explaining, and puts a line on the console naming the call
+  to make. Nothing is brought up, no device is touched, and no display
+  question is answerable.
+
+### Matching the virtual display to the physical one
 
 **Where the numbers come from is the application's business, and only the
 application's.** A build constant, a settings file, an option of its host
 kernel's own, a value off a network port. The library is told; it discovers
-nothing and offers no way to ask what the panel is. An application that wants
-its virtual display to match the physical one works the physical one out for
-itself — the firmware's own mailbox tags are there for anybody who wants
-them, and `test/dispinfo` shows how to read them — and passes the answer in
-here like any other number.
+nothing and offers no way to ask what the panel is.
+
+So an application that wants its virtual display to **match** the panel works
+the physical size out for itself and passes it in — which takes a handful of
+lines against Circle's public property tags, and needs nothing from this
+library at all:
+
+```c
+#include <circle/bcmpropertytags.h>
+
+CBcmPropertyTags Tags;
+TPropertyTagDisplayDimensions Dim;
+memset(&Dim, 0, sizeof Dim);
+if (Tags.GetTag(PROPTAG_GET_DISPLAY_DIMENSIONS, &Dim, sizeof Dim)
+    && Dim.nWidth != 0 && Dim.nHeight != 0)
+{
+    SDL2Circle_DeclareVirtualDevice(32, (int) Dim.nWidth, (int) Dim.nHeight);
+}
+```
+
+**`test/gradient`, `test/keyecho`, `test/tone`, `test/padview` and
+`test/videocycle` each do exactly this** — every one carries the query in its
+own kernel source rather than sharing a helper, so each stands alone as a
+complete worked answer. `test/videocycle` shows the variation an application
+off core 0 needs: the firmware mailbox belongs to core 0, so its host kernel
+asks and declares before the application core is released.
+
+**`test/virtdev` is the opposite demonstration** — it declares a size
+matching nothing on the board, because the virtual display is whatever the
+application says it is and need not resemble the hardware.
 
 `test/virtdev` is a bootable example of all of this — see
 [Test apps](#test-apps).

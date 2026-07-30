@@ -21,6 +21,7 @@
 #include "kernel.h"
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_circle.h>
+#include <circle/bcmpropertytags.h>
 #include <circle/startup.h>
 #include <atomic>
 #include <cstring>
@@ -28,10 +29,35 @@
 
 static const char From[] = "videocycle";
 
-// The canvas the shim gives us is decided by cmdline.txt width=/height=, not
-// by what SDL_CreateWindow is asked for. These are what the window is asked
-// for all the same, exactly as a consumer would.
-static const int WIN_W = 1280, WIN_H = 720;
+// The virtual display, settled at start-up from the physical one, and also
+// what the window is asked for — the shim takes no notice of the second, but
+// a consumer passes it all the same.
+static int WIN_W = 0, WIN_H = 0;
+
+// The physical display, asked of the firmware directly. This is the
+// EXAMPLE's own query, not something the library provides: the library is
+// told what virtual display to present and never goes looking for one, so a
+// consumer that wants the two to match asks for itself. This is the whole of
+// what that takes, and it uses nothing but Circle's public property tags.
+//
+// The firmware mailbox belongs to core 0, so unlike the other examples this
+// one asks from the kernel's own Run() before the application core is let
+// go, rather than from the application.
+//
+// FALSE when the firmware will not answer.
+static boolean PhysicalDisplaySize(int *pWidth, int *pHeight)
+{
+    CBcmPropertyTags Tags;
+    TPropertyTagDisplayDimensions Dim;
+    memset(&Dim, 0, sizeof Dim);
+    if (!Tags.GetTag(PROPTAG_GET_DISPLAY_DIMENSIONS, &Dim, sizeof Dim))
+        return FALSE;
+    if (Dim.nWidth == 0 || Dim.nHeight == 0)
+        return FALSE;
+    *pWidth  = (int) Dim.nWidth;
+    *pHeight = (int) Dim.nHeight;
+    return TRUE;
+}
 
 // The two source rasters a widescreen toggle switches between.
 static const int SRC_NARROW = 320, SRC_WIDE = 398, SRC_H = 224;
@@ -155,6 +181,10 @@ void CSplitCores::Run(unsigned nCore)
 
 static void app_main(void)
 {
+    // The virtual display was declared on core 0 before this core was let
+    // go, and it survives every restart below: the declaration is made once
+    // and is fixed for the run, so the world the application draws in does
+    // not move when its window does.
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO) != 0)
     {
         SDL2Circle_Log(From, SDL2CIRCLE_LOG_ERROR, "SDL_Init: %s", SDL_GetError());
@@ -279,6 +309,26 @@ TShutdownMode CKernel::Run(void)
     m_Logger.Write(From, LogNotice,
                    "circle-libsdl2 videocycle test: hardware core 0, "
                    "application core 1, presentation core 2");
+
+    // Match the virtual display to the physical one: ask the firmware what
+    // the panel is, then declare that. Done here, on core 0, because the
+    // firmware mailbox belongs to core 0 and the application core has not
+    // been let go yet. The declaration is required and has no fallback, so
+    // an example that cannot learn the size has nothing honest to declare
+    // and stops here rather than guessing one.
+    if (!PhysicalDisplaySize(&WIN_W, &WIN_H))
+    {
+        m_Logger.Write(From, LogError,
+                       "the firmware will not report the display size");
+        return ShutdownHalt;
+    }
+    if (SDL2Circle_DeclareVirtualDevice(32, WIN_W, WIN_H) != 0)
+    {
+        m_Logger.Write(From, LogError, "virtual device: %s", SDL_GetError());
+        return ShutdownHalt;
+    }
+    m_Logger.Write(From, LogNotice, "virtual display %dx%d, matching the panel",
+                   WIN_W, WIN_H);
 
     SDL2Circle_SplitInit();
     s_AppGate.store(1, std::memory_order_release);

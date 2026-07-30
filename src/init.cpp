@@ -116,6 +116,25 @@ static void init_hardware_on0(void *)
 
 extern "C" int SDL_InitSubSystem(Uint32 flags)
 {
+    // The virtual display device is what this library is built around, and
+    // it has no fallback of any kind — not the boot command line, not the
+    // physical display, nothing. A consumer that has not declared one has
+    // not said what display its application is to be given, and there is
+    // nothing here to invent in its place. So the library does not start.
+    //
+    // Refused at the door, before a single device is brought up, and said
+    // plainly on the console as well as through the return: this lands
+    // during start-up on a board whose only other output is a black screen.
+    if ((flags & SDL_INIT_VIDEO) && !SDL2Circle_VirtualDeviceDeclared())
+    {
+        SDL2Circle_Log("sdl2", SDL2CIRCLE_LOG_ERROR,
+                       "no virtual display device declared: call "
+                       "SDL2Circle_DeclareVirtualDevice(32, width, height) "
+                       "before SDL_Init");
+        return SDL_SetError("no virtual display device has been declared "
+                            "(SDL2Circle_DeclareVirtualDevice)");
+    }
+
     // Board hardware — the CPU clock and the case fan — before anything
     // else, so the rest of bring-up runs at the clock the application is
     // going to have. It belongs to core 0 like every other device, so it is

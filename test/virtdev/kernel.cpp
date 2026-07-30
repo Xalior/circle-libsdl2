@@ -1,16 +1,26 @@
 //
 // kernel.cpp — virtdev: the display an application declares for itself.
 //
-// Left alone, the library gives an application the physical display the
-// firmware reports, and has nothing to scale. An application that has to
-// render at one size instead says so in its own code, before SDL_Init, with
-// SDL2Circle_DeclareVirtualDevice(depth, width, height). Every SDL answer
-// about the display then reports that size, and the library scales each
-// frame from it onto whatever the panel is really doing.
+// Every application says what display it is to be given, before SDL_Init,
+// with SDL2Circle_DeclareVirtualDevice(depth, width, height). It is required
+// and it has no fallback: the library never invents a display, so without a
+// declaration it refuses to start at all.
 //
-// The two are separate: this declares the VIRTUAL display, and cmdline.txt
-// width=/height= asks the firmware for a PHYSICAL mode. Neither is a way of
-// setting the other.
+// THIS EXAMPLE DECLARES A SIZE THAT DELIBERATELY MATCHES NOTHING — not the
+// panel, not any display mode, not the boot options. That is its whole
+// point: the virtual display is whatever the application says it is, and it
+// need not resemble the hardware. Every SDL answer about the display comes
+// back as this size, and the library scales each frame from it onto whatever
+// the panel is really doing.
+//
+// The other examples show the opposite and more usual intent — gradient,
+// keyecho, tone, padview and videocycle each ask the firmware how big the
+// panel is and declare THAT, so their virtual display matches the physical
+// one. Compare this file with any of them to see both halves.
+//
+// The two resolutions are separate throughout: this declares the VIRTUAL
+// display, and cmdline.txt width=/height= asks the firmware for a PHYSICAL
+// mode. Neither is a way of setting the other.
 //
 // This kernel declares one, and then:
 //
@@ -37,8 +47,9 @@
 static const char From[] = "virtdev";
 
 // The virtual device this application declares. Not a display mode any panel
-// offers, on purpose: an application declares the world it wants to draw in,
-// and the library is what makes it fit the screen.
+// offers, and matched to nothing on the board, on purpose: an application
+// declares the world it wants to draw in, and the library is what makes it
+// fit the screen.
 static const int DEV_W = 800, DEV_H = 450;
 
 // What SDL_CreateWindow is asked for, which the library does not use — there

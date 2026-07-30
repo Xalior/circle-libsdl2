@@ -105,9 +105,10 @@ static SDL_Window *s_window = nullptr;
 //             the shape that decides the letterboxing. The consumer declares
 //             it before SDL_Init, and where the consumer got the numbers is
 //             the consumer's business entirely — this library is told, and
-//             discovers nothing. Declaring nothing is no opinion: the canvas
-//             becomes the scanout, the canvas hop disappears, and that is
-//             the autodetected default.
+//             discovers nothing. It is REQUIRED and it has no fallback: not
+//             the command line, not the scanout, nothing. Undeclared, there
+//             is no canvas, and the library refuses to start rather than
+//             invent a display the consumer never asked for.
 //
 //   APPLICATION  whatever SDL_CreateWindow was asked for, and whatever
 //             rectangles SDL_RenderCopy is handed. Those rectangles are
@@ -289,10 +290,33 @@ extern "C" int SDL2Circle_DeclareVirtualDevice(unsigned depth, int width,
     return 0;
 }
 
-static void resolve_display_size(void)
+// Non-zero once a virtual device has been declared. SDL_Init asks, because
+// the declaration is what the library needs before it can start at all.
+bool SDL2Circle_VirtualDeviceDeclared(void)
+{
+    return s_declared;
+}
+
+// Settle the canvas, the scanout and the placement between them. True once
+// the canvas exists; false when nothing was declared, which is the one
+// unanswerable state.
+//
+// SDL_Init is where that is reported loudly — a consumer is refused at the
+// door, once, rather than at every call afterwards. Reaching here undeclared
+// means SDL_Init already said no and was ignored, so this only sets the
+// error and refuses: the canvas stays zero, and everything derived from it
+// (the placement divides by it) is never computed from nothing.
+static bool resolve_display_size(void)
 {
     if (s_canvas_w > 0 && s_canvas_h > 0)
-        return;
+        return true;
+
+    if (!s_declared)
+    {
+        SDL_SetError("no virtual display device has been declared "
+                     "(SDL2Circle_DeclareVirtualDevice)");
+        return false;
+    }
 
     // The boot options' width=/height= is a request to the firmware for a
     // PHYSICAL DISPLAY MODE, and that is the whole of what it is. It is not
@@ -331,54 +355,20 @@ static void resolve_display_size(void)
         source = "firmware silent, physical request";
     }
 
-    // Held inside the grant. This is not a second way of working the scanout
-    // out — it is the bound on what may be WRITTEN. The reported mode and
-    // the granted memory are two separate firmware answers with nothing
-    // making them agree, every buffer in the presentation path is sized from
-    // this geometry, and past the edge of the grant is memory belonging to
-    // something else.
-    if (s_fb0 && s_fb0->GetPitch() != 0)
-    {
-        int room_w = (int)(s_fb0->GetPitch() / 4);
-        int room_h = (int)(s_fb0->GetSize() / s_fb0->GetPitch());
-        if (s_scanout_w > room_w || s_scanout_h > room_h)
-        {
-            SDL2Circle_Log("sdl2video", SDL2CIRCLE_LOG_WARNING,
-                                  "firmware reports %dx%d, grant has room for "
-                                  "%dx%d: held to the grant",
-                                  s_scanout_w, s_scanout_h, room_w, room_h);
-            if (s_scanout_w > room_w)
-                s_scanout_w = room_w;
-            if (s_scanout_h > room_h)
-                s_scanout_h = room_h;
-        }
-    }
-
-    // The declared virtual device states the canvas. Nothing declared is no
-    // opinion at all: the canvas IS the scanout, the canvas hop costs
-    // nothing, and there is nothing to configure. The boot options are not
-    // consulted here — they asked for a physical mode and that is all they
-    // did.
-    const char *csource;
-    if (s_declared)
-    {
-        s_canvas_w = s_declared_w;
-        s_canvas_h = s_declared_h;
-        csource = "declared virtual device";
-    }
-    else
-    {
-        s_canvas_w = s_scanout_w;
-        s_canvas_h = s_scanout_h;
-        csource = "undeclared, follows the scanout";
-    }
+    // The declared virtual device is the canvas, and the only thing that
+    // ever is. The boot options are not consulted here — they asked for a
+    // physical mode and that is all they did.
+    s_canvas_w = s_declared_w;
+    s_canvas_h = s_declared_h;
 
     SDL2Circle_Log("sdl2video", SDL2CIRCLE_LOG_NOTICE,
-                          "scanout %dx%d (%s), canvas %dx%d (%s)",
+                          "scanout %dx%d (%s), canvas %dx%d (declared "
+                          "virtual device)",
                           s_scanout_w, s_scanout_h, source,
-                          s_canvas_w, s_canvas_h, csource);
+                          s_canvas_w, s_canvas_h);
 
     resolve_placement();
+    return true;
 }
 
 // Presentation geometry, published when the window exists: the worker core
@@ -879,14 +869,20 @@ static void emit_cmd(SDL_Renderer *ren, const SDL2CirclePresentCmd &cmd)
     ren->cmds[ren->ncmds++] = cmd;
 }
 
-static void fill_mode(SDL_DisplayMode *mode)
+// Answer one display-mode query. False when there is no display to describe,
+// which only happens where SDL_Init's refusal was ignored. Zeroed first, so a
+// consumer that also ignores this return reads an obviously empty mode rather
+// than whatever its stack held.
+static bool fill_mode(SDL_DisplayMode *mode)
 {
-    resolve_display_size();
+    memset(mode, 0, sizeof(*mode));
+    if (!resolve_display_size())
+        return false;
     mode->format = SDL_PIXELFORMAT_ARGB8888;
     mode->w = s_window ? s_window->w : s_canvas_w;
     mode->h = s_window ? s_window->h : s_canvas_h;
     mode->refresh_rate = DEFAULT_HZ;
-    mode->driverdata = nullptr;
+    return true;
 }
 
 // ---- display information ---------------------------------------------------
@@ -897,9 +893,12 @@ extern "C" const char *SDL_GetDisplayName(int) { return "HDMI0"; }
 
 extern "C" int SDL_GetDisplayBounds(int, SDL_Rect *rect)
 {
-    resolve_display_size();
     rect->x = 0;
     rect->y = 0;
+    rect->w = 0;
+    rect->h = 0;
+    if (!resolve_display_size())
+        return -1;
     rect->w = s_window ? s_window->w : s_canvas_w;
     rect->h = s_window ? s_window->h : s_canvas_h;
     return 0;
@@ -909,20 +908,17 @@ extern "C" int SDL_GetNumDisplayModes(int) { return 1; }
 
 extern "C" int SDL_GetDisplayMode(int, int, SDL_DisplayMode *mode)
 {
-    fill_mode(mode);
-    return 0;
+    return fill_mode(mode) ? 0 : -1;
 }
 
 extern "C" int SDL_GetCurrentDisplayMode(int, SDL_DisplayMode *mode)
 {
-    fill_mode(mode);
-    return 0;
+    return fill_mode(mode) ? 0 : -1;
 }
 
 extern "C" int SDL_GetDesktopDisplayMode(int, SDL_DisplayMode *mode)
 {
-    fill_mode(mode);
-    return 0;
+    return fill_mode(mode) ? 0 : -1;
 }
 
 extern "C" int SDL_GetNumVideoDrivers(void) { return 1; }
@@ -1057,7 +1053,11 @@ static void create_window_on0(void *p)
     // placement between them. A consumer that creates a window without ever
     // asking for the display size arrives here first; the resolve is
     // idempotent and this is already core 0, so run it either way.
-    resolve_display_size();
+    //
+    // A window IS the canvas, so with nothing declared there is no window to
+    // make. The resolve has set the error.
+    if (!resolve_display_size())
+        return;
     CBcmFrameBuffer *fb = s_fb0;
     if (!fb)
     {

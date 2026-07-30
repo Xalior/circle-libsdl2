@@ -90,6 +90,12 @@ void SDL2Circle_SetPerfInterval(unsigned nSeconds);
 // come from these numbers, whatever resolution the panel is really being
 // scanned at. The library carries the frame from the one to the other.
 //
+// THIS IS REQUIRED AND THERE IS NO FALLBACK. Not the boot command line, not
+// the physical display, nothing: a consumer that has not declared a virtual
+// device has not said what display its application is to be given, and
+// SDL_Init refuses to start the library rather than invent one. It fails
+// with an SDL error and a line on the console.
+//
 // The declaration is FIXED. It is accepted once, before anything has asked
 // the library about the display, and after that the answer cannot change:
 // a second declaration is refused, and so is one made after the display size
@@ -105,8 +111,13 @@ void SDL2Circle_SetPerfInterval(unsigned nSeconds);
 // query the caller makes for itself, a value off a network port. This
 // library is TOLD what the virtual display is. It discovers nothing, offers
 // no way to ask what the panel is, and holds no opinion about what the
-// numbers ought to be. A consumer that wants its virtual display to match
-// the physical one works the physical one out itself and passes it in here.
+// numbers ought to be.
+//
+// A consumer that wants its virtual display to MATCH the physical one works
+// the physical one out itself and passes it in here. That takes a handful of
+// lines against Circle's public property tags —
+// CBcmPropertyTags::GetTag(PROPTAG_GET_DISPLAY_DIMENSIONS, ...) — and the
+// test/ examples each carry the block, written out in full.
 //
 // 32 is the only depth the library can serve: the framebuffer is allocated
 // at 32 bits per pixel and streaming ARGB8888 is the only texture format, so
@@ -118,12 +129,9 @@ void SDL2Circle_SetPerfInterval(unsigned nSeconds);
 // declaration changes nothing: no partial state is kept, and an earlier
 // accepted declaration still stands.
 //
-// Declaring nothing is entirely ordinary, and it is the autodetected
-// default: the application is given the physical display, so there are not
-// two resolutions and the library has nothing to scale. The boot options
-// `width=` and `height=` play no part in this — they ask the firmware for a
-// physical display mode and do nothing else. They never set the virtual
-// display, and this call never sets the physical one.
+// The boot options `width=` and `height=` play no part in any of this: they
+// ask the firmware for a physical display mode and do nothing else. They
+// never set the virtual display, and this call never sets the physical one.
 int SDL2Circle_DeclareVirtualDevice(unsigned depth, int width, int height);
 
 // ---- board hardware: CPU clock and case fan ---------------------------------
