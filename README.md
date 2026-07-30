@@ -844,6 +844,38 @@ Circle sound library the audio backend needs. `sdl-app.ld` is derived from
 Circle's `circle.ld` and remains GPLv3 (see its header); everything else
 here is zlib.
 
+### Catching a stub that outlived its purpose
+
+An application filling gaps in this library — a file of its own standing in
+for calls the library does not implement yet — should link the archive whole
+while developing:
+
+```make
+LIBS = --whole-archive $(SHIM)/libSDL2-$(BOARD).a --no-whole-archive \
+	$(CIRCLE_STDLIB_LIBS)
+```
+
+An object file linked straight into the kernel beats an archive member of
+the same name, and does it in silence. So when this library implements
+something an application had stubbed, the stub goes on winning: the
+application keeps calling its own do-nothing version, the real one is never
+linked, and nothing anywhere says so. That failure looks like the library
+not working.
+
+Linking the archive whole makes the same situation a duplicate-symbol error
+at link time, naming both definitions. The fix is then to delete the stub,
+which was the intention all along.
+
+`--no-whole-archive` closes the scope immediately, so only this archive is
+forced and the C library, libc++ and Circle link as they always did. **There
+is no size penalty for an application that already uses most of the
+library** — measured on a consumer with a stub file of its own, both the
+member count and the image were identical to the byte.
+
+It is a development setting rather than a shipping one: an application that
+uses only a corner of this library, and knows it, pays for the rest. Nothing
+requires it either way, and no example here sets it.
+
 ## Examples
 
 Each is a complete bootable kernel exercising one subsystem. They are the
