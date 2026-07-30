@@ -1,8 +1,18 @@
 #
 # circle-libsdl2 gradient test — SDL2 video first light
 #
+# Each board has its own configured world and its own archive, so name the
+# board to build against a different one:
+#
+#   make BOARD=rpi5
+#
+# Objects are built in place, as Circle's rules do, so switching boards means
+# `make clean` first.
+#
 
-CIRCLESTDLIBHOME ?= ../../circle-stdlib
+BOARD ?= rpi4
+
+CIRCLESTDLIBHOME ?= ../../circle-stdlib-$(BOARD)
 
 include $(CIRCLESTDLIBHOME)/Config.mk
 
@@ -14,7 +24,7 @@ include $(CIRCLEHOME)/Rules.mk
 
 INCLUDE := -I ../../include $(CIRCLE_STDLIB_INCLUDES) $(INCLUDE)
 
-LIBS := ../../libSDL2.a $(CIRCLE_STDLIB_LIBS)
+LIBS := ../../libSDL2-$(BOARD).a $(CIRCLE_STDLIB_LIBS)
 
 -include $(DEPS)
 
