@@ -107,6 +107,14 @@ contributes arithmetic, never an intermediate copy.
   and returns without waiting for it, scaling the next frame into a second
   buffer while the transfer runs. One frame is in flight at a time. If no
   DMA channel is free, the CPU does the copy exactly as before.
+- **The present path is built once and reused.** Its buffers and its DMA
+  channel are sized by the framebuffer the firmware granted, and that grant
+  is made once and kept for as long as the machine runs, so a second window
+  adopts the same one. An application may destroy its window, renderer and
+  textures and create new ones as often as it likes — which is what a
+  settings menu does whenever a video setting changes — and none of it is
+  taken again. There are only a few DMA channels on the board and the sound
+  device needs one too.
 
 The library logs the whole chain once at startup and once per distinct
 geometry, so a serial console tells you what happened without guessing:

@@ -336,6 +336,24 @@ static u8 *s_stage = nullptr;
 static unsigned s_stage_pitch = 0;
 static size_t s_stage_bytes = 0;
 
+// Whether the present path — the shadow buffers and the DMA channel, or the
+// staging frame — has been built.
+//
+// It is sized and shaped by THE framebuffer grant, and that grant is made
+// once and never returned (see s_fb0), so nothing it depends on can change
+// while the machine runs: a second window adopts the same grant, the same
+// scanout geometry and the same present resources. It therefore belongs to
+// the grant's lifetime and not to a window's, and window teardown leaves it
+// alone.
+//
+// The alternative — rebuild it per window — strands what the previous one
+// took, and neither resource is small: the shadows are a screen each, and
+// the DMA channel comes from a pool of a few that the sound device draws
+// from as well, so a consumer that restarts its video on a settings change
+// exhausts it in a handful of restarts and the next allocation anywhere in
+// the machine fails.
+static bool s_present_ready = false;
+
 // ---- the scaler -------------------------------------------------------------
 //
 // Nearest-neighbour resampling with precomputed per-axis index tables. The
@@ -846,10 +864,17 @@ static void setup_shadow_present(void)
         // Ask the resource map, then hand the answer straight back and let
         // CDMAChannel take it by number: the constructor asserts rather
         // than reports when nothing is free, and this library falls back
-        // instead of dying. Nothing can allocate in between — this is core
-        // 0, before the application runs. The framebuffer's own screen DMA
-        // and the HDMI sound device each hold a channel from the same pool,
-        // which is why this asks rather than assumes.
+        // instead of dying. The HDMI sound device holds a channel from the
+        // same small pool, which is why this asks rather than assumes.
+        //
+        // Giving the channel back and taking it again leaves a window in
+        // which something else could take it. Nothing can: every DMA channel
+        // this library takes or gives back — the sound device's included —
+        // is taken or given back on core 0 through the call mailbox, which
+        // serves one call at a time and never yields inside one. An
+        // application core is live by now, and its own calls arrive through
+        // that mailbox like everything else, so they queue behind this
+        // rather than interleave with it.
         unsigned channel =
             CMachineInfo::Get()->AllocateDMAChannel(SHADOW_DMA_CHANNEL);
         if (channel == DMA_CHANNEL_NONE)
@@ -951,10 +976,13 @@ static void create_window_on0(void *p)
     {
         s_shadow_pitch = (unsigned)s_fb_w * 4;
         s_shadow_bytes = (size_t)s_shadow_pitch * s_fb_h;
-        SDL2Circle_Log("sdl2video", SDL2CIRCLE_LOG_WARNING,
-                              "granted %u rows < %u: shadow-buffered present",
-                              nRowsGranted, 2u * (unsigned)s_fb_h);
-        setup_shadow_present();
+        if (!s_present_ready)
+        {
+            SDL2Circle_Log("sdl2video", SDL2CIRCLE_LOG_WARNING,
+                                  "granted %u rows < %u: shadow-buffered present",
+                                  nRowsGranted, 2u * (unsigned)s_fb_h);
+            setup_shadow_present();
+        }
     }
     else
     {
@@ -969,13 +997,17 @@ static void create_window_on0(void *p)
         // be writing the framebuffer a pixel at a time.
         s_stage_pitch = (unsigned)s_fb_w * 4;
         s_stage_bytes = (size_t)s_stage_pitch * s_fb_h;
-        s_stage = (u8 *)calloc(s_stage_bytes, 1);
-        if (!s_stage)
-            SDL2Circle_Log("sdl2video", SDL2CIRCLE_LOG_WARNING,
-                                  "present: composing straight into the framebuffer, "
-                                  "%u bytes of staging could not be allocated",
-                                  (unsigned)s_stage_bytes);
+        if (!s_present_ready)
+        {
+            s_stage = (u8 *)calloc(s_stage_bytes, 1);
+            if (!s_stage)
+                SDL2Circle_Log("sdl2video", SDL2CIRCLE_LOG_WARNING,
+                                      "present: composing straight into the framebuffer, "
+                                      "%u bytes of staging could not be allocated",
+                                      (unsigned)s_stage_bytes);
+        }
     }
+    s_present_ready = true;
 
     s_window = win;
 
@@ -1031,6 +1063,11 @@ extern "C" void SDL_DestroyWindow(SDL_Window *win)
 {
     if (!win)
         return;
+
+    // The presentation worker reaches the window through s_window on every
+    // flip, so it has to be out of the frame before this object goes away.
+    SDL2Circle_PresentQuiesce();
+
     if (win == s_window)
     {
         s_window = nullptr;
@@ -1039,6 +1076,12 @@ extern "C" void SDL_DestroyWindow(SDL_Window *win)
     // win->fb is THE framebuffer (s_fb0), kept for the process lifetime:
     // deleting it cannot return the firmware's allocation, and the next
     // window must adopt the same grant rather than allocate a leak.
+    //
+    // The present path (the shadow buffers and their DMA channel, or the
+    // staging frame) belongs to that same grant and outlives the window with
+    // it — see s_present_ready. Releasing it here would give the next window
+    // nothing to reuse, and taking a fresh DMA channel each time is what
+    // empties the pool.
     delete win;
 }
 
@@ -1218,6 +1261,9 @@ extern "C" void SDL_DestroyTexture(SDL_Texture *tex)
 {
     if (!tex)
         return;
+    // A frame the worker has not finished with may still name this texture's
+    // pixels as its source — the reduced frame IS the texture, in place.
+    SDL2Circle_PresentQuiesce();
     free(tex->pixels[0]);
     free(tex->pixels[1]);
     delete tex;

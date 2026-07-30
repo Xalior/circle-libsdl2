@@ -94,6 +94,12 @@ struct SDL2CirclePresentCmd
 void SDL2Circle_PresentPost(const SDL2CirclePresentCmd *cmds, unsigned ncmds,
                             unsigned half);
 
+// Block until the presentation worker holds nothing of the poster's: every
+// posted frame consumed AND flipped. Teardown that frees something the
+// worker may still be reading — a texture's pixels, the window — calls this
+// first. A no-op without the split, where presentation is in-band anyway.
+void SDL2Circle_PresentQuiesce(void);
+
 // video.cpp services for the worker: execute one command into a framebuffer
 // half; page-flip to a half.
 void SDL2Circle_VideoExecCmd(const SDL2CirclePresentCmd *cmd, unsigned half);

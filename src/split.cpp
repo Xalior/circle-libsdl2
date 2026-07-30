@@ -241,7 +241,8 @@ unsigned SDL2Circle_AudioRingRead(unsigned char *data, unsigned maxbytes)
 struct alignas(64) FrameBox
 {
     std::atomic<u64> seq{0};    // poster bumps
-    std::atomic<u64> ack{0};    // worker matches after flip
+    std::atomic<u64> ack{0};    // worker matches once the frame is consumed
+    std::atomic<u64> done{0};   // worker matches once the frame is on the glass
     unsigned half;
     unsigned ncmds;
     SDL2CirclePresentCmd cmds[SDL2CIRCLE_PRESENT_MAX_CMDS];
@@ -270,6 +271,21 @@ void SDL2Circle_PresentPost(const SDL2CirclePresentCmd *cmds, unsigned ncmds,
     g_frame.half = half;
     g_frame.seq.store(seq + 1, std::memory_order_release);
     publish();
+}
+
+void SDL2Circle_PresentQuiesce(void)
+{
+    if (!g_split.load(std::memory_order_acquire))
+        return;
+
+    // Wait for the worker to be out of the frame entirely — not merely done
+    // reading what the poster owns (`ack`, which it publishes early so the
+    // application core is never held up by output), but past the flip, where
+    // it is still using the window and the present buffers. Only the poster
+    // bumps `seq`, and this is the poster, so `seq` is stable here.
+    u64 seq = g_frame.seq.load(std::memory_order_relaxed);
+    while (g_frame.done.load(std::memory_order_acquire) < seq)
+        idle_wait();
 }
 
 extern "C" void SDL2Circle_SplitPresentCore(void)
@@ -336,6 +352,14 @@ extern "C" void SDL2Circle_SplitPresentCore(void)
             SDL2CirclePerfScope render(SDL2CIRCLE_PERF_RENDER);
             SDL2Circle_VideoFlip(half);
         }
+
+        // Out of the frame completely: nothing this core holds still points
+        // at the window, the present buffers or a texture. A teardown waiting
+        // in SDL2Circle_PresentQuiesce is released here and not at the
+        // acknowledgement above, which says only that the poster's memory is
+        // free to reuse.
+        g_frame.done.store(done, std::memory_order_release);
+        publish();
     }
 }
 
