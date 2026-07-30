@@ -99,6 +99,8 @@ inside the scanout.
 This is settled once at start-up, before any frame exists, and is written for
 correctness rather than speed for that reason.
 
+`bea47e3`
+
 ### The physical resolution comes from the firmware, not from arithmetic
 
 The scanout the presentation path scales onto is now read back from the
