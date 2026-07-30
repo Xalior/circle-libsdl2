@@ -244,7 +244,7 @@ struct alignas(64) FrameBox
     std::atomic<u64> done{0};   // worker matches once the frame is on the glass
     unsigned half;
     unsigned ncmds;
-    SDL2CirclePresentCmd cmds[SDL2CIRCLE_PRESENT_MAX_CMDS];
+    SDL2CirclePresentCmd cmds[SDL2CIRCLE_RECORD_MAX_CMDS];
 };
 
 static FrameBox g_frame;
@@ -263,8 +263,8 @@ void SDL2Circle_PresentPost(const SDL2CirclePresentCmd *cmds, unsigned ncmds,
             wfe();
     }
 
-    if (ncmds > SDL2CIRCLE_PRESENT_MAX_CMDS)
-        ncmds = SDL2CIRCLE_PRESENT_MAX_CMDS;
+    if (ncmds > SDL2CIRCLE_RECORD_MAX_CMDS)
+        ncmds = SDL2CIRCLE_RECORD_MAX_CMDS;
     memcpy(g_frame.cmds, cmds, ncmds * sizeof(*cmds));
     g_frame.ncmds = ncmds;
     g_frame.half = half;

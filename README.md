@@ -374,43 +374,84 @@ three: resample the finished frame to scanout size, make it visible. What used
 to be a screen-sized clear, a screen-sized compose and a screen-sized copy is
 now the one resample.
 
-### Choosing what crosses: the core bridge
+### Choosing what crosses: the crossing count
 
-**What travels from the application core to the presentation core is a
-build-time choice.** Both modes work on any board and any framebuffer grant;
-they differ in how much work is done on which side, and how much memory moves
-between them.
+**How much of a frame travels to the presentation core as a list of drawing
+commands, rather than as a finished picture, is a build-time choice.** One
+number decides it:
 
 ```sh
-make BRIDGE=frame       # the default
-make BRIDGE=commands
+make PRESENT_CMDS=0     # the default
+make PRESENT_CMDS=8
 ```
 
-- **`frame`** — the frame is reduced on the application core to finished
-  pixels and one destination, and that is all that crosses. The usual frame
-  is a clear plus one opaque blit, which reduces to the application's own
-  texture exactly where it already sits: a few hundred kilobytes for a game
-  raster, and the clear reduces to nothing but a border repaint when the
-  geometry moves.
-- **`commands`** — the recorded draw list crosses as it stands and the
-  presentation core composes it, command by command. Nothing is reduced and
-  no intermediate surface is written on the application core; the composing
-  itself is what moves across.
+- A frame whose draw list **fits within the count** crosses as a list, and
+  the presentation core composes it command by command. Nothing is reduced
+  and no intermediate surface is written on this side.
+- A frame that **does not fit** crosses as a finished picture instead.
 
-Both end at the same executor, which writes into the shadow buffer or the
-staging frame according to what the firmware granted, and the page flip or
-the copy to the screen is the grant's business either way. **The bridge does
-not know or care what was granted.**
+**Zero — every frame a picture — is the default, and it costs nothing
+extra.** The usual frame is a clear plus one opaque blit, and that shape *is*
+the finished picture already: it is the application's own texture, exactly
+where it already sits in memory, a few hundred kilobytes for a game raster.
+The library recognises the shape and sends the texture. Nothing is painted
+and nothing is copied. The clear reduces to nothing but a border repaint when
+the geometry moves.
 
-One case is not a choice: a frame too complicated to record — anything that
-is not a clear plus one opaque copy — has already been drawn into the
-canvas-sized surface by the time it is presented, so there is nothing left to
-compose and it crosses as a frame in **both** modes.
+Raising the count moves composition across to the presentation core, frame by
+frame, up to the recorder's own capacity — every value in between is a real
+setting, not a mode.
 
-The setting is baked into the archive when the library is built. It is not in
+Both endings reach the same executor, which writes into the shadow buffer or
+the staging frame according to what the firmware granted, and the page flip
+or the copy to the screen is the grant's business either way. **What crosses
+does not know or care what was granted.**
+
+#### Recognising a picture is not the same as sending one
+
+Two limits are at work and they are deliberately separate.
+
+```c
+SDL2CIRCLE_RECORD_MAX_CMDS  16      /* src/sdl2circle.h — the recorder */
+SDL2CIRCLE_PRESENT_MAX_CMDS  n      /* PRESENT_CMDS — what may cross */
+```
+
+The **recorder** holds draw calls so that a finished frame can be recognised
+before anything is painted. Recognising a clear plus one blit takes a couple
+of recorded commands, nothing like sixteen, and it has to keep working
+however few commands the build lets cross — otherwise a low count would
+starve the recogniser as well as the crossing, and every frame would pay for
+a full canvas paint it did not need. That is what a single shared limit used
+to do, and it is why the count could only usefully be set high.
+
+The **count** decides only how much may travel as a list.
+
+Painting begins the moment a frame can be neither of the two things worth
+holding it back for: no longer the simple shape, and already too long to
+send. Both possibilities are checked as each draw call arrives, so a frame
+that is going to need painting starts there and then rather than waiting for
+present — the work is the same either way, but spread across the
+application's own draw calls instead of landing in one lump at the end.
+
+Nothing is ever dropped. A frame the recorder gives up on is replayed into
+the canvas-sized surface and every later call is painted straight in, so it
+renders correctly; it simply crosses as a picture.
+
+The recorder is a fixed array because the frame mailbox is a fixed structure
+in coherent memory that both cores read — one frame in flight, no allocation
+and no locks on the path a frame takes. Each slot holds a source and
+destination rectangle, a colour, a source pointer and pitch, and two blend
+flags, and the space is reserved whether a frame uses it or not.
+
+The count is baked into the archive when the library is built. It is not in
 any installed header, so an application's own translation units neither see
-it nor need to match it; and because the two modes share one archive name,
-switching `BRIDGE` deletes the archive so it cannot be quietly reused.
+it nor need to match it; and because every count shares one archive name,
+changing it deletes the archive so the previous build cannot be quietly
+reused.
+
+**No count has been measured against a real workload.** The recorder has held
+sixteen since the core split was written, and the default of zero is what the
+library has effectively always done on the board it ships on.
 
 ### Why the split is shaped this way
 
@@ -749,14 +790,15 @@ answer every call site already handles.
 A world elsewhere on disk works with
 `make CIRCLESTDLIBHOME=/path/to/circle-stdlib`.
 
-### Choosing the core bridge
+### Choosing the crossing count
 
-`make BRIDGE=frame` (the default) or `make BRIDGE=commands` selects what
-crosses to the presentation core — see
-[Choosing what crosses](#choosing-what-crosses-the-core-bridge). The choice
-is compiled into the archive, objects are kept in per-bridge trees so the two
-builds never mix, and switching modes deletes the archive rather than risk
-handing back the other mode's build under the same name.
+`make PRESENT_CMDS=n` (0 by default) sets how much of a frame may travel to
+the presentation core as a list of drawing commands rather than as a finished
+picture — see
+[Choosing what crosses](#choosing-what-crosses-the-crossing-count). The value
+is compiled into the archive, objects are kept in per-count trees so builds
+never mix, and changing it deletes the archive rather than risk handing back
+the previous count's build under the same name.
 
 Building through Circle's `Rules.mk` — as the test apps do — you get the
 world's own `DEFINE`, whichever way it was configured, and there is nothing to

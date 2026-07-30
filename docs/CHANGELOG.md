@@ -77,35 +77,50 @@ each is on the serial log.
 
 `b2eca5c`, `1c83bcf`, `6741ffe`
 
-### What crosses between the cores is a build-time choice
+### How much of a frame crosses between the cores is a build-time choice
 
-The core bridge — what `SDL_RenderPresent` hands to the presentation core —
-is selected when the library is built, with `make BRIDGE=frame` (the default)
-or `make BRIDGE=commands`.
+`make PRESENT_CMDS=n` sets how many drawing commands may travel to the
+presentation core as a list. A frame whose draw list fits within the count
+crosses as a list and is composed on the far side; a frame that does not fit
+crosses as a finished picture instead. The default is zero — every frame a
+picture.
 
-`frame` reduces the frame on the application core to finished pixels and one
-destination, and only that crosses; the usual clear-plus-one-blit reduces to
-the application's own texture where it already sits. `commands` sends the
-recorded draw list as it stands and composes it on the far side.
+Zero costs nothing extra, which is the point of it. The usual frame is a
+clear plus one opaque blit, and that shape already IS the finished picture:
+the application's own texture, where it already sits in memory. The library
+recognises the shape and sends the texture, painting nothing.
 
-Both modes work on any board and any framebuffer grant. They had been chosen
-by the grant instead — a two-screen grant took the command list, a
-single-screen grant took the reduced frame — which read as a constraint and
-was only ever a judgement about what each grant makes cheap. Both bridges end
-at the same executor, which writes into the shadow buffer or the staging
-frame according to what was granted, so the flip is the grant's business and
-the bridge does not know what was granted at all.
+That had not been true. Recognising the shape and sizing the crossing list
+were the same number, so a low count starved the recogniser as well as the
+crossing: the recorder gave up on the first draw call, the simple shape could
+never be seen, and every frame paid for a full canvas paint it did not need.
+The count could therefore only usefully be set high, and what should have
+been one dial behaved like two settings with nothing useful between them.
 
-A frame too complicated to record has already been drawn into the canvas
-surface before it is presented, so it crosses as a frame in either mode.
-There is nothing left to compose, and that is not a mode selecting itself.
+The recorder's capacity and the crossing count are separate now. Recognising
+a clear plus one blit takes a couple of recorded commands and keeps working
+however few commands a build lets cross.
 
-The setting is baked into the archive. It appears in no installed header, so
-an application's own translation units neither see it nor need to match it.
-Objects are kept in per-bridge trees, and switching modes deletes the archive
-rather than leave the previous mode's build under the same name.
+Painting also begins earlier when it is going to be needed at all. A frame
+is held back only while it could still be the simple shape or could still be
+short enough to send as a list; the first draw call that ends both
+possibilities starts the painting there and then, rather than leaving it to
+land in one lump at present. The work is the same, spread across the
+application's own draw calls.
 
-`e92239f`
+Which grant the firmware made no longer decides any of this. It had: a
+two-screen grant sent the recorded list, a single-screen grant sent a reduced
+frame. That read as a constraint and was only ever a judgement about what
+each grant makes cheap — both endings reach the same executor, which writes
+into the shadow buffer or the staging frame according to what was granted, so
+the flip is the grant's business and the crossing never needed to know.
+
+The count is baked into the archive and appears in no installed header, so an
+application's own translation units neither see it nor need to match it.
+Objects are kept in per-count trees, and changing the count deletes the
+archive rather than leave the previous build under the same name.
+
+No count has been measured against a real workload.
 
 ### A picture that fits exactly now fills the screen exactly
 

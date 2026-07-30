@@ -40,12 +40,19 @@ struct SDL_Renderer
     // Draw calls are RECORDED here, in canvas coordinates, and nothing is
     // executed until SDL_RenderPresent. What crosses to the presentation
     // core then is a finished frame, never this list.
-    SDL2CirclePresentCmd cmds[SDL2CIRCLE_PRESENT_MAX_CMDS];
+    SDL2CirclePresentCmd cmds[SDL2CIRCLE_RECORD_MAX_CMDS];
     unsigned ncmds;
 
     // Set once a frame has stopped being a simple one and is being drawn
     // into the canvas surface instead. Cleared at the start of each frame.
     bool rasterizing;
+
+    // Whether the frame being recorded has had its one opaque copy yet. It
+    // is what lets the simple shape be ruled out as each command arrives
+    // rather than only when the whole frame is known: a second copy, or any
+    // fill after the copy, cannot be part of a clear-plus-one-blit frame no
+    // matter what follows. Cleared at the start of each frame.
+    bool have_copy;
 
     // What the border looked like when it was last painted: the colour it
     // was painted in, and the frame rectangle it was painted around.
@@ -904,7 +911,28 @@ static void start_rasterizing(SDL_Renderer *ren)
     for (unsigned i = 0; i < ren->ncmds; i++)
         exec_into(&ren->cmds[i], s_canvas_surface, s_canvas_surface_pitch);
     ren->ncmds = 0;
+    ren->have_copy = false;
     ren->rasterizing = true;
+}
+
+// Could this command still be part of a clear-plus-one-opaque-copy frame?
+// The same rule simple_frame_copy applies to a finished list, asked one
+// command at a time: a fill that is not a full-target clear, a fill after
+// the copy, a second copy, or a copy that is blended or alpha-modded, and
+// the frame cannot be the simple shape whatever follows.
+//
+// simple_frame_copy remains the authority on a finished list. This only ever
+// brings the same verdict FORWARD, so the two cannot disagree about what is
+// simple — at worst this is the more cautious of the two and the frame is
+// painted that much sooner.
+static bool keeps_simple_shape(SDL_Renderer *ren, const SDL2CirclePresentCmd &cmd)
+{
+    if (cmd.op == SDL2CirclePresentCmd::FILL)
+        return !ren->have_copy
+            && cmd.dx == 0 && cmd.dy == 0
+            && cmd.w == ren->window->w && cmd.h == ren->window->h;
+
+    return !ren->have_copy && !cmd.blend && cmd.alphamod == 255;
 }
 
 // Record a draw call. Nothing is executed here and nothing is placed on the
@@ -921,16 +949,39 @@ static void emit_cmd(SDL_Renderer *ren, const SDL2CirclePresentCmd &cmd)
         return;
     }
 
-    if (ren->ncmds >= SDL2CIRCLE_PRESENT_MAX_CMDS)
+    // Painting starts at the first moment the frame can be NEITHER of the
+    // two things worth holding it back for.
+    //
+    // It is worth holding back while the frame could still be the simple
+    // shape, because that shape is the application's own texture and never
+    // needs painting at all. It is also worth holding back while the list
+    // is still short enough to CROSS as a list, because then the far side
+    // composes it and this core paints nothing either. A command that ends
+    // both possibilities ends the waiting with it: replay what is held,
+    // paint this one straight in, and every later one goes straight in too.
+    //
+    // Waiting past that point would add latency to exactly the frames the
+    // recogniser cannot help — the work is the same either way, but done
+    // here it is spread across the application's own draw calls instead of
+    // landing in one lump at present.
+    const bool could_be_simple = keeps_simple_shape(ren, cmd);
+    const bool could_still_cross =
+        ren->ncmds < (unsigned)SDL2CIRCLE_PRESENT_MAX_CMDS;
+
+    // The recorder's own capacity is the third way to run out, and it is
+    // never the crossing count: recognising the simple shape has to keep
+    // working however few commands this build lets cross.
+    if ((!could_be_simple && !could_still_cross)
+        || ren->ncmds >= SDL2CIRCLE_RECORD_MAX_CMDS)
     {
-        // More draws than the recorder holds. This frame is not a simple
-        // one, so it becomes a drawn one.
         start_rasterizing(ren);
         if (ren->rasterizing)
             exec_into(&cmd, s_canvas_surface, s_canvas_surface_pitch);
         return;
     }
 
+    if (cmd.op == SDL2CirclePresentCmd::COPY)
+        ren->have_copy = true;
     ren->cmds[ren->ncmds++] = cmd;
 }
 
@@ -1302,6 +1353,7 @@ extern "C" SDL_Renderer *SDL_CreateRenderer(SDL_Window *win, int, Uint32 flags)
     ren->r = ren->g = ren->b = 0;
     ren->a = 255;
     ren->ncmds = 0;
+    ren->have_copy = false;
     ren->rasterizing = false;
     ren->border_color = 0;
     ren->frame_x = ren->frame_y = ren->frame_w = ren->frame_h = -1;
@@ -1766,20 +1818,22 @@ extern "C" void SDL_RenderPresent(SDL_Renderer *ren)
     SDL2CirclePerfScope perf(SDL2CIRCLE_PERF_RENDER);
     g_SDL2CirclePresents++;
 
-    // Which of the two bridges this is was decided when the library was
-    // built (SDL2CIRCLE_BRIDGE, described in sdl2circle.h). The grant does
-    // not enter into it: both bridges end at the same executor, which writes
-    // into the shadow or the staging frame according to what was granted,
-    // and the flip is the grant's business either way.
+    // A short enough frame crosses as a LIST and is composed on the far
+    // side; anything else crosses as a PICTURE, below. How short is short
+    // enough was fixed when the library was built
+    // (SDL2CIRCLE_PRESENT_MAX_CMDS, described in sdl2circle.h), and at the
+    // default of zero nothing but an empty frame takes this path.
     //
-    // A frame with more draws than the recorder holds has already been drawn
-    // into the canvas surface, whatever the grant and whatever the bridge,
-    // and there is nothing left to compose. It crosses as a frame below.
-#if SDL2CIRCLE_BRIDGE == SDL2CIRCLE_BRIDGE_COMMANDS
-    if (!ren->rasterizing)
+    // The grant does not enter into it. Both endings reach the same
+    // executor, which writes into the shadow or the staging frame according
+    // to what was granted, and the flip is the grant's business either way.
+    //
+    // A frame the recorder gave up on has already been drawn into the canvas
+    // surface and has no list left to send, whatever the count.
+    if (!ren->rasterizing && ren->ncmds <= (unsigned)SDL2CIRCLE_PRESENT_MAX_CMDS)
     {
         // Composed command by command on the far side. The whole recorded
-        // list travels, because composing IS what this bridge does.
+        // list travels, because composing IS what this path does.
         for (unsigned i = 0; i < ren->ncmds; i++)
         {
             SDL2CirclePresentCmd as_drawn = ren->cmds[i];
@@ -1791,6 +1845,7 @@ extern "C" void SDL_RenderPresent(SDL_Renderer *ren)
         {
             SDL2Circle_PresentPost(ren->cmds, ren->ncmds, ren->back);
             ren->ncmds = 0;
+            ren->have_copy = false;
             ren->rasterizing = false;
             if (s_fb_halves == 2)
                 ren->back ^= 1;
@@ -1799,6 +1854,7 @@ extern "C" void SDL_RenderPresent(SDL_Renderer *ren)
         for (unsigned i = 0; i < ren->ncmds; i++)
             SDL2Circle_VideoExecCmd(&ren->cmds[i], ren->back);
         ren->ncmds = 0;
+        ren->have_copy = false;
         ren->rasterizing = false;
         SDL2Circle_VideoFlip(ren->back);
         if (ren->vsync)
@@ -1814,12 +1870,12 @@ extern "C" void SDL_RenderPresent(SDL_Renderer *ren)
             ren->back ^= 1;
         return;
     }
-#endif
 
     SDL2CirclePresentCmd out[2];
     bool drew_canvas = ren->rasterizing;
     unsigned nout = reduce_frame(ren, out);
     ren->ncmds = 0;
+    ren->have_copy = false;
     drew_canvas = drew_canvas || ren->rasterizing;
     ren->rasterizing = false;
 

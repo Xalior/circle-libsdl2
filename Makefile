@@ -28,30 +28,28 @@ RASPPI_rpi3 = 3
 RASPPI_rpi4 = 4
 RASPPI_rpi5 = 5
 
-# THE CORE BRIDGE: what crosses from the application core to the presentation
-# core. A build-time choice, baked into the archive — not a boot option and
-# not decided by the board.
+# THE CROSSING COUNT: how many drawing commands may cross to the presentation
+# core as a LIST. A build-time value baked into the archive — not a boot
+# option and not decided by the board.
 #
-#   frame      one finished pixmap per frame, reduced on the application
-#              core. The usual frame is a clear plus one opaque blit, which
-#              reduces to the application's own texture where it already
-#              sits, so what crosses is a few hundred kilobytes.
-#   commands   the recorded draw list, composed on the presentation core.
-#              Nothing is reduced; the composing is what moves across.
+# A frame whose draw list fits within the count crosses as a list and is
+# composed on the far side. A frame that does not fit crosses as a finished
+# picture instead.
 #
-#   make BRIDGE=commands
+#   0    every frame crosses as a picture. THE DEFAULT, and it costs nothing
+#        extra: the usual clear-plus-one-blit is recognised as being the
+#        application's own texture already, so the picture that crosses is
+#        that texture where it sits and nothing is painted.
+#   n    frames of up to n commands compose on the presentation core.
 #
-# Both work on any framebuffer grant. `frame` is the default: it is what the
-# product board ships today, and it is the mode a frame too complicated to
-# record falls back to in either case. See src/sdl2circle.h.
-BRIDGE ?= frame
+#   make PRESENT_CMDS=8
+#
+# The ceiling is the recorder's own capacity (SDL2CIRCLE_RECORD_MAX_CMDS in
+# src/sdl2circle.h); past that a frame has no list left to send.
+PRESENT_CMDS ?= 0
 
-ifeq ($(BRIDGE),frame)
-BRIDGE_DEFINE = -DSDL2CIRCLE_BRIDGE=SDL2CIRCLE_BRIDGE_FRAME
-else ifeq ($(BRIDGE),commands)
-BRIDGE_DEFINE = -DSDL2CIRCLE_BRIDGE=SDL2CIRCLE_BRIDGE_COMMANDS
-else
-$(error BRIDGE must be `frame` or `commands`, not `$(BRIDGE)`)
+ifneq ($(PRESENT_CMDS),$(filter $(PRESENT_CMDS),0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16))
+$(error PRESENT_CMDS must be a whole number from 0 to 16, not `$(PRESENT_CMDS)`)
 endif
 
 # GNU getopt for circle-stdlib's configure (macOS BSD getopt drops long opts ->
@@ -73,13 +71,14 @@ endif
 CIRCLE_STDLIB     = circle-stdlib-$(BOARD)
 CIRCLESTDLIBHOME ?= $(CURDIR)/$(CIRCLE_STDLIB)
 
-# Per-board, per-bridge object tree, so all three archives coexist without one
+# Per-board, per-count object tree, so all three archives coexist without one
 # board's objects clobbering another's — no `make clean` between boards, each
-# is its own cacheable unit. The bridge is in the path for the same reason and
-# a sharper one: it changes what the objects contain but not their timestamps,
-# so sharing a tree between the two modes would leave `make BRIDGE=...` with
-# nothing to rebuild and quietly hand back the other mode's archive.
-OBJDIR = build/$(BOARD)-$(BRIDGE)
+# is its own cacheable unit. The crossing count is in the path for the same
+# reason and a sharper one: it changes what the objects contain but not their
+# timestamps, so sharing a tree between counts would leave
+# `make PRESENT_CMDS=...` with nothing to rebuild and quietly hand back the
+# previous count's archive.
+OBJDIR = build/$(BOARD)-cmds$(PRESENT_CMDS)
 
 .DEFAULT_GOAL := libSDL2-$(BOARD).a
 
@@ -162,39 +161,42 @@ SRCS = src/init.cpp src/error.cpp src/timer.cpp src/hints.cpp src/events.cpp \
 OBJS = $(SRCS:src/%.cpp=$(OBJDIR)/%.o)
 DEPS = $(OBJS:.o=.d)
 
-# Which bridge the archive on disk was last built with.
+# Which crossing count the archive on disk was last built with.
 #
-# The objects live in per-bridge trees, so switching BRIDGE always
-# recompiles. The ARCHIVE does not: it has one name whichever bridge made
-# it, and the other tree's objects are older than it, so make finds it up to
-# date and leaves the previous bridge's build sitting under the new name.
-# Two builds differing only by this switch then produce byte-identical
-# artifacts and nothing says so — which is the whole point of the switch,
-# lost silently.
+# The objects live in per-count trees, so changing PRESENT_CMDS always
+# recompiles. The ARCHIVE does not: it has one name whatever count made it,
+# and the other tree's objects are older than it, so make finds it up to date
+# and leaves the previous count's build sitting under the new name. Two builds
+# differing only by this value then produce byte-identical artifacts and
+# nothing says so — the value silently ignored.
 #
-# So when the recorded bridge does not match the requested one, the archive
-# is DELETED here, at parse time, before make decides anything. A missing
-# target has to be rebuilt; there is no timestamp comparison left to get
-# wrong, and no dependence on filesystem clock granularity — which a
-# prerequisite on the record file alone does not survive, because the record
-# and the archive it invalidates can land in the same second.
+# So when the recorded count does not match the requested one, the archive is
+# DELETED here, at parse time, before make decides anything. A missing target
+# has to be rebuilt; there is no timestamp comparison left to get wrong, and
+# no dependence on filesystem clock granularity — which a prerequisite on the
+# record file alone does not survive, because the record and the archive it
+# invalidates can land in the same second.
 #
-# The record is rewritten only when the answer changes, so a repeat build in
-# the same mode stays fully incremental.
-BRIDGE_TAG = build/.bridge-$(BOARD)
+# The record is rewritten only when the answer changes, so a repeat build at
+# the same count stays fully incremental.
+# Skipped under `make -n`, which expands this the same as a real run and
+# would otherwise have a dry run delete a build artifact.
+CMDS_TAG = build/.cmds-$(BOARD)
+ifeq (,$(findstring n,$(firstword -$(MAKEFLAGS))))
 $(shell mkdir -p build; \
-        [ "$$(cat $(BRIDGE_TAG) 2>/dev/null)" = "$(BRIDGE)" ] \
-        || { echo $(BRIDGE) > $(BRIDGE_TAG); rm -f libSDL2-$(BOARD).a; })
+        [ "$$(cat $(CMDS_TAG) 2>/dev/null)" = "$(PRESENT_CMDS)" ] \
+        || { echo $(PRESENT_CMDS) > $(CMDS_TAG); rm -f libSDL2-$(BOARD).a; })
+endif
 
 libSDL2-$(BOARD).a: $(OBJS)
-	@echo "  AR    $@ ($(BRIDGE) bridge)"
+	@echo "  AR    $@ (present cmds $(PRESENT_CMDS))"
 	@rm -f $@
 	@$(AR) cr $@ $(OBJS)
 
 STANDARD = -std=c++23 -Wno-volatile
 
 # Before Rules.mk, which folds DEFINE into the compiler flags.
-DEFINE += $(BRIDGE_DEFINE)
+DEFINE += -DSDL2CIRCLE_PRESENT_MAX_CMDS=$(PRESENT_CMDS)
 
 include $(CIRCLEHOME)/Rules.mk
 

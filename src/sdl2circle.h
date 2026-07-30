@@ -80,55 +80,56 @@ void     SDL2Circle_AudioDrain(void);   // hardware-core servo: ring -> sound de
 // deadman).
 void SDL2Circle_HeartbeatBump(void);
 
-// ---- the core bridge -------------------------------------------------------
-//
-// What crosses from the application core to the presentation core, chosen
-// when this library is BUILT. Both modes work on any framebuffer grant, and
-// both end in the same place — the executor writes into the shadow or the
-// staging frame either way, and the flip is the grant's business, not the
-// bridge's. What differs is how much work is done on which side, and how
-// much memory moves between them.
-//
-//   FRAME     the frame is reduced on the application core to finished
-//             pixels and one destination, and that is all that crosses.
-//             Almost every frame is a clear plus one opaque blit, which
-//             reduces to the application's own texture exactly where it
-//             already sits — a few hundred kilobytes for a game raster —
-//             and the clear reduces to nothing but a border repaint when
-//             the geometry moves.
-//
-//   COMMANDS  the recorded draw list crosses as it stands and the
-//             presentation core composes it, command by command. Nothing
-//             is reduced and no intermediate surface is written on the
-//             application core; the composing itself is what moves across.
-//
-// A frame too complicated to record — anything that is not a clear plus one
-// opaque copy — has already been drawn into the canvas surface by the time
-// present is reached, so it crosses as a frame in BOTH modes. That is not a
-// mode selecting itself; there is simply nothing left to compose.
-//
-// Set it with `make BRIDGE=frame` or `make BRIDGE=commands`; the Makefile
-// turns that into the define below. It is baked into the archive and is not
-// part of any installed header, so a consumer's own translation units
-// neither see it nor need to match it.
-#define SDL2CIRCLE_BRIDGE_FRAME     1
-#define SDL2CIRCLE_BRIDGE_COMMANDS  2
-
-#ifndef SDL2CIRCLE_BRIDGE
-#define SDL2CIRCLE_BRIDGE SDL2CIRCLE_BRIDGE_FRAME
-#endif
-
-#if SDL2CIRCLE_BRIDGE != SDL2CIRCLE_BRIDGE_FRAME \
- && SDL2CIRCLE_BRIDGE != SDL2CIRCLE_BRIDGE_COMMANDS
-#error SDL2CIRCLE_BRIDGE must be SDL2CIRCLE_BRIDGE_FRAME or SDL2CIRCLE_BRIDGE_COMMANDS
-#endif
-
 // Presentation: SDL_RenderPresent posts a frame (command list + target
 // framebuffer half); the presentation worker executes it and flips.
-enum
-{
-    SDL2CIRCLE_PRESENT_MAX_CMDS = 16
-};
+//
+// TWO DIFFERENT LIMITS, and keeping them apart is the whole of how the
+// crossing is tuned.
+//
+//   RECORD_MAX_CMDS   how many draw calls the recorder can hold before it
+//                     gives up and paints instead. It is a property of the
+//                     recorder and never changes. Recording is also what
+//                     lets a finished frame be RECOGNISED — a clear plus one
+//                     opaque blit is the whole picture already, sitting in
+//                     the application's own texture, and spotting that is
+//                     what saves painting it again. Recognising needs a
+//                     couple of recorded commands, nothing like this many.
+//
+//   PRESENT_MAX_CMDS  how many commands may CROSS to the presentation core
+//                     as a list. This is the knob. A frame whose draw list
+//                     fits within it crosses as a list and is composed on
+//                     the far side; a frame that does not fit crosses as a
+//                     finished picture instead.
+//
+// ZERO IS THE INTERESTING END and it is the default: every frame crosses as
+// a picture. It costs nothing extra, because recording still happens and the
+// simple shape is still recognised — the frame that crosses is the
+// application's texture exactly where it already sits, and nothing is
+// painted. Raising the knob moves composition across to the presentation
+// core, frame by frame, up to the recorder's own capacity.
+//
+// They were one value, so a low count starved the recogniser as well as the
+// crossing: at zero the recorder gave up on the first draw call, the simple
+// shape could never be seen, and every frame paid for a full canvas paint it
+// did not need. That is why the knob could only usefully be set high.
+//
+// Set the knob with `make PRESENT_CMDS=n`. It is baked into the archive and
+// is not part of any installed header, so a consumer's own translation units
+// neither see it nor need to match it.
+// A macro and not an enum: the bounds check below is a preprocessor
+// comparison, and the preprocessor cannot see an enumerator — it reads the
+// name as an undefined identifier worth zero, which quietly turns the check
+// into "any count above zero is out of range".
+#define SDL2CIRCLE_RECORD_MAX_CMDS 16
+
+#ifndef SDL2CIRCLE_PRESENT_MAX_CMDS
+#define SDL2CIRCLE_PRESENT_MAX_CMDS 0
+#endif
+
+#if SDL2CIRCLE_PRESENT_MAX_CMDS < 0 \
+ || SDL2CIRCLE_PRESENT_MAX_CMDS > SDL2CIRCLE_RECORD_MAX_CMDS
+#error SDL2CIRCLE_PRESENT_MAX_CMDS must be between 0 and SDL2CIRCLE_RECORD_MAX_CMDS
+#endif
 
 struct SDL2CirclePresentCmd
 {
