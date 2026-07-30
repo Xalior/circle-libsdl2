@@ -1011,17 +1011,16 @@ static void create_window_on0(void *p)
 
     s_window = win;
 
-    // The one line that proves the geometry chain: boot config (or panel)
-    // -> display mode -> window -> this allocation. Virtual height and
-    // pitch expose what the firmware really granted: the double-buffer
-    // flip needs virt == 2*h, and a pitch wider than the width means the
-    // buffer lives inside a native-mode surface (observed on the Pi 5,
-    // whose firmware ignores mode requests).
+    // Pitch and size came back from the firmware. Everything else is what
+    // Circle was constructed with, echoed unchanged by its getters, so the
+    // two halves are labelled and never printed as one geometry.
     SDL2Circle_Log("sdl2video", SDL2CIRCLE_LOG_NOTICE,
-                          "framebuffer %ux%u virt %ux%u depth %u pitch %u size %u",
+                          "framebuffer: asked %ux%u virt %ux%u depth %u, "
+                          "granted pitch %u, %u rows, %u bytes",
                           fb->GetWidth(), fb->GetHeight(),
                           fb->GetVirtWidth(), fb->GetVirtHeight(),
-                          fb->GetDepth(), fb->GetPitch(), fb->GetSize());
+                          fb->GetDepth(),
+                          fb->GetPitch(), nRowsGranted, fb->GetSize());
 
     // The window is the whole display: it is shown and focused from birth.
     // Consumers (MAME's OSD among them) gate keyboard input on having seen
