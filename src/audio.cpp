@@ -171,16 +171,25 @@ extern "C" void SDL_UnlockAudioDevice(SDL_AudioDeviceID) { if (s_lock > 0) s_loc
 extern "C" void SDL_LockAudio(void)   { SDL_LockAudioDevice(1); }
 extern "C" void SDL_UnlockAudio(void) { SDL_UnlockAudioDevice(1); }
 
+// Device destruction gives back the interrupt registration, the queue and
+// the device's DMA channel, so it belongs to core 0 for the same reason
+// construction does.
+static void close_device_on0(void *)
+{
+    s_device->Cancel();
+    delete s_device;
+    s_device = nullptr;
+}
+
 extern "C" void SDL_CloseAudioDevice(SDL_AudioDeviceID)
 {
     if (!s_device)
         return;
-    s_device->Cancel();
-    delete s_device;
-    s_device = nullptr;
+    s_paused = true;   // stop the servo feeding a device that is going away
+    SDL2Circle_CallOn0(close_device_on0, nullptr);
     free(s_chunk);
     s_chunk = nullptr;
-    s_paused = true;
+    s_started = false;
 }
 
 extern "C" SDL_AudioStatus SDL_GetAudioDeviceStatus(SDL_AudioDeviceID)
