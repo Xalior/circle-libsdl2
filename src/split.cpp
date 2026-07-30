@@ -31,7 +31,6 @@
 #include <circle/atomic.h>
 #include <circle/logger.h>
 #include <circle/timer.h>
-#include <circle/cputhrottle.h>
 #include <circle/sched/scheduler.h>
 #include <circle/sched/task.h>
 
@@ -631,7 +630,6 @@ public:
 
     void Run(void) override
     {
-        u64 lastThrottle = 0;
         for (;;)
         {
             // Call mailbox (init, window/audio creation, I/O service).
@@ -687,17 +685,11 @@ public:
             // cores' banks are shared memory read by their stamps.
             SDL2Circle_PerfTick();
 
-            // Thermal management (Circle requires periodic Update()).
-            CCPUThrottle *throttle = CCPUThrottle::Get();
-            if (throttle)
-            {
-                u64 now = CTimer::GetClockTicks64();
-                if (now - lastThrottle > 2000000)
-                {
-                    lastThrottle = now;
-                    throttle->Update();
-                }
-            }
+            // The CPU clock and the case fan. This library owns them, and
+            // this servo is the heartbeat that drives them under the split:
+            // the application core's pump returns before its own tail, so
+            // this is the only loop left that runs every frame.
+            SDL2Circle_HardwareTick();
 
             {
                 SDL2CirclePerfScope yield(SDL2CIRCLE_PERF_YIELD);

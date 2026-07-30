@@ -16,6 +16,15 @@ void SDL2Circle_InputInit(void);   // bring up USB (idempotent)
 void SDL2Circle_InputPump(void);   // PnP + translate HID reports to events
 void SDL2Circle_AudioPump(void);   // run app audio callback into the queue
 
+// Board hardware — the CPU clock and the case fan (src/hardware.cpp).
+// SDL2Circle_HardwareInit (SDL_circle.h) creates the one CCPUThrottle this
+// library owns; this drives it. Call it from the per-frame heartbeat that is
+// live: the hardware core's servo under the core split, SDL_PumpEvents
+// otherwise. It is inert until hardware management has been brought up, and
+// carries the whole update policy, so no call site holds an interval of its
+// own.
+void SDL2Circle_HardwareTick(void);
+
 // Debug UART key injection: the host kernel hands us its serial (only for
 // --rapi-debug-uart); the pump then types serial-RX bytes into the machine as
 // SDL key events. Inert until SetInjectSerial gets a non-null device.

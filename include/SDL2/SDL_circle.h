@@ -81,6 +81,43 @@ void SDL2Circle_CallOn0(void (*fn)(void *), void *arg);
 // (cmdline.txt `perfstats=10`) so one binary serves bench and product.
 void SDL2Circle_SetPerfInterval(unsigned nSeconds);
 
+// ---- board hardware: CPU clock and case fan ---------------------------------
+//
+// Circle's CCPUThrottle sets the CPU clock rate and, where cmdline.txt names
+// a fan pin, switches a case fan on and off. Circle creates neither for
+// itself: it requires that a system holds exactly one such object and that
+// something calls it regularly, or none of that management happens. This
+// library owns that object and drives it from whichever per-frame heartbeat
+// is live — the hardware core's servo when the core split is active, and
+// SDL_PumpEvents otherwise.
+//
+// A HOST KERNEL MUST NOT CREATE A CCPUThrottle OF ITS OWN. Circle allows
+// only one, and making a second stops the machine in its constructor. This
+// library cannot detect one that a host made either, because Circle offers
+// no safe presence test — CCPUThrottle::Get() stops the machine when there
+// is nothing for it to return, so it can never be used to ask the question.
+//
+// Nothing has to be done for the common case: bring-up happens inside
+// SDL_Init, on core 0, and an application that does nothing gets it. The
+// clock is raised to maximum, because Circle boots the board at its idle
+// rate; the cmdline.txt options `socmaxtemp=` and `gpiofanpin=` then govern
+// what happens from there (see Circle's doc/cmdline.txt).
+//
+// Bring it up EARLIER if the host kernel initializes I2C, SPI or the mini
+// UART itself. Raising the CPU clock also moves the core clock, and those
+// peripherals take their transfer speed and their baud rate from it, so the
+// clock must be settled before they are configured. To do that, declare a
+// CSDL2CircleHardware (below) as a member of the kernel class, or call this
+// from the kernel's own constructor. Calling it again does nothing.
+void SDL2Circle_HardwareInit(void);
+
+// Current SoC temperature in degrees Celsius, and current CPU clock rate in
+// Hz. A host kernel reports these on its boot log rather than reaching for
+// Circle's class. Both answer zero before hardware management is up, and
+// zero where the board cannot report the value.
+unsigned SDL2Circle_SoCTemperature(void);
+unsigned SDL2Circle_CPUClockRate(void);
+
 // ---- logging (any core) -----------------------------------------------------
 //
 // The serial console is a device, so only core 0 may write to it. These put
@@ -150,6 +187,22 @@ void     SDL2Circle_IOCloseDir(intptr_t dir);
 
 #ifdef __cplusplus
 }
+#endif
+
+#ifdef __cplusplus
+
+// The early-bring-up hatch for board hardware, described above. Declare one
+// as a member of the Circle kernel class and the library's hardware
+// management comes up while the kernel is being constructed, before anything
+// in Initialize() runs, instead of waiting for SDL_Init. It holds no state
+// of its own: constructing it calls SDL2Circle_HardwareInit, and where it
+// sits in the member list decides how early that happens.
+class CSDL2CircleHardware
+{
+public:
+    CSDL2CircleHardware(void) { SDL2Circle_HardwareInit(); }
+};
+
 #endif
 
 #endif /* SDL_circle_h_ */

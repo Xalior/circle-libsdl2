@@ -6,7 +6,6 @@
 #include <SDL2/SDL.h>
 #include "sdl2circle.h"
 #include <circle/sched/scheduler.h>
-#include <circle/cputhrottle.h>
 #include <circle/timer.h>
 #include <circle/logger.h>
 #include <cstring>
@@ -113,19 +112,11 @@ extern "C" void SDL_PumpEvents(void)
         }
     }
 
-    // Tick the host kernel's CPU throttle (if it created one) so thermal
-    // management actually runs — Circle requires periodic Update() calls.
-    CCPUThrottle *throttle = CCPUThrottle::Get();
-    if (throttle)
-    {
-        static u64 lastUpdate = 0;
-        u64 now = CTimer::GetClockTicks64();
-        if (now - lastUpdate > 2000000)   // every 2 s
-        {
-            lastUpdate = now;
-            throttle->Update();
-        }
-    }
+    // The CPU clock and the case fan. This library owns them; this is the
+    // heartbeat that drives them when the application runs on core 0. Under
+    // the core split it is the servo instead, because this tail never runs
+    // there — the application core's pump returns above.
+    SDL2Circle_HardwareTick();
 
     {
         SDL2CirclePerfScope perf(SDL2CIRCLE_PERF_INPUT);

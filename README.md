@@ -308,6 +308,16 @@ the last two steps are about this library.
    console, the SD card, and mount the filesystem — all on core 0, as normal.
    The other cores are about to start asking core 0 for things, so there must
    be something there to answer with.
+
+   **A `CScheduler` is required to run split**, and it has to exist before
+   step 4. The servo and the watchdog are Circle tasks, a Circle task
+   registers itself with the scheduler while it is being constructed, and
+   doing that with no scheduler in the system stops the machine. Declaring
+   one as a kernel member is the whole of it — nothing has to be started.
+
+   If this kernel initializes I2C, SPI or the mini UART, declare a
+   `CSDL2CircleHardware` member as well, so the CPU clock is settled before
+   those peripherals are configured. See the Design section for why.
 2. **Start the secondary cores** (`CMultiCoreSupport::Initialize`). Your
    subclass decides what each one does. This library never starts a core and
    never chooses one; the host owns that decision entirely.
@@ -508,17 +518,41 @@ also arm it in code: `SDL2Circle_SetPerfInterval(seconds)` in
   whole machine alive; one that stops doing either wedges a cooperatively
   scheduled board, which is what the watchdog exists to report. Audio
   callbacks never run in interrupt context.
-- **The CPU throttle gets ticked.** Circle needs periodic `CCPUThrottle`
-  updates or thermal management never runs, and the host kernel has no loop of
-  its own to do it in — so the shim does it, from the pump.
+- **The CPU clock and the case fan belong to the shim.** Circle's
+  `CCPUThrottle` is both of those in one class: it sets the clock rate, and
+  where `cmdline.txt` names a fan pin with `gpiofanpin=` it switches a case
+  fan instead. Circle creates neither for itself — it requires that a system
+  holds exactly one such object and that something calls it regularly, or
+  none of that management ever happens. A host kernel has no per-frame loop
+  to call from and the shim already runs one, so **the shim owns the object**
+  and drives it from whichever heartbeat is live: the servo on the hardware
+  core under the split, `SDL_PumpEvents` otherwise. There is one update
+  policy and it lives with the owner, because Circle's `Update()` already
+  limits itself to one measurement every few seconds, and a second interval
+  at a call site would only beat against that one.
+- **A host kernel must not create a `CCPUThrottle` of its own.** Circle
+  allows exactly one, and constructing a second stops the machine. Nor can
+  the shim work around a host that does: Circle offers no safe way to ask
+  whether one exists, because `CCPUThrottle::Get()` stops the machine rather
+  than reporting an absence. So the shim keeps its own record of what it
+  made, and a host that also makes one gets a dead board.
+- **Hardware management comes up in `SDL_Init`, unless you ask for it
+  sooner.** The clock is taken to maximum there, because Circle boots the
+  board at its idle rate. A kernel that brings up I2C, SPI or the mini UART
+  in its own `Initialize()` needs the clock settled *before* those: raising
+  the CPU clock also moves the core clock, and those peripherals take their
+  transfer speed and their baud rate from it. Such a kernel declares a
+  `CSDL2CircleHardware` member (`SDL2/SDL_circle.h`) and gets hardware
+  management while the kernel object is being constructed, before anything in
+  `Initialize()` runs. A kernel that declares nothing does nothing and is
+  served at `SDL_Init`.
 - **Self-contained payloads.** The shim brings up everything it needs
   (USB host controller, framebuffer, sound) inside `SDL_Init`. Host-kernel
-  contract: initialize `CInterruptSystem` and `CTimer` before `SDL_Init`;
-  run a `CScheduler` if your app uses `std::thread`
-  (via [circle-stdlib](https://codeberg.org/larchcone/circle-stdlib)'s
-  libc++ threading). To run split, the host kernel also starts the secondary
-  cores and hands one to `SDL2Circle_SplitPresentCore` — the shim marshals,
-  it does not own the cores.
+  contract: initialize `CInterruptSystem` and `CTimer` before `SDL_Init`, and
+  run a `CScheduler` to use the core split. To run split, the host kernel
+  also starts the secondary cores and hands one to
+  `SDL2Circle_SplitPresentCore` — the shim marshals, it does not own the
+  cores.
 - **Honest headers.** `include/SDL2/` is the official SDL2 2.32.4 header
   set (zlib license, see `SDL2-LICENSE.txt`) with one substitution: an
   `SDL_config.h` for AArch64/newlib/Circle. Your app compiles against the

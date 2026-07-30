@@ -109,8 +109,23 @@ static void init_input_on0(void *)
     SDL2Circle_InputInit();
 }
 
+static void init_hardware_on0(void *)
+{
+    SDL2Circle_HardwareInit();
+}
+
 extern "C" int SDL_InitSubSystem(Uint32 flags)
 {
+    // Board hardware — the CPU clock and the case fan — before anything
+    // else, so the rest of bring-up runs at the clock the application is
+    // going to have. It belongs to core 0 like every other device, so it is
+    // marshalled there; a host kernel that needed it earlier still has
+    // already brought it up, and this then does nothing.
+    //
+    // Not conditional on the subsystem flags: this is the machine, not a
+    // subsystem, and every SDL application wants the machine running.
+    SDL2Circle_CallOn0(init_hardware_on0, nullptr);
+
     // Video/window devices come up lazily in SDL_CreateWindow; USB comes up
     // here so keyboards enumerate while the app is still initializing.
     // USB (xHCI, interrupts) belongs to core 0: under the core split this
