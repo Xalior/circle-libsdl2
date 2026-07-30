@@ -98,11 +98,14 @@ static SDL_Window *s_window = nullptr;
 //             land here on the requested mode; a board whose firmware
 //             ignores mode requests (Pi 5) lands on the panel's own mode.
 //
-//   CANVAS    the resolution the operator asked for, from cmdline.txt
-//             width=/height=. It is the world the application is given and
-//             the shape that decides the letterboxing. Unset means "no
-//             opinion": the canvas becomes the scanout and the canvas hop
-//             disappears, which is the autodetected default.
+//   CANVAS    the resolution the display is presented as having. It is the
+//             world the application is given and the shape that decides the
+//             letterboxing. Three things can state it, and the first of
+//             these that has an opinion wins: the virtual device the
+//             consumer declared, the operator's cmdline.txt width=/height=,
+//             and finally the scanout itself — which means "no opinion",
+//             makes the canvas hop disappear, and is the autodetected
+//             default.
 //
 //   APPLICATION  whatever SDL_CreateWindow was asked for, and whatever
 //             rectangles SDL_RenderCopy is handed. Those rectangles are
@@ -112,6 +115,26 @@ static SDL_Window *s_window = nullptr;
 // composed into a single resampling pass at present time.
 static int s_scanout_w = 0, s_scanout_h = 0;
 static int s_canvas_w = 0, s_canvas_h = 0;
+
+// The virtual display device, as declared by the consumer through
+// SDL2Circle_DeclareVirtualDevice. It states the canvas in the consumer's
+// own code rather than on the boot command line; it does not state the
+// scanout, which stays the firmware's answer to the operator's mode request.
+//
+// A resolved canvas (s_canvas_w > 0) is the point after which no declaration
+// can be taken: everything downstream — the placement, the window, the
+// display-mode answers — has been derived from the canvas by then, and the
+// declaration promises a display whose size does not change under the
+// application. This is settled before the application starts, on one core,
+// so the two flags need no more protection than that.
+static bool s_declared = false;
+static int s_declared_w = 0, s_declared_h = 0;
+
+// The framebuffer is allocated at 32 bits per pixel and streaming ARGB8888
+// is the only texture format, so this is the whole of what the library can
+// present. A declaration at any other depth is refused rather than served at
+// this one.
+static const unsigned VIRTUAL_DEVICE_DEPTH = 32;
 
 // The canvas rectangle on the scanout, and whether the two coincide (the
 // hop is then arithmetically absent, not merely cheap).
@@ -193,14 +216,50 @@ static void resolve_placement(void)
                           mode, s_place_w, s_place_h, s_place_x, s_place_y);
 }
 
+// Take the consumer's declaration of the virtual display device, or refuse
+// it and say why. The refusal reaches the caller the way every other refusal
+// in this library does, as an SDL error behind a -1 return; it is not
+// logged, because a declaration is made before SDL_Init and the log route
+// reaches a host kernel's logger, which may not exist that early. An
+// accepted declaration is named on the resolve's own geometry line below.
+extern "C" int SDL2Circle_DeclareVirtualDevice(unsigned depth, int width,
+                                               int height)
+{
+    // The two state tests come before the values, and in this order. Once
+    // the canvas is resolved nothing can be declared at all, so reporting a
+    // bad value there would suggest that correcting it would help.
+    if (s_canvas_w > 0 && s_canvas_h > 0)
+        return SDL_SetError("SDL2Circle_DeclareVirtualDevice: the display "
+                            "size is already resolved");
+    if (s_declared)
+        return SDL_SetError("SDL2Circle_DeclareVirtualDevice: a virtual "
+                            "device of %dx%d is already declared",
+                            s_declared_w, s_declared_h);
+    if (depth != VIRTUAL_DEVICE_DEPTH)
+        return SDL_SetError("SDL2Circle_DeclareVirtualDevice: %u bits per "
+                            "pixel; only %u is implemented",
+                            depth, VIRTUAL_DEVICE_DEPTH);
+    if (width <= 0 || height <= 0)
+        return SDL_SetError("SDL2Circle_DeclareVirtualDevice: %dx%d is not a "
+                            "display size", width, height);
+
+    s_declared_w = width;
+    s_declared_h = height;
+    s_declared = true;
+    return 0;
+}
+
 static void resolve_display_size(void)
 {
     if (s_canvas_w > 0 && s_canvas_h > 0)
         return;
 
-    // Request the boot canvas (cmdline width=/height=); the GRANT decides
-    // the scanout. An unset canvas still needs a request to allocate
-    // against, and the grant overrules it either way.
+    // The boot options' width=/height= is a request for a DISPLAY MODE, and
+    // the GRANT it produces decides the scanout. It is read here on its own
+    // account: whatever states the canvas below, the firmware is asked for
+    // the mode the operator asked for and nothing else. An unset request
+    // still needs a size to allocate against, and the grant overrules it
+    // either way.
     int req_w = 0, req_h = 0;
     CKernelOptions *opts = CKernelOptions::Get();
     if (opts && opts->GetWidth() > 0 && opts->GetHeight() > 0)
@@ -240,17 +299,29 @@ static void resolve_display_size(void)
         source = "no grant, cmdline request";
     }
 
-    // No canvas asked for means no opinion: the canvas IS the scanout and
-    // the canvas hop costs nothing, with nothing to configure.
-    const char *csource = "cmdline width=/height=";
-    if (req_w <= 0 || req_h <= 0)
+    // Who states the canvas: the consumer's declared virtual device first,
+    // then the operator's boot options, and failing both the scanout. That
+    // last is no opinion at all — the canvas IS the scanout, the canvas hop
+    // costs nothing, and there is nothing to configure.
+    const char *csource;
+    if (s_declared)
     {
-        req_w = s_scanout_w;
-        req_h = s_scanout_h;
+        s_canvas_w = s_declared_w;
+        s_canvas_h = s_declared_h;
+        csource = "declared virtual device";
+    }
+    else if (req_w > 0 && req_h > 0)
+    {
+        s_canvas_w = req_w;
+        s_canvas_h = req_h;
+        csource = "cmdline width=/height=";
+    }
+    else
+    {
+        s_canvas_w = s_scanout_w;
+        s_canvas_h = s_scanout_h;
         csource = "unset, follows the scanout";
     }
-    s_canvas_w = req_w;
-    s_canvas_h = req_h;
 
     SDL2Circle_Log("sdl2video", SDL2CIRCLE_LOG_NOTICE,
                           "scanout %dx%d (%s), canvas %dx%d (%s)",

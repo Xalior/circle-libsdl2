@@ -81,6 +81,43 @@ void SDL2Circle_CallOn0(void (*fn)(void *), void *arg);
 // (cmdline.txt `perfstats=10`) so one binary serves bench and product.
 void SDL2Circle_SetPerfInterval(unsigned nSeconds);
 
+// ---- the virtual display device ---------------------------------------------
+
+// Declare the display device the application is to be given: its bit depth,
+// and its width and height in pixels. Every SDL answer about the display —
+// SDL_GetCurrentDisplayMode, SDL_GetDisplayMode, SDL_GetDesktopDisplayMode,
+// SDL_GetDisplayBounds — and the size of the window SDL_CreateWindow returns
+// come from these numbers, whatever resolution the panel is really being
+// scanned at. The library carries the frame from the one to the other.
+//
+// The declaration is FIXED. It is accepted once, before anything has asked
+// the library about the display, and after that the answer cannot change:
+// a second declaration is refused, and so is one made after the display size
+// has been settled (the first display query, or the first window). Every
+// geometry the library derives from it is therefore computed once and holds
+// for the run.
+//
+// So call it before SDL_Init, from the application or from its host kernel,
+// and after the host kernel's logger exists. Where the numbers come from is
+// the caller's business entirely — a build constant, a settings file, an
+// option of the host's own.
+//
+// 32 is the only depth the library can serve: the framebuffer is allocated
+// at 32 bits per pixel and streaming ARGB8888 is the only texture format, so
+// any other depth is refused rather than silently rounded to this one. Width
+// and height must both be greater than zero.
+//
+// Returns 0 when the declaration is accepted, and -1 when it is refused,
+// with SDL_GetError describing which of the above was not met. A refused
+// declaration changes nothing: no partial state is kept, and an earlier
+// accepted declaration still stands.
+//
+// Declaring nothing is entirely ordinary. Without a declaration the library
+// behaves exactly as it does today: the boot options `width=` and `height=`
+// state the world the application is given, and with those unset too it is
+// the scanout itself.
+int SDL2Circle_DeclareVirtualDevice(unsigned depth, int width, int height);
+
 // ---- board hardware: CPU clock and case fan ---------------------------------
 //
 // Circle's CCPUThrottle sets the CPU clock rate and, where cmdline.txt names

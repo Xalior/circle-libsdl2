@@ -28,7 +28,7 @@ never touches a device.
 | SDL2 subsystem | Circle backing |
 |---|---|
 | Video: fullscreen window, software `SDL_Renderer`, streaming ARGB8888 textures, alpha blending, scaled `SDL_RenderCopy` | `CBcmFrameBuffer` — double-buffered, vsync page flip. Where the firmware grants one screen instead of two, the finished frame is scaled onto it, on a core of the host's choosing |
-| Display/renderer queries (modes, bounds, formats, masks) | single HDMI panel |
+| Display/renderer queries (modes, bounds, formats, masks) | single HDMI panel, or the virtual device the application declared for itself |
 | Keyboard → SDL events, `SDL_GetKeyboardState`, modifiers | Circle USB HID (raw reports; SDL scancodes *are* USB usage codes). Off core 0: USB stays on core 0, events cross by ring |
 | Joysticks, gamepads and wheels: enumeration, hot-plug, axes, hats, buttons, GUIDs, coarse rumble | Circle's USB gamepad drivers — the generic HID one and the five console ones. Off core 0: USB and event synthesis stay on core 0; the readings live in memory both cores see |
 | Game controllers: `gamecontrollerdb.txt` mappings, `SDL_IsGameController`, mapped axes and buttons, controller events | the mapping text is read the way SDL2 reads it, and found by the same joystick GUID SDL2 builds |
@@ -63,11 +63,17 @@ request, so the scanout is whatever `config.txt` asked for. A Pi 5 ignores
 mode requests while still acknowledging them, and scans out the mode its
 display reports; the grant is the only place that shows up.
 
-**The canvas** is the resolution the operator asked for, from `cmdline.txt`
-`width=` and `height=`. It is the world the application is given, and its
-shape against the scanout's decides the letterboxing. **Leave it unset and
-the canvas becomes the scanout** — the canvas step disappears, nothing needs
-configuring, and this is the default on every board.
+**The canvas** is the resolution the display is presented as having. It is
+the world the application is given, and its shape against the scanout's
+decides the letterboxing. Three things can state it, and the first of these
+that has an opinion wins:
+
+1. **the virtual device the application declared** in its own code — see
+   [Declaring the display](#declaring-the-display);
+2. **`width=` and `height=` in `cmdline.txt`**, which is the operator's say;
+3. **the scanout itself**, which is what "nobody asked" means — the canvas
+   step disappears, nothing needs configuring, and this is the default on
+   every board.
 
 **The application's own resolution** is whatever it renders at. It calls
 `SDL_CreateWindow` and `SDL_RenderCopy` as usual, and the rectangles it
@@ -129,6 +135,61 @@ sdl2video: copy src 320x224 -> canvas 720x504+0+36 -> scanout 1350x945+285+67 (n
 
 The `present:` line names the path that is actually live — `dma copy` or
 `cpu copy`, and the reason when it is the latter.
+
+### Declaring the display
+
+Some applications cannot take whatever world they are handed. A game with a
+fixed layout, a port that was written for one resolution, an emulator whose
+raster is a fact about the machine it emulates — each of these has to draw in
+a display of one particular size, and asking an operator to keep `cmdline.txt`
+in step with the program is a card that boots to the wrong picture the first
+time somebody copies the wrong file.
+
+Such an application declares the display it needs, in its own code, before
+`SDL_Init`:
+
+```c
+#include <SDL2/SDL_circle.h>
+
+if (SDL2Circle_DeclareVirtualDevice(32, 800, 450) != 0)
+    fprintf(stderr, "%s\n", SDL_GetError());
+```
+
+That becomes the canvas. `SDL_GetCurrentDisplayMode`,
+`SDL_GetDesktopDisplayMode`, `SDL_GetDisplayMode` and `SDL_GetDisplayBounds`
+all answer with it, `SDL_CreateWindow` returns a window of that size whatever
+it was asked for, and the library carries each frame from there to whatever
+the panel is really doing. **The application never learns the real output
+resolution**, which is the point: it draws in the world it declared, and the
+placement rules above put that world on the glass.
+
+- **It is fixed.** One declaration is accepted, before anything has asked the
+  library about the display. A second one is refused, and so is one made
+  after the display size has been settled — the first display query, or the
+  first window. The size an application is given cannot change under it, so
+  every geometry derived from it is worked out once and holds for the run.
+- **32 bits per pixel, and nothing else.** The framebuffer is allocated at 32
+  bits and streaming ARGB8888 is the only texture format, so another depth is
+  refused rather than quietly rounded to this one. Width and height must both
+  be above zero.
+- **The return value is the report.** Zero means accepted; -1 means refused,
+  with `SDL_GetError` saying which of the above was not met. A refused
+  declaration changes nothing, and an earlier accepted one still stands.
+- **It states the canvas, not the mode.** The display mode the panel is
+  driven at remains the operator's business, asked for in `config.txt` and
+  `cmdline.txt` and granted, or not, by the firmware. Declaring a virtual
+  device does not ask the firmware for anything; it says what the application
+  is to be shown, and the library scales.
+- **Declaring nothing is entirely ordinary.** An application that makes no
+  declaration gets exactly what it always got: `width=`/`height=` if the
+  operator set them, and the scanout if not.
+
+Where the numbers come from is the application's business — a build constant,
+a settings file, an option of its host kernel's own. The library takes what it
+is given.
+
+`test/virtdev` is a bootable example of all of this — see
+[Test apps](#test-apps).
 
 ## Joysticks and game controllers
 
@@ -643,6 +704,10 @@ templates:
   axis bars, hat and button lights, the mapped controller view where there is
   one, and a running log of devices arriving and leaving (joystick and game
   controller)
+- `test/virtdev` — an application declaring the display it is to be given,
+  then checking every SDL answer about the display against what it declared,
+  and making each declaration the library refuses so the reason for it is on
+  the log (virtual device)
 - `test/videocycle` — the whole video and audio world torn down and rebuilt in
   a loop, at alternating source geometry, while a presentation core keeps
   running: what a settings menu does on every change, with nobody at the
