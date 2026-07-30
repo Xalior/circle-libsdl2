@@ -369,8 +369,11 @@ static void drawDevice(int index, int px, int py, int pw, int ph)
     if (nhats == 0)
         text(hx, hy, 2, COL_DIM, "none");
 
-    // Buttons, right, eight to a row and numbered from one as a player
-    // counts them.
+    // Buttons, right, eight to a row, numbered as SDL numbers them: from
+    // zero. These are the indices SDL_JoystickGetButton takes and the ones a
+    // configuration file has to name, so the number read off the screen is
+    // the number that gets written down — the axes above are labelled the
+    // same way for the same reason.
     int bx = px + 640, by = y + 26;
     snprintf(line, sizeof line, "buttons (%d)", nbuttons);
     text(bx, by - 16, 2, COL_TEXT, line);
@@ -380,7 +383,7 @@ static void drawDevice(int index, int px, int py, int pw, int ph)
         int cy = by + (b / 8) * 30;
         bool down = SDL_JoystickGetButton(dev->joy, b) != 0;
         fill(cx, cy, 30, 26, down ? COL_ON : COL_OFF);
-        snprintf(line, sizeof line, "%d", b + 1);
+        snprintf(line, sizeof line, "%d", b);
         text(cx + 15 - textw(2, line) / 2, cy + 6, 2, down ? 0xFF000000 : COL_DIM, line);
     }
 
