@@ -116,6 +116,8 @@ had the shortcut, because compositing reads the destination anyway.
 This affects every consumer on every board, and the penalty grows with
 magnification.
 
+`b16ac3e`
+
 ### The library supplies a scheduler when the host has none
 
 Running the core split needed a `CScheduler` in the system, and a host
