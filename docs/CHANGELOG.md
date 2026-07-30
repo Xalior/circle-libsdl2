@@ -12,20 +12,30 @@ followed.
 
 ### An application can declare the display it is given
 
-`SDL2Circle_DeclareVirtualDevice(depth, width, height)` states, in the
-application's own code and before `SDL_Init`, the display the library is to
-present. Every SDL display answer — the current, desktop and enumerated
-modes, and the display bounds — reports it, and so does the window, whatever
-size `SDL_CreateWindow` was asked for. The library carries each frame from
-there to whatever the panel is really scanning out, placing it by the same
-rules a canvas from `cmdline.txt` has always been placed by, so the
-application never learns the real output resolution.
+There are two display resolutions on a bare-metal Pi, they do two different
+jobs, and this version separates them properly.
 
-This is for an application that cannot take whatever world it is handed: one
-whose layout, port or emulated raster is a fact about the program rather than
-a setting. Until now the only way to state it was `width=` and `height=` in
-`cmdline.txt`, which puts a program's own requirement on a card an operator
-edits.
+The **physical** resolution is what the hardware puts on the wire. `width=`
+and `height=` in `cmdline.txt` ask the firmware for it, and it is the
+operator's to set.
+
+The **virtual** resolution is the display the application is given.
+`SDL2Circle_DeclareVirtualDevice(depth, width, height)` states it, in the
+application's own code and before `SDL_Init`. Every SDL answer about the
+display — the current, desktop and enumerated modes, the display bounds, the
+window size, the renderer's output size — is that declaration, whatever the
+panel is really doing. The library scales the one onto the other.
+
+This is for an application that cannot take whatever display it is handed:
+one whose layout, port or emulated raster is a fact about the program rather
+than a setting.
+
+**Where the numbers come from is the consumer's business, and only the
+consumer's.** A build constant, a configuration file, a firmware query the
+consumer makes for itself, a value off a network port. The library is told
+what the virtual display is and discovers nothing. It offers no way to ask
+what the panel is: an application wanting the two to match works the physical
+resolution out itself and passes it in.
 
 The declaration is fixed. One is accepted, before anything has asked the
 library about the display; a second is refused, and so is one made after the
@@ -39,18 +49,44 @@ refused rather than rounded to this one. Width and height must both be above
 zero. A refusal returns -1 with `SDL_GetError` giving the reason, changes
 nothing, and leaves any earlier accepted declaration standing.
 
-`width=` and `height=` were serving as both the firmware's mode request and
-the canvas. They are read apart now. The request the firmware receives is
-still the operator's alone — declaring a virtual device asks the firmware for
-nothing — and the canvas is stated by the declaration, then by those options,
-then by the scanout itself. **An application that declares nothing behaves
-exactly as before.**
+**An application that declares nothing is given the physical display**, and
+there is nothing to scale. `width=` and `height=` had been quietly serving as
+both the firmware's mode request and the application's world; they are the
+mode request alone now, and never set what the application is given.
 
 `test/virtdev` is a bootable example: it declares a device, checks every SDL
 answer about the display against what it declared, and makes each declaration
 the library refuses so the reason for each is on the serial log.
 
-`b2eca5c`
+`b2eca5c`, `1c83bcf`
+
+### The physical resolution comes from the firmware, not from arithmetic
+
+The scanout the presentation path scales onto is now read back from the
+firmware after the framebuffer is allocated, using the firmware's own display
+mailbox tag. It had been worked out instead — from the framebuffer's pitch
+and buffer size, or from the width and height Circle reports.
+
+Neither source could be right. Circle's `CBcmFrameBuffer` sends one combined
+tag call whose reply the firmware writes its real geometry into, and Circle
+relies on that itself, testing the returned physical width and height before
+it accepts the allocation. It then keeps only the buffer address, the size
+and the pitch, and never updates its own width and height — so `GetWidth()`
+and `GetHeight()` echo the constructor's arguments for the object's whole
+life, and the reply holding the real answer is private. Deriving the display
+from the pitch instead gives the padded stride rather than the picture, and
+deriving the height from the buffer size gives every granted row, which is
+two screens on a double-buffered grant.
+
+Asking the firmware makes a Pi 5 — which acknowledges a mode request and then
+scans out its display's own mode regardless — describe itself correctly
+without the library inferring anything.
+
+Where the reported mode is larger than the memory the same firmware granted,
+the geometry is held to the grant and a warning says so. That is a bound on
+what may be written, not a second way of working the resolution out.
+
+`1c83bcf`
 
 ## vPoC2
 
