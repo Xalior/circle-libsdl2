@@ -609,6 +609,10 @@ templates:
   axis bars, hat and button lights, the mapped controller view where there is
   one, and a running log of devices arriving and leaving (joystick and game
   controller)
+- `test/videocycle` — the whole video and audio world torn down and rebuilt in
+  a loop, at alternating source geometry, while a presentation core keeps
+  running: what a settings menu does on every change, with nobody at the
+  keyboard (core split, present-path lifetime)
 
 ## License
 
