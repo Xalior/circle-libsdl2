@@ -80,6 +80,49 @@ void     SDL2Circle_AudioDrain(void);   // hardware-core servo: ring -> sound de
 // deadman).
 void SDL2Circle_HeartbeatBump(void);
 
+// ---- the core bridge -------------------------------------------------------
+//
+// What crosses from the application core to the presentation core, chosen
+// when this library is BUILT. Both modes work on any framebuffer grant, and
+// both end in the same place — the executor writes into the shadow or the
+// staging frame either way, and the flip is the grant's business, not the
+// bridge's. What differs is how much work is done on which side, and how
+// much memory moves between them.
+//
+//   FRAME     the frame is reduced on the application core to finished
+//             pixels and one destination, and that is all that crosses.
+//             Almost every frame is a clear plus one opaque blit, which
+//             reduces to the application's own texture exactly where it
+//             already sits — a few hundred kilobytes for a game raster —
+//             and the clear reduces to nothing but a border repaint when
+//             the geometry moves.
+//
+//   COMMANDS  the recorded draw list crosses as it stands and the
+//             presentation core composes it, command by command. Nothing
+//             is reduced and no intermediate surface is written on the
+//             application core; the composing itself is what moves across.
+//
+// A frame too complicated to record — anything that is not a clear plus one
+// opaque copy — has already been drawn into the canvas surface by the time
+// present is reached, so it crosses as a frame in BOTH modes. That is not a
+// mode selecting itself; there is simply nothing left to compose.
+//
+// Set it with `make BRIDGE=frame` or `make BRIDGE=commands`; the Makefile
+// turns that into the define below. It is baked into the archive and is not
+// part of any installed header, so a consumer's own translation units
+// neither see it nor need to match it.
+#define SDL2CIRCLE_BRIDGE_FRAME     1
+#define SDL2CIRCLE_BRIDGE_COMMANDS  2
+
+#ifndef SDL2CIRCLE_BRIDGE
+#define SDL2CIRCLE_BRIDGE SDL2CIRCLE_BRIDGE_FRAME
+#endif
+
+#if SDL2CIRCLE_BRIDGE != SDL2CIRCLE_BRIDGE_FRAME \
+ && SDL2CIRCLE_BRIDGE != SDL2CIRCLE_BRIDGE_COMMANDS
+#error SDL2CIRCLE_BRIDGE must be SDL2CIRCLE_BRIDGE_FRAME or SDL2CIRCLE_BRIDGE_COMMANDS
+#endif
+
 // Presentation: SDL_RenderPresent posts a frame (command list + target
 // framebuffer half); the presentation worker executes it and flips.
 enum

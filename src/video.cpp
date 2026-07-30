@@ -1766,28 +1766,20 @@ extern "C" void SDL_RenderPresent(SDL_Renderer *ren)
     SDL2CirclePerfScope perf(SDL2CIRCLE_PERF_RENDER);
     g_SDL2CirclePresents++;
 
-    // A frame with more draws than the recorder holds has already been
-    // drawn into the canvas surface, whatever the grant, and there is
-    // nothing left to compose. It goes the reduced way on both paths.
+    // Which of the two bridges this is was decided when the library was
+    // built (SDL2CIRCLE_BRIDGE, described in sdl2circle.h). The grant does
+    // not enter into it: both bridges end at the same executor, which writes
+    // into the shadow or the staging frame according to what was granted,
+    // and the flip is the grant's business either way.
     //
-    // The two grants are otherwise two different machines, and they are
-    // answered differently.
-    //
-    // A grant of two screens can page-flip, and the firmware scales the
-    // signal to the panel for nothing. There the frame is composed into
-    // the half being drawn, command by command, and the pan makes it
-    // visible — which is as cheap as this gets, and is left exactly as it
-    // was.
-    //
-    // A grant of one screen cannot flip and cannot scale. Everything has
-    // to be resampled to scanout size and copied in, so the one thing
-    // worth doing is doing that ONCE: the frame is reduced here, on this
-    // thread, to finished pixels and a destination, and that is all that
-    // crosses.
-    if (s_fb_halves == 2 && !ren->rasterizing)
+    // A frame with more draws than the recorder holds has already been drawn
+    // into the canvas surface, whatever the grant and whatever the bridge,
+    // and there is nothing left to compose. It crosses as a frame below.
+#if SDL2CIRCLE_BRIDGE == SDL2CIRCLE_BRIDGE_COMMANDS
+    if (!ren->rasterizing)
     {
-        // Composed command by command into the half, as before. The whole
-        // recorded list travels, because composing IS what this path does.
+        // Composed command by command on the far side. The whole recorded
+        // list travels, because composing IS what this bridge does.
         for (unsigned i = 0; i < ren->ncmds; i++)
         {
             SDL2CirclePresentCmd as_drawn = ren->cmds[i];
@@ -1800,7 +1792,8 @@ extern "C" void SDL_RenderPresent(SDL_Renderer *ren)
             SDL2Circle_PresentPost(ren->cmds, ren->ncmds, ren->back);
             ren->ncmds = 0;
             ren->rasterizing = false;
-            ren->back ^= 1;
+            if (s_fb_halves == 2)
+                ren->back ^= 1;
             return;
         }
         for (unsigned i = 0; i < ren->ncmds; i++)
@@ -1813,9 +1806,15 @@ extern "C" void SDL_RenderPresent(SDL_Renderer *ren)
             SDL2CirclePerfScope wait(SDL2CIRCLE_PERF_WAIT_VSYNC);
             ren->window->fb->WaitForVerticalSync();
         }
-        ren->back ^= 1;
+        // Only a grant of two halves has a second half to draw into. On a
+        // single-half grant the half is not a target at all — the executor
+        // and the flip both ignore it and work through the shadow — and
+        // naming half 1 there would address memory past the grant.
+        if (s_fb_halves == 2)
+            ren->back ^= 1;
         return;
     }
+#endif
 
     SDL2CirclePresentCmd out[2];
     bool drew_canvas = ren->rasterizing;

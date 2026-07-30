@@ -77,6 +77,34 @@ each is on the serial log.
 
 `b2eca5c`, `1c83bcf`, `6741ffe`
 
+### What crosses between the cores is a build-time choice
+
+The core bridge — what `SDL_RenderPresent` hands to the presentation core —
+is selected when the library is built, with `make BRIDGE=frame` (the default)
+or `make BRIDGE=commands`.
+
+`frame` reduces the frame on the application core to finished pixels and one
+destination, and only that crosses; the usual clear-plus-one-blit reduces to
+the application's own texture where it already sits. `commands` sends the
+recorded draw list as it stands and composes it on the far side.
+
+Both modes work on any board and any framebuffer grant. They had been chosen
+by the grant instead — a two-screen grant took the command list, a
+single-screen grant took the reduced frame — which read as a constraint and
+was only ever a judgement about what each grant makes cheap. Both bridges end
+at the same executor, which writes into the shadow buffer or the staging
+frame according to what was granted, so the flip is the grant's business and
+the bridge does not know what was granted at all.
+
+A frame too complicated to record has already been drawn into the canvas
+surface before it is presented, so it crosses as a frame in either mode.
+There is nothing left to compose, and that is not a mode selecting itself.
+
+The setting is baked into the archive. It appears in no installed header, so
+an application's own translation units neither see it nor need to match it.
+Objects are kept in per-bridge trees, and switching modes deletes the archive
+rather than leave the previous mode's build under the same name.
+
 ### A picture that fits exactly now fills the screen exactly
 
 Placing the canvas on the scanout formed the scale factor as a 16.16

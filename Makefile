@@ -28,6 +28,32 @@ RASPPI_rpi3 = 3
 RASPPI_rpi4 = 4
 RASPPI_rpi5 = 5
 
+# THE CORE BRIDGE: what crosses from the application core to the presentation
+# core. A build-time choice, baked into the archive — not a boot option and
+# not decided by the board.
+#
+#   frame      one finished pixmap per frame, reduced on the application
+#              core. The usual frame is a clear plus one opaque blit, which
+#              reduces to the application's own texture where it already
+#              sits, so what crosses is a few hundred kilobytes.
+#   commands   the recorded draw list, composed on the presentation core.
+#              Nothing is reduced; the composing is what moves across.
+#
+#   make BRIDGE=commands
+#
+# Both work on any framebuffer grant. `frame` is the default: it is what the
+# product board ships today, and it is the mode a frame too complicated to
+# record falls back to in either case. See src/sdl2circle.h.
+BRIDGE ?= frame
+
+ifeq ($(BRIDGE),frame)
+BRIDGE_DEFINE = -DSDL2CIRCLE_BRIDGE=SDL2CIRCLE_BRIDGE_FRAME
+else ifeq ($(BRIDGE),commands)
+BRIDGE_DEFINE = -DSDL2CIRCLE_BRIDGE=SDL2CIRCLE_BRIDGE_COMMANDS
+else
+$(error BRIDGE must be `frame` or `commands`, not `$(BRIDGE)`)
+endif
+
 # GNU getopt for circle-stdlib's configure (macOS BSD getopt drops long opts ->
 # wrong toolchain prefix). ccache is build/ccache.sh's job (mandatory source).
 GETOPT_BIN := $(firstword $(wildcard /opt/homebrew/opt/gnu-getopt/bin /usr/local/opt/gnu-getopt/bin))
@@ -47,10 +73,13 @@ endif
 CIRCLE_STDLIB     = circle-stdlib-$(BOARD)
 CIRCLESTDLIBHOME ?= $(CURDIR)/$(CIRCLE_STDLIB)
 
-# Per-board object tree, so all three archives coexist without one board's
-# objects clobbering another's — no `make clean` between boards, each is its
-# own cacheable unit.
-OBJDIR = build/$(BOARD)
+# Per-board, per-bridge object tree, so all three archives coexist without one
+# board's objects clobbering another's — no `make clean` between boards, each
+# is its own cacheable unit. The bridge is in the path for the same reason and
+# a sharper one: it changes what the objects contain but not their timestamps,
+# so sharing a tree between the two modes would leave `make BRIDGE=...` with
+# nothing to rebuild and quietly hand back the other mode's archive.
+OBJDIR = build/$(BOARD)-$(BRIDGE)
 
 .DEFAULT_GOAL := libSDL2-$(BOARD).a
 
@@ -133,12 +162,39 @@ SRCS = src/init.cpp src/error.cpp src/timer.cpp src/hints.cpp src/events.cpp \
 OBJS = $(SRCS:src/%.cpp=$(OBJDIR)/%.o)
 DEPS = $(OBJS:.o=.d)
 
+# Which bridge the archive on disk was last built with.
+#
+# The objects live in per-bridge trees, so switching BRIDGE always
+# recompiles. The ARCHIVE does not: it has one name whichever bridge made
+# it, and the other tree's objects are older than it, so make finds it up to
+# date and leaves the previous bridge's build sitting under the new name.
+# Two builds differing only by this switch then produce byte-identical
+# artifacts and nothing says so — which is the whole point of the switch,
+# lost silently.
+#
+# So when the recorded bridge does not match the requested one, the archive
+# is DELETED here, at parse time, before make decides anything. A missing
+# target has to be rebuilt; there is no timestamp comparison left to get
+# wrong, and no dependence on filesystem clock granularity — which a
+# prerequisite on the record file alone does not survive, because the record
+# and the archive it invalidates can land in the same second.
+#
+# The record is rewritten only when the answer changes, so a repeat build in
+# the same mode stays fully incremental.
+BRIDGE_TAG = build/.bridge-$(BOARD)
+$(shell mkdir -p build; \
+        [ "$$(cat $(BRIDGE_TAG) 2>/dev/null)" = "$(BRIDGE)" ] \
+        || { echo $(BRIDGE) > $(BRIDGE_TAG); rm -f libSDL2-$(BOARD).a; })
+
 libSDL2-$(BOARD).a: $(OBJS)
-	@echo "  AR    $@"
+	@echo "  AR    $@ ($(BRIDGE) bridge)"
 	@rm -f $@
 	@$(AR) cr $@ $(OBJS)
 
 STANDARD = -std=c++23 -Wno-volatile
+
+# Before Rules.mk, which folds DEFINE into the compiler flags.
+DEFINE += $(BRIDGE_DEFINE)
 
 include $(CIRCLEHOME)/Rules.mk
 

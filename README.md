@@ -374,6 +374,44 @@ three: resample the finished frame to scanout size, make it visible. What used
 to be a screen-sized clear, a screen-sized compose and a screen-sized copy is
 now the one resample.
 
+### Choosing what crosses: the core bridge
+
+**What travels from the application core to the presentation core is a
+build-time choice.** Both modes work on any board and any framebuffer grant;
+they differ in how much work is done on which side, and how much memory moves
+between them.
+
+```sh
+make BRIDGE=frame       # the default
+make BRIDGE=commands
+```
+
+- **`frame`** — the frame is reduced on the application core to finished
+  pixels and one destination, and that is all that crosses. The usual frame
+  is a clear plus one opaque blit, which reduces to the application's own
+  texture exactly where it already sits: a few hundred kilobytes for a game
+  raster, and the clear reduces to nothing but a border repaint when the
+  geometry moves.
+- **`commands`** — the recorded draw list crosses as it stands and the
+  presentation core composes it, command by command. Nothing is reduced and
+  no intermediate surface is written on the application core; the composing
+  itself is what moves across.
+
+Both end at the same executor, which writes into the shadow buffer or the
+staging frame according to what the firmware granted, and the page flip or
+the copy to the screen is the grant's business either way. **The bridge does
+not know or care what was granted.**
+
+One case is not a choice: a frame too complicated to record — anything that
+is not a clear plus one opaque copy — has already been drawn into the
+canvas-sized surface by the time it is presented, so there is nothing left to
+compose and it crosses as a frame in **both** modes.
+
+The setting is baked into the archive when the library is built. It is not in
+any installed header, so an application's own translation units neither see
+it nor need to match it; and because the two modes share one archive name,
+switching `BRIDGE` deletes the archive so it cannot be quietly reused.
+
 ### Why the split is shaped this way
 
 The goal is native speed on modest hardware, and the way to get it is to
@@ -710,6 +748,15 @@ answer every call site already handles.
 
 A world elsewhere on disk works with
 `make CIRCLESTDLIBHOME=/path/to/circle-stdlib`.
+
+### Choosing the core bridge
+
+`make BRIDGE=frame` (the default) or `make BRIDGE=commands` selects what
+crosses to the presentation core — see
+[Choosing what crosses](#choosing-what-crosses-the-core-bridge). The choice
+is compiled into the archive, objects are kept in per-bridge trees so the two
+builds never mix, and switching modes deletes the archive rather than risk
+handing back the other mode's build under the same name.
 
 Building through Circle's `Rules.mk` — as the test apps do — you get the
 world's own `DEFINE`, whichever way it was configured, and there is nothing to
