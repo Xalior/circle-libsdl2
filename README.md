@@ -70,17 +70,17 @@ is no default resolution anywhere in the library — a default would not be a
 preference, it would be an instruction, because asking for a mode is what
 sets one. A card that says nothing gets the panel it is plugged into.
 
-**On a Pi 5, leave the boot mode out or match the panel exactly.** That
-board's firmware settles its display mode before any kernel runs and will
-not be moved off it. It still *acknowledges* a `width=`/`height=` request —
-and then reports the acknowledged mode back as though it were real, while
-scanning out the panel's own. The library believes the firmware, so it ends
-up describing a mode nothing is putting on the wire, and every geometry
-derived from it is wrong.
+**On a Pi 5, either set no display mode at all or set exactly the one the
+screen is already using.** That board's firmware chooses its display mode
+before any kernel starts and does not change it afterwards. It still accepts
+a `width=`/`height=` request, and then reports the requested mode back as
+though it had applied it, while continuing to send the screen's own mode to
+the display. This library takes the firmware's report as the truth, so it
+would describe a mode that is not being displayed, and every measurement
+derived from it would be wrong.
 
-So on a Pi 5 the safe settings are no `width=`/`height=` at all, or exactly
-what the glass is already doing. A Pi 3 or Pi 4 honours the request properly
-and has no such trap.
+A Pi 3 or a Pi 4 applies the requested mode and reports it correctly, so
+neither has this problem.
 
 **The canvas is the virtual display** — the world the application is given,
 and its shape against the scanout's decides the letterboxing. **The
@@ -856,35 +856,33 @@ Circle sound library the audio backend needs. `sdl-app.ld` is derived from
 Circle's `circle.ld` and remains GPLv3 (see its header); everything else
 here is zlib.
 
-### Catching a stub that outlived its purpose
+### Catching a stub this library has since replaced
 
-An application filling gaps in this library — a file of its own standing in
-for calls the library does not implement yet — should link the archive whole
-while developing:
+An application that defines its own empty versions of SDL calls this library
+does not implement yet should link the archive in full while developing:
 
 ```make
 LIBS = --whole-archive $(SHIM)/libSDL2-$(BOARD).a --no-whole-archive \
 	$(CIRCLE_STDLIB_LIBS)
 ```
 
-An object file linked straight into the kernel beats an archive member of
-the same name, and does it in silence. So when this library implements
-something an application had stubbed, the stub goes on winning: the
-application keeps calling its own do-nothing version, the real one is never
-linked, and nothing anywhere says so. That failure looks like the library
-not working.
+An object file linked directly into the kernel takes precedence over an
+archive member defining the same symbol, and the linker reports nothing when
+it does. So once this library implements a call an application had stubbed,
+the application keeps calling its own empty version: the real one is never
+linked in, and no warning is produced. The symptom is that the library
+appears not to work.
 
-Linking the archive whole makes the same situation a duplicate-symbol error
-at link time, naming both definitions. The fix is then to delete the stub,
-which was the intention all along.
+Linking the archive in full makes the same situation a duplicate-symbol
+error, naming both definitions. The correct fix is then to delete the stub.
 
-`--no-whole-archive` closes the scope immediately, so only this archive is
-forced and the C library, libc++ and Circle link as they always did. An
-application already using most of the library pays nothing for it.
+`--no-whole-archive` ends the effect immediately after this archive, so the
+C library, libc++ and Circle are linked as before. An application that
+already uses most of this library gains nothing in size from the change.
 
-It is a development setting rather than a shipping one: an application that
-uses only a corner of this library, and knows it, pays for the rest. Nothing
-requires it either way, and no example here sets it.
+This is a setting for development rather than for a shipped build. An
+application that deliberately uses a small part of the library will carry
+the rest of it. Nothing here requires the setting, and no example sets it.
 
 ## Examples
 
