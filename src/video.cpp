@@ -320,8 +320,14 @@ static bool resolve_display_size(void)
 
     // The boot options' width=/height= is a request to the firmware for a
     // PHYSICAL DISPLAY MODE, and that is the whole of what it is. It is not
-    // a canvas source and is never read as one. An unset request still needs
-    // a size to allocate against.
+    // a canvas source and is never read as one.
+    //
+    // Unset, the request is ZERO BY ZERO, which is Circle's "no size
+    // requested": its CBcmFrameBuffer constructor then asks the firmware for
+    // the display's own dimensions and allocates that. Naming a size here
+    // instead would SET that mode — the allocation is what sets it — so a
+    // default of any kind drives the panel at a resolution nobody asked for
+    // and then reads it back as though it were the display's own.
     int req_w = 0, req_h = 0;
     CKernelOptions *opts = CKernelOptions::Get();
     if (opts && opts->GetWidth() > 0 && opts->GetHeight() > 0)
@@ -330,7 +336,7 @@ static bool resolve_display_size(void)
         req_h = (int)opts->GetHeight();
     }
 
-    AcquireFbArgs a{req_w > 0 ? req_w : 640, req_h > 0 ? req_h : 480};
+    AcquireFbArgs a{req_w, req_h};
     SDL2Circle_CallOn0(acquire_fb_on0, &a);
 
     // The scanout is what the firmware says it set. Reported, not worked
@@ -345,14 +351,32 @@ static bool resolve_display_size(void)
         s_scanout_h = s_phys_h;
         source = "firmware reported";
     }
-    else
+    else if (a.w > 0 && a.h > 0)
     {
-        // The firmware would not say. What was asked for is the only figure
-        // left, and it is the one case where the scanout is not a measured
-        // one — so the log says so rather than presenting it as an answer.
+        // The firmware would not say, but a mode was named on the command
+        // line, so that is the only figure left. It is the one case where
+        // the scanout is not a measured one, and the log says so rather than
+        // presenting it as an answer.
         s_scanout_w = a.w;
         s_scanout_h = a.h;
         source = "firmware silent, physical request";
+    }
+    else if (s_fb0)
+    {
+        // Nothing named and the firmware silent to us. Circle asked the same
+        // question in its constructor and allocated against whatever it got,
+        // so its width and height are the geometry the grant was actually
+        // made at. They are only an echo of a request when a request was
+        // made, and none was.
+        s_scanout_w = (int)s_fb0->GetWidth();
+        s_scanout_h = (int)s_fb0->GetHeight();
+        source = "firmware silent, grant geometry";
+    }
+    else
+    {
+        // No grant and no answer: there is no display to describe.
+        SDL_SetError("the display size cannot be determined");
+        return false;
     }
 
     // The declared virtual device is the canvas, and the only thing that

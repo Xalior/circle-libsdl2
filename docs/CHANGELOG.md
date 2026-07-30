@@ -99,6 +99,17 @@ Asking the firmware makes a Pi 5 — which acknowledges a mode request and then
 scans out its display's own mode regardless — describe itself correctly
 without the library inferring anything.
 
+With that in place the request itself had to be corrected, because asking is
+what SETS the mode. The library had been asking for 640x480 whenever
+`cmdline.txt` named no size, so a card that expressed no preference had one
+imposed on it: on a Pi 5 the panel was driven at 640x480 inside a 1920x1080
+grant, the picture appeared twice and small in the corner, and the read-back
+faithfully reported the 640x480 that had just been set. There is no default
+resolution now. Where the operator names no size the library asks for none —
+Circle's "no size requested", which takes the display's own dimensions — and
+the panel keeps the mode it already had. Where the operator does name one it
+is asked for exactly as before.
+
 `1c83bcf`, `6741ffe`
 
 ## vPoC2

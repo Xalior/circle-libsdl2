@@ -61,10 +61,14 @@ display mode, allocating the framebuffer is what sets it, and **the firmware
 then reports the mode it actually set. That report is the scanout.** It is
 read from the firmware, never calculated: not from the framebuffer's pitch,
 not from its size, and not from the width and height Circle hands back,
-which are only the arguments it was constructed with. On a Pi 3 or Pi 4 the
-firmware honors the request; a Pi 5 acknowledges it and scans out its
-display's own mode regardless. Both boards answer the question correctly for
-themselves, so the library asks rather than guesses.
+which are only the arguments it was constructed with.
+
+**Set neither and the panel keeps its own mode.** The library then asks the
+firmware for no particular size, which is how you say "whatever the display
+is already doing", and the firmware allocates the display's own mode. There
+is no default resolution anywhere in the library — a default would not be a
+preference, it would be an instruction, because asking for a mode is what
+sets one. A card that says nothing gets the panel it is plugged into.
 
 **The canvas is the virtual display** — the world the application is given,
 and its shape against the scanout's decides the letterboxing. **The
