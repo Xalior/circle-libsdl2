@@ -77,6 +77,28 @@ each is on the serial log.
 
 `b2eca5c`, `1c83bcf`, `6741ffe`
 
+### A picture that fits exactly now fills the screen exactly
+
+Placing the canvas on the scanout formed the scale factor as a 16.16
+fixed-point fraction, and a canvas whose aspect ratio matched the scanout's
+came out one pixel short on each axis: a black line down the right edge and
+along the bottom. An 800x450 canvas on a 1920x1080 display is exactly 2.4,
+2.4 has no exact representation in 16.16, and the value was truncated twice —
+once forming the ratio and once multiplying it back out.
+
+Ratios that do happen to be representable, 1.5 and 3.0 among them, were
+always correct, which is what made the arithmetic look sound.
+
+The fit is worked out in exact integers now. Which axis limits is decided by
+comparing two cross products, so no ratio is formed and nothing is rounded in
+order to choose; the limiting axis is then the scanout's own measurement with
+no arithmetic on it at all, and the other axis takes a single divide. A
+canvas that genuinely cannot fit whole still floors, so the picture stays
+inside the scanout.
+
+This is settled once at start-up, before any frame exists, and is written for
+correctness rather than speed for that reason.
+
 ### The physical resolution comes from the firmware, not from arithmetic
 
 The scanout the presentation path scales onto is now read back from the

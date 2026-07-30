@@ -240,13 +240,54 @@ static void resolve_placement(void)
     }
     else
     {
-        // 16.16 fixed point: the smaller axis ratio is the one that fits,
-        // and it must survive the divide before it multiplies back out.
-        u32 rx = ((u32)s_scanout_w << 16) / (u32)s_canvas_w;
-        u32 ry = ((u32)s_scanout_h << 16) / (u32)s_canvas_h;
-        u32 r = rx < ry ? rx : ry;
-        s_place_w = (int)(((u64)s_canvas_w * r) >> 16);
-        s_place_h = (int)(((u64)s_canvas_h * r) >> 16);
+        // Fit, in exact integer arithmetic.
+        //
+        // THIS RUNS ONCE, at startup, on core 0, before a single frame
+        // exists. It can afford to be slow, so it is written for obvious
+        // correctness and for nothing else. Do not shave operations here, do
+        // not fold the steps together to save a divide, and above all do not
+        // reintroduce a scale factor held as a fraction.
+        //
+        // That is what this used to do — a 16.16 fixed-point ratio — and the
+        // reason it was wrong is that 2.4 has no exact representation in
+        // 16.16. An 800x450 canvas on a 1920x1080 scanout is exactly 2.4, so
+        // it came out 1919x1079 and left a black line down the right edge
+        // and along the bottom. Ratios that happen to be representable, 1.5
+        // and 3.0 among them, were always right, which is what made it look
+        // sound. No amount of care inside that scheme reaches the exact case.
+        //
+        // All values are 64-bit throughout rather than reasoning about where
+        // 32 bits would still be wide enough.
+        const s64 scanout_w = s_scanout_w, scanout_h = s_scanout_h;
+        const s64 canvas_w  = s_canvas_w,  canvas_h  = s_canvas_h;
+
+        // The two candidate scale factors are scanout_w/canvas_w and
+        // scanout_h/canvas_h, and the smaller of the two is the one that
+        // fits. Cross-multiplying compares them without forming either, so
+        // nothing is rounded in order to make the choice.
+        const s64 by_width  = scanout_w * canvas_h;
+        const s64 by_height = scanout_h * canvas_w;
+
+        if (by_width <= by_height)
+        {
+            // Width limits — including when the two are equal, which is the
+            // matching-aspect case that has to land whole. The picture is
+            // the full width of the scanout, exactly, with no arithmetic on
+            // that axis at all.
+            s_place_w = (int)scanout_w;
+            s_place_h = (int)(by_width / canvas_w);
+        }
+        else
+        {
+            // Height limits: the picture is the full height of the scanout,
+            // exactly.
+            s_place_h = (int)scanout_h;
+            s_place_w = (int)(by_height / canvas_h);
+        }
+
+        // A canvas that genuinely cannot fit whole floors on the derived
+        // axis, which is the right direction: the picture stays inside the
+        // scanout. What is left over is split evenly and stays black.
         s_place_x = (s_scanout_w - s_place_w) / 2;
         s_place_y = (s_scanout_h - s_place_h) / 2;
     }
