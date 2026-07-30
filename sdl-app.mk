@@ -14,7 +14,14 @@ SDL_APP_LDSCRIPT ?= $(dir $(lastword $(MAKEFILE_LIST)))sdl-app.ld
 # applications only ever list libSDL2.a.
 LIBS += $(CIRCLEHOME)/lib/sound/libsound.a
 
-$(TARGET).img: $(OBJS) $(LIBS) $(SDL_APP_LDSCRIPT)
+# LIBS is passed to the linker as it stands, so an application may put linker
+# flags in it — --whole-archive around the shim, say, so that a stale stub in
+# the application cannot silently shadow a symbol the library implements for
+# real. A flag is not a file, so the prerequisite list takes the file subset:
+# left in, make would try to build the flag and stop.
+LIBS_FILES = $(filter-out -%,$(LIBS))
+
+$(TARGET).img: $(OBJS) $(LIBS_FILES) $(SDL_APP_LDSCRIPT)
 	@echo "  LD    $(TARGET).elf (sdl-app.ld)"
 	@$(LD) -o $(TARGET).elf -Map $(TARGET).map $(LDFLAGS) \
 		-T $(SDL_APP_LDSCRIPT) $(CRTBEGIN) $(OBJS) \
