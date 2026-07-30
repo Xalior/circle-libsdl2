@@ -75,7 +75,7 @@ nothing on the board, checks every SDL answer about the display against what
 it declared, and makes each declaration the library refuses so the reason for
 each is on the serial log.
 
-`b2eca5c`, `1c83bcf`
+`b2eca5c`, `1c83bcf`, `6741ffe`
 
 ### The physical resolution comes from the firmware, not from arithmetic
 
@@ -99,7 +99,7 @@ Asking the firmware makes a Pi 5 — which acknowledges a mode request and then
 scans out its display's own mode regardless — describe itself correctly
 without the library inferring anything.
 
-`1c83bcf`
+`1c83bcf`, `6741ffe`
 
 ## vPoC2
 
