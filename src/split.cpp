@@ -34,6 +34,7 @@
 #include <circle/sched/scheduler.h>
 #include <circle/sched/task.h>
 
+#include <new>
 #include <atomic>
 #include <cerrno>
 #include <cstring>
@@ -758,11 +759,53 @@ public:
     }
 };
 
+// The scheduler, where this library had to make one.
+//
+// Circle's CTask registers itself with the scheduler while it is being
+// constructed, and it reaches it through CScheduler::Get(), which stops the
+// machine rather than reporting an absence. So the servo and the watchdog
+// below cannot be created without one — and a host that had not declared a
+// CScheduler took that fault here, in a constructor, with nothing said.
+//
+// Unlike CCPUThrottle, which this library owns for much the same reason,
+// this one can be ASKED: CScheduler::IsActive() is a safe question and
+// answers honestly. So the library makes one only where the host has not,
+// and a host that has its own keeps it untouched.
+//
+// It cannot be an ordinary static object. A static is constructed before the
+// kernel exists, and this has to happen after — the same reason the CPU
+// throttle is placement-new'd into storage of its own.
+//
+// NOTHING EVER DESTROYS IT. The servo and the watchdog are registered with
+// it and run for as long as the machine does, so taking it away would leave
+// them registered with nothing; and an application that shuts its video
+// world down and builds another one has not stopped those tasks. The flag
+// records that this library is the owner, which is what a teardown would
+// have to consult, and what keeps a second call from making a second one.
+static bool s_bOwnScheduler = false;
+alignas(CScheduler) static u8 s_SchedulerStore[sizeof(CScheduler)];
+
+static void ensure_scheduler(void)
+{
+    if (s_bOwnScheduler || CScheduler::IsActive())
+        return;
+
+    new (s_SchedulerStore) CScheduler;
+    s_bOwnScheduler = true;
+
+    CLogger::Get()->Write(From, LogNotice,
+                          "no scheduler in the system: this library made one");
+}
+
 extern "C" void SDL2Circle_SplitInit(void)
 {
 #ifdef ARM_ALLOW_MULTI_CORE
     if (g_split.load(std::memory_order_relaxed))
         return;
+
+    // Before the tasks, not after: constructing one is what reaches for the
+    // scheduler, and reaching for a scheduler that is not there is fatal.
+    ensure_scheduler();
 
     new CSplitServoTask;      // CTask registers itself with the scheduler
     new CSplitWatchdogTask;

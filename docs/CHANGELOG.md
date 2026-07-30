@@ -64,18 +64,40 @@ explaining, and names the missing call on the console.
 An application wanting its virtual display to match the panel asks the
 firmware itself and declares the answer — a handful of lines against Circle's
 public property tags, needing nothing from this library.
-`test/gradient`, `test/keyecho`, `test/tone`, `test/padview` and
-`test/videocycle` each carry that query in their own source, written out in
+`examples/gradient`, `examples/keyecho`, `examples/tone`, `examples/padview` and
+`examples/videocycle` each carry that query in their own source, written out in
 full rather than shared, so every one stands alone as a worked answer.
-`test/videocycle` also shows what an application off core 0 needs, the
+`examples/videocycle` also shows what an application off core 0 needs, the
 firmware mailbox being core 0's.
 
-`test/virtdev` is the opposite demonstration: it declares a size matching
+`examples/virtdev` is the opposite demonstration: it declares a size matching
 nothing on the board, checks every SDL answer about the display against what
 it declared, and makes each declaration the library refuses so the reason for
 each is on the serial log.
 
 `b2eca5c`, `1c83bcf`, `6741ffe`
+
+### The library supplies a scheduler when the host has none
+
+Running the core split needed a `CScheduler` in the system, and a host
+without one did not get an error — it got a dead board. The servo and the
+watchdog are Circle tasks, a task registers itself with the scheduler while
+it is being constructed, and it does that through `CScheduler::Get()`, which
+stops the machine rather than reporting an absence. The fault landed inside a
+constructor with nothing said.
+
+`SDL2Circle_SplitInit` now asks `CScheduler::IsActive()` — a safe question,
+unlike `CCPUThrottle`, which cannot be asked at all — and creates a scheduler
+only where there is not one already.
+
+**A host that declares its own keeps it and needs to change nothing.** The
+library only ever asks whether one exists; it never replaces, wraps or
+reconfigures a scheduler it did not make. A host with no use of its own for
+one can now stop declaring it.
+
+A scheduler the library made is never destroyed, for the same reason the CPU
+throttle it owns is never destroyed: the servo and the watchdog are
+registered with it and run for as long as the machine does.
 
 ### How much of a frame crosses between the cores is a build-time choice
 
@@ -259,7 +281,7 @@ world in a loop, which is what proved it.
 
 ### An example that identifies attached input devices
 
-`test/padview` is a bootable kernel that shows, for every attached device,
+`examples/padview` is a bootable kernel that shows, for every attached device,
 the SDL device index, the Circle device name, the instance ID, the joystick
 GUID and the USB identifiers behind it, whether a mapping was found for it,
 one live bar per axis, one lit cell per hat direction and one lit square per

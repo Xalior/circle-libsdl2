@@ -214,19 +214,19 @@ if (Tags.GetTag(PROPTAG_GET_DISPLAY_DIMENSIONS, &Dim, sizeof Dim)
 }
 ```
 
-**`test/gradient`, `test/keyecho`, `test/tone`, `test/padview` and
-`test/videocycle` each do exactly this** — every one carries the query in its
+**`examples/gradient`, `examples/keyecho`, `examples/tone`, `examples/padview` and
+`examples/videocycle` each do exactly this** — every one carries the query in its
 own kernel source rather than sharing a helper, so each stands alone as a
-complete worked answer. `test/videocycle` shows the variation an application
+complete worked answer. `examples/videocycle` shows the variation an application
 off core 0 needs: the firmware mailbox belongs to core 0, so its host kernel
 asks and declares before the application core is released.
 
-**`test/virtdev` is the opposite demonstration** — it declares a size
+**`examples/virtdev` is the opposite demonstration** — it declares a size
 matching nothing on the board, because the virtual display is whatever the
 application says it is and need not resemble the hardware.
 
-`test/virtdev` is a bootable example of all of this — see
-[Test apps](#test-apps).
+`examples/virtdev` is a bootable example of all of this — see
+[Examples](#examples).
 
 ## Joysticks and game controllers
 
@@ -280,7 +280,7 @@ worse than one that reports it cannot be played.
 Also unimplemented, and reporting failure rather than pretending: controller
 LEDs, trigger rumble, motion sensors, touchpads, and virtual joysticks.
 
-`test/padview` puts all of this on screen — see [Test apps](#test-apps).
+`examples/padview` puts all of this on screen — see [Examples](#examples).
 
 ## Running off core 0
 
@@ -486,11 +486,22 @@ the last two steps are about this library.
    The other cores are about to start asking core 0 for things, so there must
    be something there to answer with.
 
-   **A `CScheduler` is required to run split**, and it has to exist before
-   step 4. The servo and the watchdog are Circle tasks, a Circle task
-   registers itself with the scheduler while it is being constructed, and
-   doing that with no scheduler in the system stops the machine. Declaring
-   one as a kernel member is the whole of it — nothing has to be started.
+   **A `CScheduler` is needed to run split, and the library supplies one if
+   you have not.** The servo and the watchdog are Circle tasks, and a Circle
+   task registers itself with the scheduler while it is being constructed —
+   through `CScheduler::Get()`, which stops the machine rather than reporting
+   an absence. So `SDL2Circle_SplitInit` asks `CScheduler::IsActive()` first
+   and creates one where there is none.
+
+   **A host that declares its own keeps it**, exactly as before, and nothing
+   about it changes: the library only ever asks whether one exists. Declaring
+   one as a kernel member is still the clearer thing to do if the host has
+   any use for it of its own — cooperative tasks, `CScheduler::Yield` in an
+   idle loop — because then the host controls where it sits in the member
+   order. A host with no use for one can now simply not have one.
+
+   A scheduler the library made is never destroyed. The servo and the
+   watchdog are registered with it and run for as long as the machine does.
 
    If this kernel initializes I2C, SPI or the mini UART, declare a
    `CSDL2CircleHardware` member as well, so the CPU clock is settled before
@@ -725,11 +736,26 @@ also arm it in code: `SDL2Circle_SetPerfInterval(seconds)` in
   served at `SDL_Init`.
 - **Self-contained payloads.** The shim brings up everything it needs
   (USB host controller, framebuffer, sound) inside `SDL_Init`. Host-kernel
-  contract: initialize `CInterruptSystem` and `CTimer` before `SDL_Init`, and
-  run a `CScheduler` to use the core split. To run split, the host kernel
-  also starts the secondary cores and hands one to
-  `SDL2Circle_SplitPresentCore` — the shim marshals, it does not own the
-  cores.
+  contract: initialize `CInterruptSystem` and `CTimer` before `SDL_Init`.
+  To run split, the host kernel also starts the secondary cores and hands
+  one to `SDL2Circle_SplitPresentCore` — the shim marshals, it does not own
+  the cores.
+- **No `std::thread`, anywhere in the library.** Every concurrent thing the
+  shim runs is a Circle `CTask` on core 0 or a core the host handed it, and
+  everything between cores is a lock-free ring or a mailbox. The library
+  never starts a thread of its own, so nothing it does depends on the C++
+  threading runtime being live. An application is free to use `std::thread`
+  — the per-frame pump yields the scheduler so cooperative threads make
+  progress — but that is the application's choice and not something the
+  library needs.
+- **The scheduler is the one Circle object the split cannot do without,
+  and the shim will provide it.** A Circle task reaches for the scheduler
+  while it is being constructed, through a call that stops the machine when
+  there is nothing to return, so the split's servo and watchdog cannot exist
+  without one. `CScheduler::IsActive()` is a safe question — unlike
+  `CCPUThrottle`, which cannot be asked at all — so the shim asks it, makes a
+  scheduler only where the host has not, and leaves a host's own scheduler
+  entirely alone.
 - **Honest headers.** `include/SDL2/` is the official SDL2 2.32.4 header
   set (zlib license, see `SDL2-LICENSE.txt`) with one substitution: an
   `SDL_config.h` for AArch64/newlib/Circle. Your app compiles against the
@@ -810,34 +836,39 @@ compiled without it disagrees with the library it links against, and nothing
 tells you: it builds, it links, and it is wrong at runtime.
 
 Applications link by including `sdl-app.mk` after Circle's `Rules.mk`
-(see any Makefile under `test/`): it links with `sdl-app.ld` — required
+(see any Makefile under `examples/`): it links with `sdl-app.ld` — required
 with binutils 2.44+, whose linker refuses non-adjacent TLS sections with
 the stock script ordering (libc++'s threading carries TLS) — and adds the
 Circle sound library the audio backend needs. `sdl-app.ld` is derived from
 Circle's `circle.ld` and remains GPLv3 (see its header); everything else
 here is zlib.
 
-## Test apps
+## Examples
 
-Each is a complete bootable kernel exercising one subsystem — useful as
-templates:
+Each is a complete bootable kernel exercising one subsystem. They are the
+library's worked examples and its test harness at the same time — useful as
+templates, and the way a change is proven before it ships:
 
-- `test/gradient` — animated full-screen gradient (video path)
-- `test/keyecho` — scancode display, modifier lights, held-key grid (input)
-- `test/tone` — 1 kHz sine over HDMI via the callback API (audio)
-- `test/padview` — every attached joystick, gamepad and wheel on screen at
+- `examples/gradient` — animated full-screen gradient (video path)
+- `examples/keyecho` — scancode display, modifier lights, held-key grid (input)
+- `examples/tone` — 1 kHz sine over HDMI via the callback API (audio)
+- `examples/padview` — every attached joystick, gamepad and wheel on screen at
   once: name, GUID, USB IDs, whether the mapping database recognised it, live
   axis bars, hat and button lights, the mapped controller view where there is
   one, and a running log of devices arriving and leaving (joystick and game
   controller)
-- `test/virtdev` — an application declaring the display it is to be given,
+- `examples/virtdev` — an application declaring the display it is to be given,
   then checking every SDL answer about the display against what it declared,
   and making each declaration the library refuses so the reason for it is on
   the log (virtual device)
-- `test/videocycle` — the whole video and audio world torn down and rebuilt in
+- `examples/videocycle` — the whole video and audio world torn down and rebuilt in
   a loop, at alternating source geometry, while a presentation core keeps
   running: what a settings menu does on every change, with nobody at the
   keyboard (core split, present-path lifetime)
+- `examples/dispinfo` — no SDL at all: a serial-only probe that logs what the
+  firmware reports about the attached display, and what Circle's framebuffer
+  returns for a series of allocation requests. It is where the raw numbers
+  behind the presentation geometry come from
 
 ## License
 

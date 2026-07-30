@@ -117,7 +117,7 @@ void SDL2Circle_SetPerfInterval(unsigned nSeconds);
 // the physical one out itself and passes it in here. That takes a handful of
 // lines against Circle's public property tags —
 // CBcmPropertyTags::GetTag(PROPTAG_GET_DISPLAY_DIMENSIONS, ...) — and the
-// test/ examples each carry the block, written out in full.
+// examples/ kernels each carry the block, written out in full.
 //
 // 32 is the only depth the library can serve: the framebuffer is allocated
 // at 32 bits per pixel and streaming ARGB8888 is the only texture format, so
