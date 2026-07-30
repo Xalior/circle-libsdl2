@@ -580,23 +580,42 @@ static void scale_copy(const SDL2CirclePresentCmd *cmd, u8 *dst, unsigned dpitch
 
     if (!cmd->blend && cmd->alphamod == 255)
     {
-        int prev_srow = -1;
-        const u8 *prev_dst = nullptr;
+        // EVERY destination row is resampled from the source. No destination
+        // row is ever copied from another one, and it is worth knowing why,
+        // because the opposite looks obvious and this code used to do it.
+        //
+        // Under vertical magnification several destination rows share a
+        // source row, so the second and later ones can be had by copying the
+        // first destination row back. That reads the WIDE side: the source
+        // row is small and the destination row is the magnified one — 398
+        // pixels against 1918, about 1.6 KB against 7.6 KB — so the copy
+        // reads five times as much as resampling from the source, to save
+        // some index arithmetic.
+        //
+        // The cache is the real cost. The destination is a whole-screen
+        // shadow, megabytes of it, and reading those lines back fills the
+        // cache with data nothing will ever read again — evicting the one
+        // small source row that every destination row mapping to it still
+        // needs. Measured on a Pi 5 at a locked 59.9 fps, 398x224 into a
+        // 796x448 canvas on a 1920x1080 panel, the presentation core was
+        // awake 76.4% of the time with the copy-back and 33-41% without it.
+        // Half the core, handed back by deleting the optimisation.
+        //
+        // It also hid in the numbers. The more magnification, the more rows
+        // are "reused" and the worse it gets, so a low source resolution
+        // paid more of the penalty than a high one and the cheaper mode
+        // measured as the dearer.
         u8 *drow = dst;
         for (int j = 0; j < dh; j++, drow += dpitch)
         {
-            int srow = s_ymap[j];
-            if (srow == prev_srow)
-            {
-                // Vertical magnification: this destination row is the one
-                // just built. Copying it back beats resampling it again.
-                memcpy(drow, prev_dst, (size_t)dw * 4);
-                continue;
-            }
-            const u32 *s = (const u32 *)(cmd->src + (size_t)srow * cmd->srcpitch);
+            const u32 *s = (const u32 *)(cmd->src
+                                         + (size_t)s_ymap[j] * cmd->srcpitch);
             u32 *d = (u32 *)drow;
             if (xrep)
             {
+                // Integer horizontal ratio: the source is read once and the
+                // destination only written. Nothing is read back, so this is
+                // not the same shape of mistake and it stays.
                 for (int i = 0, x = 0; i < sw; i++)
                 {
                     u32 p = s[i];
@@ -609,8 +628,6 @@ static void scale_copy(const SDL2CirclePresentCmd *cmd, u8 *dst, unsigned dpitch
                 for (int i = 0; i < dw; i++)
                     d[i] = s[s_xmap[i]];
             }
-            prev_srow = srow;
-            prev_dst = drow;
         }
         return;
     }

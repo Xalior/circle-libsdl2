@@ -77,6 +77,45 @@ each is on the serial log.
 
 `b2eca5c`, `1c83bcf`, `6741ffe`
 
+### Half the presentation core, from deleting a scaling optimisation
+
+Scaling a frame up reuses a source row for several destination rows, and the
+scaler took the obvious shortcut: having built one destination row, it copied
+that row back for the next destination row mapping to the same source. The
+comment claimed copying it back beat resampling it. Measured, it is the
+opposite, and not by a little.
+
+On a Pi 5 at a locked 59.9 frames per second, scaling a 398x224 source into a
+796x448 canvas on a 1920x1080 panel, the presentation core was awake:
+
+| | awake share of wall time |
+|---|---|
+| with the row copy-back | 76.4% |
+| without it | 33-41% |
+
+The copy reads the wide side. A source row here is 398 pixels, about 1.6 KB;
+the destination row it would be copied from is the magnified one, 1918
+pixels, about 7.6 KB. So the shortcut reads five times as much as resampling
+from the source would, to save some index arithmetic.
+
+The cache is what turns that into half a core. The destination is a
+whole-screen shadow buffer, megabytes of it, and reading those lines back
+fills the cache with data nothing will ever read again — evicting the one
+small source row that every destination row mapping to it still needs.
+
+It also disguised itself. The more a picture is magnified, the more rows are
+"reused" and the more the penalty applies, so a low source resolution paid
+more of it than a high one: the cheaper mode measured as the dearer, which is
+backwards and had made the scaling numbers impossible to read.
+
+Every destination row is resampled from the source now. The integer
+horizontal replication path is unchanged — it reads the source once and only
+writes the destination, so it is not the same mistake. The blended path never
+had the shortcut, because compositing reads the destination anyway.
+
+This affects every consumer on every board, and the penalty grows with
+magnification.
+
 ### The library supplies a scheduler when the host has none
 
 Running the core split needed a `CScheduler` in the system, and a host
