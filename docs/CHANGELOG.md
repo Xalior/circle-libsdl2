@@ -110,8 +110,8 @@ Pi 5 came to report a 640x480 framebuffer beside a pitch describing a
 
 ## vPoC1 — 23a36e5
 
-The first version proven by an application: Cannonball, playing on a Pi 3, a
-Pi 4 and a Pi 5 from one card.
+The first version carried all the way through on hardware — an application
+built on it running on a Pi 3, a Pi 4 and a Pi 5.
 
 ### The part of SDL2 that works
 
