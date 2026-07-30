@@ -105,6 +105,8 @@ an application's own translation units neither see it nor need to match it.
 Objects are kept in per-bridge trees, and switching modes deletes the archive
 rather than leave the previous mode's build under the same name.
 
+`e92239f`
+
 ### A picture that fits exactly now fills the screen exactly
 
 Placing the canvas on the scanout formed the scale factor as a 16.16
