@@ -99,6 +99,8 @@ A scheduler the library made is never destroyed, for the same reason the CPU
 throttle it owns is never destroyed: the servo and the watchdog are
 registered with it and run for as long as the machine does.
 
+`0eed6e8`
+
 ### How much of a frame crosses between the cores is a build-time choice
 
 `make PRESENT_CMDS=n` sets how many drawing commands may travel to the
