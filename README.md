@@ -70,6 +70,18 @@ is no default resolution anywhere in the library — a default would not be a
 preference, it would be an instruction, because asking for a mode is what
 sets one. A card that says nothing gets the panel it is plugged into.
 
+**On a Pi 5, leave the boot mode out or match the panel exactly.** That
+board's firmware settles its display mode before any kernel runs and will
+not be moved off it. It still *acknowledges* a `width=`/`height=` request —
+and then reports the acknowledged mode back as though it were real, while
+scanning out the panel's own. The library believes the firmware, so it ends
+up describing a mode nothing is putting on the wire, and every geometry
+derived from it is wrong.
+
+So on a Pi 5 the safe settings are no `width=`/`height=` at all, or exactly
+what the glass is already doing. A Pi 3 or Pi 4 honours the request properly
+and has no such trap.
+
 **The canvas is the virtual display** — the world the application is given,
 and its shape against the scanout's decides the letterboxing. **The
 application declares it**, in its own code, before `SDL_Init` — see
@@ -867,10 +879,8 @@ at link time, naming both definitions. The fix is then to delete the stub,
 which was the intention all along.
 
 `--no-whole-archive` closes the scope immediately, so only this archive is
-forced and the C library, libc++ and Circle link as they always did. **There
-is no size penalty for an application that already uses most of the
-library** — measured on a consumer with a stub file of its own, both the
-member count and the image were identical to the byte.
+forced and the C library, libc++ and Circle link as they always did. An
+application already using most of the library pays nothing for it.
 
 It is a development setting rather than a shipping one: an application that
 uses only a corner of this library, and knows it, pays for the rest. Nothing
