@@ -16,9 +16,10 @@
 // report is core 0 alone, and further cores appear the moment a split
 // host puts work on them.
 //
-// Off by default: SDL2Circle_SetPerfInterval(seconds) — or the
-// `rapi-perf=N` boot option — arms it, and reports print through the
-// logger from the pump's heartbeat.
+// Off by default: SDL2Circle_SetPerfInterval(seconds) arms it, and reports
+// print through the logger from the pump's heartbeat. That call is the only
+// way in — the library reads no boot configuration for it, and how a host
+// decides to make the call is the host's design.
 //
 #include "sdl2circle.h"
 #include <SDL2/SDL_circle.h>

@@ -694,9 +694,10 @@ there. Under the core split each active core reports its own line, which
 is how a question like "how busy is the presentation core, could it
 afford filtering" gets a measured answer.
 
-The option absent, the instrument costs one branch per section. Hosts can
-also arm it in code: `SDL2Circle_SetPerfInterval(seconds)` in
-`SDL2/SDL_circle.h`.
+Unarmed, the instrument costs one branch per section. Arming it is
+`SDL2Circle_SetPerfInterval(seconds)` in `SDL2/SDL_circle.h`, and that is
+the only way in — the library reads nothing from boot configuration for
+this.
 
 ## Design
 

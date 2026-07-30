@@ -472,7 +472,7 @@ the record.
 
 ### Performance receipts
 
-`SDL2Circle_SetPerfInterval(N)`, or `rapi-perf=N` in `cmdline.txt`, prints one
+`SDL2Circle_SetPerfInterval(N)` prints one
 serial line every N seconds: frames presented per second, and a cycle-count
 split per core across render, audio, input and waiting, with the remainder
 attributed to the application's own work.

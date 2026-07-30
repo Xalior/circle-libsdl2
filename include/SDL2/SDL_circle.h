@@ -77,8 +77,10 @@ void SDL2Circle_CallOn0(void (*fn)(void *), void *arg);
 // presented frame rate and a PMU cycle split across the shim's instrumented
 // sections (render, audio, input, yield) with the remainder attributed to
 // the application's own compute. Costs one branch per section while off.
-// Zero disables. Host kernels typically arm it from a boot option
-// (cmdline.txt `perfstats=10`) so one binary serves bench and product.
+// Zero disables. This call is the only way in: the library reads no boot
+// configuration for it. How a host decides to make the call — a switch of
+// its own, a build option, never — is the host's design, and is what lets
+// one binary serve bench and product.
 void SDL2Circle_SetPerfInterval(unsigned nSeconds);
 
 // ---- the virtual display device ---------------------------------------------
