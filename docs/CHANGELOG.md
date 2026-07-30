@@ -8,7 +8,7 @@ Anything marked **Consumers must act** changes what a host kernel has to do,
 and will stop an existing kernel from building or running until it is
 followed.
 
-## vPoC2
+## vPoC3
 
 ### An application can declare the display it is given
 
@@ -51,6 +51,8 @@ answer about the display against what it declared, and makes each declaration
 the library refuses so the reason for each is on the serial log.
 
 `b2eca5c`
+
+## vPoC2
 
 ### Joysticks and game controllers
 
