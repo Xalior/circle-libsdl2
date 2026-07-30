@@ -10,6 +10,48 @@ followed.
 
 ## vPoC2
 
+### An application can declare the display it is given
+
+`SDL2Circle_DeclareVirtualDevice(depth, width, height)` states, in the
+application's own code and before `SDL_Init`, the display the library is to
+present. Every SDL display answer — the current, desktop and enumerated
+modes, and the display bounds — reports it, and so does the window, whatever
+size `SDL_CreateWindow` was asked for. The library carries each frame from
+there to whatever the panel is really scanning out, placing it by the same
+rules a canvas from `cmdline.txt` has always been placed by, so the
+application never learns the real output resolution.
+
+This is for an application that cannot take whatever world it is handed: one
+whose layout, port or emulated raster is a fact about the program rather than
+a setting. Until now the only way to state it was `width=` and `height=` in
+`cmdline.txt`, which puts a program's own requirement on a card an operator
+edits.
+
+The declaration is fixed. One is accepted, before anything has asked the
+library about the display; a second is refused, and so is one made after the
+display size has been settled — the first display query, or the first window.
+So the size an application is given cannot change under it, and every
+geometry derived from it is worked out once.
+
+Only 32 bits per pixel can be served: the framebuffer is allocated at 32 bits
+and streaming ARGB8888 is the only texture format, so any other depth is
+refused rather than rounded to this one. Width and height must both be above
+zero. A refusal returns -1 with `SDL_GetError` giving the reason, changes
+nothing, and leaves any earlier accepted declaration standing.
+
+`width=` and `height=` were serving as both the firmware's mode request and
+the canvas. They are read apart now. The request the firmware receives is
+still the operator's alone — declaring a virtual device asks the firmware for
+nothing — and the canvas is stated by the declaration, then by those options,
+then by the scanout itself. **An application that declares nothing behaves
+exactly as before.**
+
+`test/virtdev` is a bootable example: it declares a device, checks every SDL
+answer about the display against what it declared, and makes each declaration
+the library refuses so the reason for each is on the serial log.
+
+`b2eca5c`
+
 ### Joysticks and game controllers
 
 SDL's joystick and game-controller calls are implemented. Circle publishes
