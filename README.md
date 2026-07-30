@@ -55,25 +55,29 @@ software rendering is the design, not a stopgap).
 Three resolutions are always in play on a bare-metal Pi, and the library
 names all three rather than blurring them together.
 
-**The scanout** is what the display hardware really puts on the wire. The
-library derives it from the framebuffer the firmware actually granted — a
-grant's pitch and size, never the width and height the firmware echoes back,
-which are not reliable. On a Pi 3 or Pi 4 the firmware honors the boot
-request, so the scanout is whatever `config.txt` asked for. A Pi 5 ignores
-mode requests while still acknowledging them, and scans out the mode its
-display reports; the grant is the only place that shows up.
+**The scanout is the physical display** — what the hardware really puts on
+the wire. `width=` and `height=` in `cmdline.txt` ask the firmware for a
+display mode, allocating the framebuffer is what sets it, and **the firmware
+then reports the mode it actually set. That report is the scanout.** It is
+read from the firmware, never calculated: not from the framebuffer's pitch,
+not from its size, and not from the width and height Circle hands back,
+which are only the arguments it was constructed with. On a Pi 3 or Pi 4 the
+firmware honors the request; a Pi 5 acknowledges it and scans out its
+display's own mode regardless. Both boards answer the question correctly for
+themselves, so the library asks rather than guesses.
 
-**The canvas** is the resolution the display is presented as having. It is
-the world the application is given, and its shape against the scanout's
-decides the letterboxing. Three things can state it, and the first of these
-that has an opinion wins:
+**The canvas is the virtual display** — the world the application is given,
+and its shape against the scanout's decides the letterboxing. **The
+application declares it**, in its own code, before `SDL_Init` — see
+[Declaring the display](#declaring-the-display). Declare nothing and the
+canvas is the scanout: there are not two resolutions, and the library has
+nothing to scale.
 
-1. **the virtual device the application declared** in its own code — see
-   [Declaring the display](#declaring-the-display);
-2. **`width=` and `height=` in `cmdline.txt`**, which is the operator's say;
-3. **the scanout itself**, which is what "nobody asked" means — the canvas
-   step disappears, nothing needs configuring, and this is the default on
-   every board.
+**These are two numbers doing two jobs, and they coexist.** Neither is a
+fallback for the other and there is no order of precedence between them. One
+is asked of the firmware by the operator; the other is declared by the
+application. `width=` and `height=` never set the virtual display, and the
+declaration never sets the physical one.
 
 **The application's own resolution** is whatever it renders at. It calls
 `SDL_CreateWindow` and `SDL_RenderCopy` as usual, and the rectangles it
@@ -126,7 +130,7 @@ The library logs the whole chain once at startup and once per distinct
 geometry, so a serial console tells you what happened without guessing:
 
 ```
-sdl2video: scanout 1920x1080 (grant, native surface), canvas 720x576 (cmdline width=/height=)
+sdl2video: scanout 1920x1080 (firmware reported), canvas 720x576 (declared virtual device)
 sdl2video: canvas 720x576 on scanout 1920x1080: fit -> 1350x1080+285+0
 sdl2video: granted 1080 rows < 2160: shadow-buffered present
 sdl2video: present: dma copy, channel 11, 8294400 bytes, double-shadowed
@@ -138,12 +142,10 @@ The `present:` line names the path that is actually live — `dma copy` or
 
 ### Declaring the display
 
-Some applications cannot take whatever world they are handed. A game with a
+Some applications cannot take whatever display they are handed. A game with a
 fixed layout, a port that was written for one resolution, an emulator whose
 raster is a fact about the machine it emulates — each of these has to draw in
-a display of one particular size, and asking an operator to keep `cmdline.txt`
-in step with the program is a card that boots to the wrong picture the first
-time somebody copies the wrong file.
+a display of one particular size, whatever panel it is plugged into.
 
 Such an application declares the display it needs, in its own code, before
 `SDL_Init`:
@@ -175,18 +177,22 @@ placement rules above put that world on the glass.
 - **The return value is the report.** Zero means accepted; -1 means refused,
   with `SDL_GetError` saying which of the above was not met. A refused
   declaration changes nothing, and an earlier accepted one still stands.
-- **It states the canvas, not the mode.** The display mode the panel is
-  driven at remains the operator's business, asked for in `config.txt` and
+- **It states the virtual display, not the physical one.** The mode the panel
+  is driven at remains the operator's business, asked for in `config.txt` and
   `cmdline.txt` and granted, or not, by the firmware. Declaring a virtual
-  device does not ask the firmware for anything; it says what the application
-  is to be shown, and the library scales.
+  device asks the firmware for nothing; it says what the application is to be
+  shown, and the library scales.
 - **Declaring nothing is entirely ordinary.** An application that makes no
-  declaration gets exactly what it always got: `width=`/`height=` if the
-  operator set them, and the scanout if not.
+  declaration is given the physical display, and there is nothing to scale.
 
-Where the numbers come from is the application's business — a build constant,
-a settings file, an option of its host kernel's own. The library takes what it
-is given.
+**Where the numbers come from is the application's business, and only the
+application's.** A build constant, a settings file, an option of its host
+kernel's own, a value off a network port. The library is told; it discovers
+nothing and offers no way to ask what the panel is. An application that wants
+its virtual display to match the physical one works the physical one out for
+itself — the firmware's own mailbox tags are there for anybody who wants
+them, and `test/dispinfo` shows how to read them — and passes the answer in
+here like any other number.
 
 `test/virtdev` is a bootable example of all of this — see
 [Test apps](#test-apps).

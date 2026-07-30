@@ -8,6 +8,7 @@
 #include <SDL2/SDL.h>
 #include "sdl2circle.h"
 #include <circle/bcmframebuffer.h>
+#include <circle/bcmpropertytags.h>
 #include <circle/dmachannel.h>
 #include <circle/koptions.h>
 #include <circle/logger.h>
@@ -88,38 +89,43 @@ static SDL_Window *s_window = nullptr;
 // Three resolutions are in play, and every piece of geometry below belongs
 // to exactly one of them.
 //
-//   SCANOUT   what the display hardware really scans out. The firmware's
-//             geometry answers (the display-dimensions query, an
-//             allocation's acknowledged width/height) do not reliably
-//             describe it; a grant's pitch and size do. So it is derived
-//             from THE framebuffer grant, and the one allocation happens
-//             during the display-size resolve, before any window exists.
-//             Boards whose firmware honors the boot request (Pi 3, Pi 4)
-//             land here on the requested mode; a board whose firmware
-//             ignores mode requests (Pi 5) lands on the panel's own mode.
+//   SCANOUT   the PHYSICAL display: what the hardware really puts on the
+//             wire. cmdline.txt width=/height= asks the firmware for a mode,
+//             the allocation is what sets it, and the firmware then reports
+//             the mode it actually set. THAT REPORT IS THE SCANOUT — read
+//             from the firmware, never calculated. Not from the pitch, not
+//             from the buffer size, and not from the width and height Circle
+//             echoes back out of its own constructor.
 //
-//   CANVAS    the resolution the display is presented as having. It is the
-//             world the application is given and the shape that decides the
-//             letterboxing. Three things can state it, and the first of
-//             these that has an opinion wins: the virtual device the
-//             consumer declared, the operator's cmdline.txt width=/height=,
-//             and finally the scanout itself — which means "no opinion",
-//             makes the canvas hop disappear, and is the autodetected
-//             default.
+//             It belongs to the presentation path: the placement below and
+//             the present executor are its only readers, and nothing in SDL
+//             is ever answered with it.
+//
+//   CANVAS    the VIRTUAL display: the world the application is given, and
+//             the shape that decides the letterboxing. The consumer declares
+//             it before SDL_Init, and where the consumer got the numbers is
+//             the consumer's business entirely — this library is told, and
+//             discovers nothing. Declaring nothing is no opinion: the canvas
+//             becomes the scanout, the canvas hop disappears, and that is
+//             the autodetected default.
 //
 //   APPLICATION  whatever SDL_CreateWindow was asked for, and whatever
 //             rectangles SDL_RenderCopy is handed. Those rectangles are
 //             CANVAS coordinates, because the canvas is the window.
 //
-// The frame travels application -> canvas -> scanout, and the two hops are
-// composed into a single resampling pass at present time.
+// The physical and the virtual are two numbers doing two jobs. Neither
+// overrides the other and there is no order of precedence between them: one
+// is asked of the firmware, the other is declared by the consumer, and the
+// whole job of this file is to scale the second onto the first. The frame
+// travels application -> canvas -> scanout, and the two hops are composed
+// into a single resampling pass at present time.
 static int s_scanout_w = 0, s_scanout_h = 0;
 static int s_canvas_w = 0, s_canvas_h = 0;
 
 // The virtual display device, as declared by the consumer through
-// SDL2Circle_DeclareVirtualDevice. It states the canvas in the consumer's
-// own code rather than on the boot command line; it does not state the
-// scanout, which stays the firmware's answer to the operator's mode request.
+// SDL2Circle_DeclareVirtualDevice. It states the canvas and nothing else:
+// the physical mode remains what the firmware was asked for and what the
+// firmware granted, neither of which this declaration touches.
 //
 // A resolved canvas (s_canvas_w > 0) is the point after which no declaration
 // can be taken: everything downstream — the placement, the window, the
@@ -151,6 +157,36 @@ static CBcmFrameBuffer *s_fb0 = nullptr;
 
 struct AcquireFbArgs { int w, h; };
 
+// The physical display the firmware reports once the allocation has set it.
+// Zero until it has been asked, and zero if the firmware declines to say.
+static int s_phys_w = 0, s_phys_h = 0;
+
+// Ask the firmware what the physical display is. Core 0 only — it is a
+// mailbox transaction — and only meaningful after the allocation, because
+// the allocation is what sets the mode and this reads back what was set.
+//
+// Circle cannot be asked this, which is why the question is put again here.
+// CBcmFrameBuffer::Initialize sends one combined tag call and the firmware
+// writes its real answer back into those same tag structures — Circle relies
+// on that itself, testing the returned physical width and height for zero
+// before it will accept the allocation. It then keeps only the buffer
+// address, the size and the pitch. Its m_nWidth and m_nHeight are never
+// updated, so GetWidth() and GetHeight() go on echoing the constructor's
+// arguments for the object's whole life, and the reply that holds the real
+// answer is private and unreachable from outside.
+static void read_physical_display(void)
+{
+    CBcmPropertyTags tags;
+    TPropertyTagDisplayDimensions dim;
+    memset(&dim, 0, sizeof(dim));
+    if (!tags.GetTag(PROPTAG_GET_DISPLAY_DIMENSIONS, &dim, sizeof(dim)))
+        return;
+    if (dim.nWidth == 0 || dim.nHeight == 0)
+        return;
+    s_phys_w = (int)dim.nWidth;
+    s_phys_h = (int)dim.nHeight;
+}
+
 // The allocation (a firmware mailbox transaction plus Circle device
 // bookkeeping) runs on core 0, as window creation always has; callers
 // marshal here via SDL2Circle_CallOn0.
@@ -167,6 +203,10 @@ static void acquire_fb_on0(void *p)
         return;
     }
     s_fb0 = fb;
+
+    // Read the mode back on this same trip to core 0, now that setting it
+    // has happened.
+    read_physical_display();
 }
 
 // Place the canvas on the scanout. Fit — aspect preserved, centered, the
@@ -254,12 +294,10 @@ static void resolve_display_size(void)
     if (s_canvas_w > 0 && s_canvas_h > 0)
         return;
 
-    // The boot options' width=/height= is a request for a DISPLAY MODE, and
-    // the GRANT it produces decides the scanout. It is read here on its own
-    // account: whatever states the canvas below, the firmware is asked for
-    // the mode the operator asked for and nothing else. An unset request
-    // still needs a size to allocate against, and the grant overrules it
-    // either way.
+    // The boot options' width=/height= is a request to the firmware for a
+    // PHYSICAL DISPLAY MODE, and that is the whole of what it is. It is not
+    // a canvas source and is never read as one. An unset request still needs
+    // a size to allocate against.
     int req_w = 0, req_h = 0;
     CKernelOptions *opts = CKernelOptions::Get();
     if (opts && opts->GetWidth() > 0 && opts->GetHeight() > 0)
@@ -271,38 +309,56 @@ static void resolve_display_size(void)
     AcquireFbArgs a{req_w > 0 ? req_w : 640, req_h > 0 ? req_h : 480};
     SDL2Circle_CallOn0(acquire_fb_on0, &a);
 
+    // The scanout is what the firmware says it set. Reported, not worked
+    // out: a board that honors the request and a board that ignores it (the
+    // Pi 5 scans out its panel's own mode whatever it is asked) both answer
+    // this question correctly for themselves, and neither needs the library
+    // to guess on its behalf.
     const char *source;
-    if (s_fb0 && s_fb0->GetPitch() == s_fb0->GetWidth() * 4)
+    if (s_phys_w > 0 && s_phys_h > 0)
     {
-        // pitch agrees with the acknowledged width: take the
-        // acknowledged mode as the scanout. Not size/pitch — size spans
-        // every granted row, which is 2*h when the double-buffer
-        // virtual height was granted, not the display height.
-        s_scanout_w = (int)s_fb0->GetWidth();
-        s_scanout_h = (int)s_fb0->GetHeight();
-        source = "grant, request honored";
-    }
-    else if (s_fb0 && s_fb0->GetPitch() != 0)
-    {
-        // pitch disagrees with the acknowledged width: the acknowledged
-        // mode was not granted. pitch/4 columns by size/pitch rows is
-        // the surface actually granted (on the Pi 5, the native mode).
-        s_scanout_w = (int)(s_fb0->GetPitch() / 4);
-        s_scanout_h = (int)(s_fb0->GetSize() / s_fb0->GetPitch());
-        source = "grant, native surface";
+        s_scanout_w = s_phys_w;
+        s_scanout_h = s_phys_h;
+        source = "firmware reported";
     }
     else
     {
-        // No grant at all: report the request, the least-wrong answer.
+        // The firmware would not say. What was asked for is the only figure
+        // left, and it is the one case where the scanout is not a measured
+        // one — so the log says so rather than presenting it as an answer.
         s_scanout_w = a.w;
         s_scanout_h = a.h;
-        source = "no grant, cmdline request";
+        source = "firmware silent, physical request";
     }
 
-    // Who states the canvas: the consumer's declared virtual device first,
-    // then the operator's boot options, and failing both the scanout. That
-    // last is no opinion at all — the canvas IS the scanout, the canvas hop
-    // costs nothing, and there is nothing to configure.
+    // Held inside the grant. This is not a second way of working the scanout
+    // out — it is the bound on what may be WRITTEN. The reported mode and
+    // the granted memory are two separate firmware answers with nothing
+    // making them agree, every buffer in the presentation path is sized from
+    // this geometry, and past the edge of the grant is memory belonging to
+    // something else.
+    if (s_fb0 && s_fb0->GetPitch() != 0)
+    {
+        int room_w = (int)(s_fb0->GetPitch() / 4);
+        int room_h = (int)(s_fb0->GetSize() / s_fb0->GetPitch());
+        if (s_scanout_w > room_w || s_scanout_h > room_h)
+        {
+            SDL2Circle_Log("sdl2video", SDL2CIRCLE_LOG_WARNING,
+                                  "firmware reports %dx%d, grant has room for "
+                                  "%dx%d: held to the grant",
+                                  s_scanout_w, s_scanout_h, room_w, room_h);
+            if (s_scanout_w > room_w)
+                s_scanout_w = room_w;
+            if (s_scanout_h > room_h)
+                s_scanout_h = room_h;
+        }
+    }
+
+    // The declared virtual device states the canvas. Nothing declared is no
+    // opinion at all: the canvas IS the scanout, the canvas hop costs
+    // nothing, and there is nothing to configure. The boot options are not
+    // consulted here — they asked for a physical mode and that is all they
+    // did.
     const char *csource;
     if (s_declared)
     {
@@ -310,17 +366,11 @@ static void resolve_display_size(void)
         s_canvas_h = s_declared_h;
         csource = "declared virtual device";
     }
-    else if (req_w > 0 && req_h > 0)
-    {
-        s_canvas_w = req_w;
-        s_canvas_h = req_h;
-        csource = "cmdline width=/height=";
-    }
     else
     {
         s_canvas_w = s_scanout_w;
         s_canvas_h = s_scanout_h;
-        csource = "unset, follows the scanout";
+        csource = "undeclared, follows the scanout";
     }
 
     SDL2Circle_Log("sdl2video", SDL2CIRCLE_LOG_NOTICE,
@@ -1015,12 +1065,12 @@ static void create_window_on0(void *p)
         return;
     }
 
-    // The window is the CANVAS — the world the operator declared, which on
-    // a board whose firmware granted the boot request is the scanout itself.
-    // What the application asked SDL_CreateWindow for does not enter into
-    // it: there is one screen and the application gets all of it. The shim's
-    // present carries the canvas to the scanout, so an application never has
-    // to learn what the glass is really doing.
+    // The window is the CANVAS — the virtual device the consumer declared,
+    // or the scanout itself where nothing was declared. What the application
+    // asked SDL_CreateWindow for does not enter into it: there is one screen
+    // and the application gets all of it. The shim's present carries the
+    // canvas to the scanout, so an application never has to learn what the
+    // glass is really doing.
     SDL_Window *win = new SDL_Window;
     win->fb = fb;
     win->w = s_canvas_w;

@@ -98,9 +98,15 @@ void SDL2Circle_SetPerfInterval(unsigned nSeconds);
 // for the run.
 //
 // So call it before SDL_Init, from the application or from its host kernel,
-// and after the host kernel's logger exists. Where the numbers come from is
-// the caller's business entirely — a build constant, a settings file, an
-// option of the host's own.
+// and after the host kernel's logger exists.
+//
+// WHERE THE NUMBERS COME FROM IS THE CALLER'S BUSINESS ENTIRELY: a build
+// constant, a settings file, an option of the host kernel's own, a firmware
+// query the caller makes for itself, a value off a network port. This
+// library is TOLD what the virtual display is. It discovers nothing, offers
+// no way to ask what the panel is, and holds no opinion about what the
+// numbers ought to be. A consumer that wants its virtual display to match
+// the physical one works the physical one out itself and passes it in here.
 //
 // 32 is the only depth the library can serve: the framebuffer is allocated
 // at 32 bits per pixel and streaming ARGB8888 is the only texture format, so
@@ -112,10 +118,12 @@ void SDL2Circle_SetPerfInterval(unsigned nSeconds);
 // declaration changes nothing: no partial state is kept, and an earlier
 // accepted declaration still stands.
 //
-// Declaring nothing is entirely ordinary. Without a declaration the library
-// behaves exactly as it does today: the boot options `width=` and `height=`
-// state the world the application is given, and with those unset too it is
-// the scanout itself.
+// Declaring nothing is entirely ordinary, and it is the autodetected
+// default: the application is given the physical display, so there are not
+// two resolutions and the library has nothing to scale. The boot options
+// `width=` and `height=` play no part in this — they ask the firmware for a
+// physical display mode and do nothing else. They never set the virtual
+// display, and this call never sets the physical one.
 int SDL2Circle_DeclareVirtualDevice(unsigned depth, int width, int height);
 
 // ---- board hardware: CPU clock and case fan ---------------------------------

@@ -1,12 +1,16 @@
 //
 // kernel.cpp — virtdev: the display an application declares for itself.
 //
-// Left alone, the library gives an application the world the boot options or
-// the panel decide. An application that has to render at one size instead
-// says so in its own code, before SDL_Init, with
+// Left alone, the library gives an application the physical display the
+// firmware reports, and has nothing to scale. An application that has to
+// render at one size instead says so in its own code, before SDL_Init, with
 // SDL2Circle_DeclareVirtualDevice(depth, width, height). Every SDL answer
-// about the display then reports that size, and the library carries each
-// frame from there to whatever the glass is really doing.
+// about the display then reports that size, and the library scales each
+// frame from it onto whatever the panel is really doing.
+//
+// The two are separate: this declares the VIRTUAL display, and cmdline.txt
+// width=/height= asks the firmware for a PHYSICAL mode. Neither is a way of
+// setting the other.
 //
 // This kernel declares one, and then:
 //
