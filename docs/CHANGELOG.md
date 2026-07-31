@@ -10,30 +10,86 @@ followed.
 
 ## vPoC3
 
-**Applications choose their own display size.** An application states the
-size it wants and gets it, whatever screen is attached, and the library fits
-each frame onto the real screen. There is no default: an application that
-states nothing does not start.
+### Applications choose their own display size
 
-**Putting a frame on screen costs about half what it did.** On a Pi 5,
-filling a 1920x1080 screen from a 398x224 picture at 59.9 frames per second
-uses 41% of one core, down from 76%.
+An application states the display size it wants and gets exactly that,
+whatever screen is attached. Every SDL question about the display answers
+with the stated size: the current, desktop and enumerated modes, the display
+bounds, the window size and the renderer's output size. The library fits each
+finished frame onto the real screen.
 
-**A picture shaped like the screen fills it exactly.** No thin black line
-down the right edge and along the bottom.
+This suits an application whose size is a property of the program rather than
+a preference, such as an emulated machine or a fixed layout. It also removes
+the problem of a Pi 5, which cannot be told what resolution to run at, so
+anything sizing itself from the screen was at the mercy of the monitor.
 
-**The library creates a scheduler if the host has none.** A host that creates
-its own keeps it.
+Only 32 bits per pixel is supported, and a request for anything else is
+refused rather than rounded to it. So is a second statement, or one made
+after the library has already been asked about the display.
 
-**New build setting `PRESENT_CMDS`** chooses what crosses between the cores.
-The default suits a normal game and is the only value measured.
+There is no default and no fallback. An application that states no size has
+not said what it wants, and the library stops rather than choose for it, so
+every existing host kernel needs one new call before it will run.
 
-**Do not set a display mode on a Pi 5.** That board fixes its mode before any
-kernel starts, accepts a `width=`/`height=` line, says it applied it, and
-carries on sending its own mode. A Pi 3 and a Pi 4 handle the setting
-correctly.
+Five of the examples show an application asking the firmware for the screen
+size and stating that, which is how you make the two match.
 
-See the README for how any of this works.
+### Putting a frame on screen costs about half of a core
+
+On a Pi 5, filling a 1920x1080 screen from a 398x224 picture at a steady 59.9
+frames per second now takes 41% of the core that does it. It took 76%.
+
+The scaler no longer copies a finished output row to produce the next one. An
+output row is several times wider than the source row it comes from, so the
+copy moved more memory than recalculating it does, and it filled the cache
+with output data while evicting the source row still being read.
+
+The saving grows with how much the picture is enlarged, and applies to every
+application on every board.
+
+### A picture shaped like the screen fills it exactly
+
+Placement is calculated in exact integers, so a picture whose shape matches
+the screen leaves nothing over. Previously it fell one pixel short on each
+axis and left a thin black line down the right edge and along the bottom.
+
+### The screen size is read from the firmware
+
+The library asks the firmware what resolution it settled on, rather than
+working it out from the framebuffer's pitch and size. It also no longer asks
+for a resolution of its own accord: it used to request 640x480 whenever
+`cmdline.txt` named no size, which imposed a mode on a card that had asked
+for nothing.
+
+**Do not name a display mode on a Pi 5.** That board fixes its mode before
+any kernel starts and will not change it. It accepts a `width=`/`height=`
+line, reports it back as applied, and carries on sending its own mode to the
+screen, so everything downstream then works from a size that is not real. A
+Pi 3 and a Pi 4 apply the mode properly and report it correctly.
+
+### The library creates a scheduler if the host has none
+
+Running the core split requires a `CScheduler`, because the servo and
+watchdog are Circle tasks and a task cannot be constructed without one. A
+host that did not create one got a board that stopped during start-up with
+nothing said.
+
+The library now creates one where there is none. A host that creates its own
+keeps it, and the library never replaces or reconfigures a scheduler it did
+not make.
+
+### A build setting chooses what crosses between the cores
+
+`make PRESENT_CMDS=n` sets how many drawing commands may travel to the
+presentation core as a list. A frame that does not fit within the count
+crosses as a finished picture instead.
+
+The default of zero sends every frame as a picture, which costs nothing
+extra: the usual frame is a screen clear followed by one opaque image, and
+that is already a finished picture sitting in the application's own texture.
+Which framebuffer the firmware granted no longer influences the choice.
+
+Only the default has been measured against a real workload.
 
 ## vPoC2
 
