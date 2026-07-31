@@ -10,53 +10,30 @@ followed.
 
 ## vPoC3
 
-### You must add one call
+**Applications choose their own display size.** An application states the
+size it wants and gets it, whatever screen is attached, and the library fits
+each frame onto the real screen. There is no default: an application that
+states nothing does not start.
 
-```c
-SDL2Circle_DeclareVirtualDevice(32, width, height);   // before SDL_Init
-```
+**Putting a frame on screen costs about half what it did.** On a Pi 5,
+filling a 1920x1080 screen from a 398x224 picture at 59.9 frames per second
+uses 41% of one core, down from 76%.
 
-Without it your kernel will not start. `SDL_Init` fails and says so.
+**A picture shaped like the screen fills it exactly.** No thin black line
+down the right edge and along the bottom.
 
-You are telling the library what size display your application wants. It gets
-that size whatever screen is attached, and the library fits each frame onto
-the real screen for you. 32 bits per pixel only.
+**The library creates a scheduler if the host has none.** A host that creates
+its own keeps it.
 
-If you want the size to match the screen, ask the firmware for it and pass
-the answer in. Five of the examples do this in a few lines each.
+**New build setting `PRESENT_CMDS`** chooses what crosses between the cores.
+The default suits a normal game and is the only value measured.
 
-### Do not set a display mode on a Pi 5
+**Do not set a display mode on a Pi 5.** That board fixes its mode before any
+kernel starts, accepts a `width=`/`height=` line, says it applied it, and
+carries on sending its own mode. A Pi 3 and a Pi 4 handle the setting
+correctly.
 
-That board fixes its display mode before your kernel starts, and will not
-change it. It accepts a `width=`/`height=` line in `cmdline.txt`, tells you
-it applied it, and carries on sending its own mode to the screen. Everything
-after that is working from a size that is not real.
-
-Leave those lines out on a Pi 5. A Pi 3 and a Pi 4 handle them correctly.
-
-### Frames cost about half as much to put on screen
-
-On a Pi 5, filling a 1920x1080 screen from a 398x224 picture at 59.9 frames
-per second now uses 41% of one core. It was 76%.
-
-The bigger the enlargement, the bigger the saving. Every board benefits.
-
-### A picture shaped like your screen now fills it
-
-There is no longer a thin black line down the right edge and along the
-bottom.
-
-### The library creates a scheduler if you have not
-
-The core split needs a `CScheduler`. If your kernel does not create one, the
-library does. If it does, nothing changes.
-
-### New build setting: what crosses between the cores
-
-`make PRESENT_CMDS=n` sets how many drawing commands may cross to the
-presentation core as a list; anything longer crosses as a finished picture.
-The default of zero sends every frame as a picture and is the fastest setting
-for a normal game. Only that default has been measured.
+See the README for how any of this works.
 
 ## vPoC2
 
