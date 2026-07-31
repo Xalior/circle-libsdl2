@@ -61,8 +61,6 @@ the board, checks every SDL display answer against it, and makes each
 statement the library refuses so the reason for each appears on the serial
 log.
 
-`b2eca5c`, `1c83bcf`, `6741ffe`
-
 ### The screen size comes from the firmware, and no mode is ever requested by default
 
 The library reads the screen size back from the firmware after allocating the
@@ -83,8 +81,6 @@ using.
 A Pi 3 and a Pi 4 apply a requested mode and report it correctly, so on those
 boards the setting behaves as you would expect.
 
-`1c83bcf`, `88817b2`
-
 ### Putting a frame on the screen costs about half of a core
 
 Enlarging a 398x224 picture to fill a 1920x1080 screen at a steady 59.9
@@ -99,15 +95,11 @@ the cache with output data at the expense of the source row still being read.
 The saving grows with how much the picture is enlarged, and applies to every
 application on every board.
 
-`b16ac3e`
-
 ### A picture that fits exactly fills the screen exactly
 
 Placement is calculated in exact integers. A picture whose shape matches the
 screen's fills it with nothing left over, and one that does not stays inside
 it.
-
-`bea47e3`
 
 ### The library provides a scheduler when the host has none
 
@@ -119,8 +111,6 @@ constructed without a scheduler present.
 library only asks whether one exists; it never replaces or reconfigures a
 scheduler it did not create. A host that declared one purely to satisfy this
 requirement can now stop.
-
-`0eed6e8`
 
 ### How much of a frame crosses between cores is a build-time setting
 
@@ -149,8 +139,6 @@ The setting is compiled into the library and appears in no installed header,
 so an application's own source neither sees it nor needs to match it.
 
 Only the default has been measured against a real workload.
-
-`e92239f`, `90e78a2`
 
 ## vPoC2
 
@@ -183,8 +171,6 @@ USB transfer, and is marshalled.
 `SDL_RWops` arrived with this, over memory and over the library's own I/O
 service, because the mapping database is loaded through one.
 
-`d84ac51`
-
 ### The library owns the CPU clock and the case fan
 
 **Consumers must act:** remove any `CCPUThrottle` your kernel declares. This
@@ -208,8 +194,6 @@ Where `cmdline.txt` names a fan pin with `gpiofanpin=`, a board over
 `socmaxtemp=` switches its fan on and holds its clock, rather than slowing
 down.
 
-`e017adb`
-
 ### A video mode change no longer halts the machine
 
 The buffers and DMA channel that carry finished frames to the screen are
@@ -223,8 +207,7 @@ They now belong to the grant rather than to a window. The sound device is
 also closed on the core that owns it, since destroying it returns its own
 DMA channel, an interrupt registration and a queue.
 
-`b497ee5`, `71cd6de`, and `4d79979` — a test that restarts the whole video
-world in a loop, which is what proved it.
+A test that restarts the whole video world in a loop is what proved it.
 
 ### An example that identifies attached input devices
 
@@ -239,8 +222,6 @@ attach and detach with the time it happened.
 It exists to answer "what is this device and what are its button numbers"
 before you write them into an application's configuration.
 
-`6cd1949`, `c7f2cf1`, `875f8e1`
-
 ### The framebuffer log line distinguishes the request from the grant
 
 Only the pitch and the size come back from the firmware. The width, height,
@@ -249,8 +230,6 @@ unchanged by getters that never learn what the firmware decided. Printed
 together and unlabelled they read as one measured geometry, which is how a
 Pi 5 came to report a 640x480 framebuffer beside a pitch describing a
 1920-wide surface. The two halves are labelled now.
-
-`933a260`
 
 ## vPoC1 — 23a36e5
 
@@ -284,8 +263,6 @@ Input is USB HID keyboard reports as SDL key events, with
 `SDL_GetKeyboardState` and modifiers. Timers are microsecond-resolution over
 Circle's `CTimer`, including `SDL_GetTicks64` and the performance counter.
 
-`5b438dc`, `412fa1e`, `a5d01d1`, `ecb1877`, `71ee088`, `509addc`
-
 ### The picture is scaled once, at the output
 
 Three geometries are named and kept apart: the **scanout**, which is what the
@@ -317,9 +294,6 @@ Where the firmware's grant cannot hold two screen heights, presentation falls
 back to a shadow buffer rather than writing past the grant: frames render
 into a tightly-pitched shadow and the flip is one row-wise copy behind a
 vsync wait, so a partly-drawn frame is never scanned out.
-
-`e8f170b`, `1389432`, `6cf8768`, `2686ac0`, `353139d`, `3decf46`, `ba7256b`,
-`90b2445`, `cb9ee81`, `fadb54d`
 
 ### Running the work on more than one core
 
@@ -363,16 +337,12 @@ the `SDL2Circle_IO*` service from any core other than 0. In a single-core
 build every one of these degrades to a direct call, so call sites do not
 change.
 
-`4893028`, `d7edb16`, `2db0847`, `60f767e`, `1f1f0cd`, `8b4b341`
-
 ### Logging from any core
 
 Any core can log. Each formats its line into a ring of its own and returns;
 core 0's servo drains every ring to the serial console. A full ring drops the
 line and counts it, rather than blocking the core that logged or corrupting
 the record.
-
-`edb8655`
 
 ### Performance reports
 
@@ -389,8 +359,6 @@ was actually awake, measured locally, because a parked core's cycle counter
 stops. The counter backend is AArch64 only; elsewhere the instrument compiles
 to an inert form and says so once when armed.
 
-`d49acd3`, `e54d386`, `f0c68ad`, `747f7e1`, `5e4cb5b`, `6816c1c`
-
 ### What the host kernel must do
 
 Finish Circle's own world — interrupts, timer, serial, SD card, filesystem —
@@ -403,8 +371,6 @@ board and takes a data abort on the next. Call `SDL2Circle_SplitInit()` once
 on core 0 before the application starts. Keep core 0 yielding for as long as
 the application runs, because the servo only runs when something yields. Park
 any core you give no role.
-
-`5109266`, `4893028`, `8b4b341`
 
 ### Building
 
@@ -422,8 +388,6 @@ Circle's stock script does not guarantee.
 The split needs a multicore circle-stdlib world. Every source file also
 compiles clean without it, and a single-core world builds only the direct
 call paths behind the same public API.
-
-`66d4c6f`, `df0433a`, `26b1750`, `234879c`
 
 ### Limitations
 
@@ -443,5 +407,3 @@ A build-time-seeded wall clock serves `time()` and `gettimeofday` before
 Circle's timer exists, because static constructors run before the host kernel
 builds one. Without it, `srand(time(NULL))` at global scope — ordinary,
 idiomatic C — silently killed a Pi 5 boot.
-
-`a5d01d1`, `ecb1877`, `e8f170b`, `5a845f2`
