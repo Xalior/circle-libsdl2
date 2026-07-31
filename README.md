@@ -31,7 +31,7 @@ core that never touches a device.
 | Video: fullscreen window, software `SDL_Renderer`, streaming ARGB8888 textures, alpha blending, scaled `SDL_RenderCopy` | `CBcmFrameBuffer` — double-buffered, vsync page flip. Where the firmware grants one screen instead of two, the finished frame is scaled onto it, on a core of the host's choosing |
 | Display/renderer queries (modes, bounds, formats, masks) | single HDMI panel, or the virtual device the application declared for itself |
 | Keyboard → SDL events, `SDL_GetKeyboardState`, modifiers | Circle USB HID (raw reports; SDL scancodes *are* USB usage codes). Off core 0: USB stays on core 0, events cross by ring |
-| Joysticks, gamepads and wheels: enumeration, hot-plug, axes, hats, buttons, GUIDs, coarse rumble | Circle's USB gamepad drivers — the generic HID one and the five console ones. Off core 0: USB and event synthesis stay on core 0; the readings are held in memory both cores see |
+| Joysticks, gamepads and wheels: enumeration, hot-plug, axes, hats, buttons, GUIDs, coarse rumble | Circle's USB gamepad drivers — the generic HID one and the console-specific ones. Off core 0: USB and event synthesis stay on core 0; the readings are held in memory both cores see |
 | Game controllers: `gamecontrollerdb.txt` mappings, `SDL_IsGameController`, mapped axes and buttons, controller events | the mapping text is read the way SDL2 reads it, and found by the same joystick GUID SDL2 builds |
 | Files as `SDL_RWops` streams, and streams over memory | the I/O service, so an application off core 0 opens a file with the ordinary SDL call |
 | Audio: `SDL_OpenAudioDevice` callback API | `CHDMISoundBaseDevice`, ~100 ms hardware queue. Off core 0: your callback fills a ring, core 0's servo task feeds the device |
@@ -53,8 +53,8 @@ software rendering is the design, not a temporary measure).
 
 ## Presentation geometry
 
-Three resolutions are always involved on a bare-metal Pi, and the library
-names all three rather than treating them as one.
+Resolutions are always involved on a bare-metal Pi, and the library
+names each of them rather than treating them as one.
 
 **The scanout is the physical display** — what the hardware actually sends
 over the display cable. `width=` and `height=` in `cmdline.txt` ask the
@@ -90,7 +90,7 @@ letterboxing. **The application declares it**, in its own code, before
 `SDL_Init` — see [Declaring the display](#declaring-the-display). It is
 required, and there is no fallback: without it the library refuses to start.
 
-**These are two settings doing two jobs, and they coexist.** Neither is a
+**These are settings doing different jobs, and they coexist.** Neither is a
 fallback for the other and there is no order of precedence between them. One
 is asked of the firmware by the operator; the other is declared by the
 application. `width=` and `height=` never set the virtual display, and the
@@ -246,8 +246,8 @@ application says it is and need not resemble the hardware.
 
 ## Joysticks and game controllers
 
-SDL has two ways of reading the same piece of hardware, and this library
-offers both.
+SDL has different ways of reading the same piece of hardware, and this
+library offers both.
 
 A **joystick** is the device as it really is: however many axes, hats and
 buttons it happens to have, numbered in the order the device reports them.
@@ -285,9 +285,9 @@ devices that arrive and leave while the application is running:
 instance ID, exactly as SDL defines them.
 
 **Rumble is coarse, and the library does not pretend otherwise.** Circle
-offers three settings — off, weak, strong — so `SDL_JoystickRumble` and
-`SDL_GameControllerRumble` take the stronger of SDL's two magnitudes and pick
-one of those three, honouring the duration. There is no per-motor control and
+offers settings — off, weak, strong — so `SDL_JoystickRumble` and
+`SDL_GameControllerRumble` take the stronger of SDL's two magnitudes and
+choose the closest of those, honouring the duration. There is no per-motor control and
 no envelope underneath to expose.
 `SDL_Haptic` — SDL's force-feedback API, with its effect shapes and
 directions — is **not implemented at all**, because nothing under it could
@@ -309,7 +309,7 @@ at all.
 This library solves that. **Your code runs wherever the host kernel puts it
 and keeps calling plain `SDL_*`;** the library marshals the calls. Call
 `SDL2Circle_SplitInit` once, on core 0, before the application starts, and it
-arms two tasks **on core 0**:
+arms tasks **on core 0**:
 
 - a **servo** — the service task. It drains the call mailbox, runs the I/O
   service, pumps USB input into the event ring, feeds the sound device from
@@ -357,7 +357,7 @@ One codebase, one set of call sites, a branch on `SplitActive()`. That is also
 exactly what a single-core Circle build produces — the split is compiled out
 and only the direct paths remain. See Building for choosing between the two.
 
-### The three roles
+### The roles
 
 - **The hardware core (core 0).** Circle's own subsystems: scheduler,
   interrupts, USB, the SD card, sound. Every device call, from any core, is
@@ -391,8 +391,8 @@ the quick path is something this library notices about a frame, never
 something an application has to know or do: **every drawing sequence is
 correct, and the common one is also cheap.**
 
-The result on a single-screen grant is one pass over the screen instead of
-three: resample the finished frame to scanout size, make it visible. What used
+The result on a single-screen grant is a single pass over the screen:
+resample the finished frame to scanout size, make it visible. What used
 to be a screen-sized clear, a screen-sized compose and a screen-sized copy is
 now the one resample.
 
@@ -431,7 +431,7 @@ does not know or care what was granted.**
 
 #### Recognising a picture is not the same as sending one
 
-Two limits are at work and they are deliberately separate.
+Limits are at work here and they are deliberately separate.
 
 ```c
 SDL2CIRCLE_RECORD_MAX_CMDS  16      /* src/sdl2circle.h — the recorder */
@@ -554,7 +554,7 @@ which never returns. That is the core that scales each finished frame onto the
 screen and makes it visible. It runs no SDL and holds no application state; it
 is display hardware, written in software.
 
-Two details that are easy to get wrong:
+Details that are easy to get wrong:
 
 - **A core that is given no role must be parked** in a wait loop. Returning
   from your dispatch function lets the core continue into whatever code
@@ -611,7 +611,7 @@ long __wrap__read(int fd, void *buf, size_t len)
 }
 ```
 
-Three things make this work, and all three matter:
+What makes this work, and all of it matters:
 
 - **`--wrap` rather than redefining the symbols.** The C library's file
   syscalls are defined together in one object file. Redefining some of them
@@ -696,11 +696,11 @@ and `input` are the pumps; `yield` is time given to other scheduler tasks;
 and `app` is whatever is left, which is the application itself on its own
 core.
 
-Blocking is reported in three parts, because the three have different
-fixes. `dma` is waiting for the transfer into the framebuffer to finish.
-`vsync` is waiting for the raster to reach the vertical blanking interval.
-`wait` is one core waiting on another across the frame mailbox — a wait on
-software rather than on the display. All three are kept separate from
+Blocking is reported in parts, because each has different fixes. `dma` is
+waiting for the transfer into the framebuffer to finish. `vsync` is waiting
+for the raster to reach the vertical blanking interval. `wait` is one core
+waiting on another across the frame mailbox — a wait on software rather
+than on the display. Each is kept separate from
 `render` on purpose: at a locked frame rate the blocking absorbs every spare
 cycle, and combined with `render` it would make the present path look
 saturated when it is mostly idle.
@@ -809,7 +809,7 @@ configuration for this.
 ```sh
 git clone --recursive https://github.com/Xalior/circle-libsdl2.git
 cd circle-libsdl2
-make deps       # builds all three Circle worlds, then all three archives
+make deps       # builds every Circle world, then every archive
 ```
 
 This library **supplies its own runtime world** — the configured
@@ -827,7 +827,7 @@ board is not usable on another:
 | Pi 4 | `circle-stdlib-rpi4` | `libSDL2-rpi4.a` |
 | Pi 5 | `circle-stdlib-rpi5` | `libSDL2-rpi5.a` |
 
-`make deps` does all three. For each board it fetches the world's sources —
+`make deps` does all of them. For each board it fetches the world's sources —
 including libc++ from an immutable LLVM tag, because Codeberg regenerates its
 archives and downloading the tarball fails its hash check on a clean build —
 then configures that world (`-r <board> -p aarch64-none-elf- --libcxx-repo
@@ -841,7 +841,7 @@ which, and defaults to `rpi4`:
 ```sh
 make                  # libSDL2-rpi4.a
 make BOARD=rpi5       # libSDL2-rpi5.a
-make all-boards       # all three
+make all-boards       # every board
 ```
 
 ### Choosing single-core or multicore
