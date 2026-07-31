@@ -10,243 +10,147 @@ followed.
 
 ## vPoC3
 
-### An application declares the display it is given
+### An application states the display size it is given
 
 **Consumers must act:** every consumer must now call
 `SDL2Circle_DeclareVirtualDevice(32, width, height)` before `SDL_Init`.
-`SDL_Init` fails without it. An existing kernel will not run until it does.
+`SDL_Init` fails without it, and an existing kernel will not run until the
+call is added.
 
-There are two display resolutions on a bare-metal Pi, they do two different
-jobs, and this version separates them properly.
+An application states the display size it wants and is given exactly that,
+whatever the attached screen is doing. Every SDL answer about the display
+reports the stated size: the current, desktop and enumerated modes, the
+display bounds, the window size and the renderer's output size. The library
+fits each finished frame onto the real screen.
 
-The **physical** resolution is what the hardware puts on the wire. `width=`
-and `height=` in `cmdline.txt` ask the firmware for it, and it is the
-operator's to set.
+This is for an application whose size is a fact about the program rather than
+a preference — an emulated machine, a fixed layout, a port of something with
+a native resolution.
 
-The **virtual** resolution is the display the application is given.
-`SDL2Circle_DeclareVirtualDevice(depth, width, height)` states it, in the
-application's own code and before `SDL_Init`. Every SDL answer about the
-display — the current, desktop and enumerated modes, the display bounds, the
-window size, the renderer's output size — is that declaration, whatever the
-panel is really doing. The library scales the one onto the other.
+**Where the numbers come from is entirely the application's business.** A
+constant in its own source, a configuration file, a query it makes to the
+firmware itself, a value read off a network port. The library is told the
+size and works nothing out. It offers no way to ask what the screen is: an
+application that wants the two to match determines the screen size itself and
+passes it in.
 
-This is for an application that cannot take whatever display it is handed:
-one whose layout, port or emulated raster is a fact about the program rather
-than a setting.
+The statement is fixed for the run. One is accepted, before anything has
+asked the library about the display. A second is refused, and so is one made
+after the display size has been settled by the first display query or the
+first window.
 
-**Where the numbers come from is the consumer's business, and only the
-consumer's.** A build constant, a configuration file, a firmware query the
-consumer makes for itself, a value off a network port. The library is told
-what the virtual display is and discovers nothing. It offers no way to ask
-what the panel is: an application wanting the two to match works the physical
-resolution out itself and passes it in.
-
-The declaration is fixed. One is accepted, before anything has asked the
-library about the display; a second is refused, and so is one made after the
-display size has been settled — the first display query, or the first window.
-So the size an application is given cannot change under it, and every
-geometry derived from it is worked out once.
-
-Only 32 bits per pixel can be served: the framebuffer is allocated at 32 bits
+Only 32 bits per pixel is supported: the framebuffer is allocated at 32 bits
 and streaming ARGB8888 is the only texture format, so any other depth is
-refused rather than rounded to this one. Width and height must both be above
-zero. A refusal returns -1 with `SDL_GetError` giving the reason, changes
-nothing, and leaves any earlier accepted declaration standing.
+refused rather than quietly rounded. Width and height must both be greater
+than zero. A refusal returns -1 with `SDL_GetError` giving the reason and
+changes nothing.
 
-**There is no fallback.** `width=` and `height=` had been quietly serving as
-both the firmware's mode request and the application's world; they are the
-mode request alone now, and never set what the application is given. Nothing
-replaces them: a consumer that declares no virtual device has not said what
-display its application is to be given, and the library refuses to start
-rather than invent one. `SDL_Init` returns failure with `SDL_GetError`
-explaining, and names the missing call on the console.
+**There is no default and no fallback.** An application that states no size
+has not said what display it wants, and the library stops rather than choose
+one for it.
 
-An application wanting its virtual display to match the panel asks the
-firmware itself and declares the answer — a handful of lines against Circle's
-public property tags, needing nothing from this library.
-`examples/gradient`, `examples/keyecho`, `examples/tone`, `examples/padview` and
-`examples/videocycle` each carry that query in their own source, written out in
-full rather than shared, so every one stands alone as a worked answer.
-`examples/videocycle` also shows what an application off core 0 needs, the
-firmware mailbox being core 0's.
+Five examples — `gradient`, `keyecho`, `tone`, `padview` and `videocycle` —
+each ask the firmware for the screen size and state that, which is how an
+application makes the two match. Each carries the query in its own source
+rather than sharing one, so each stands alone as a complete answer.
+`videocycle` additionally shows what an application running off core 0 needs,
+the firmware mailbox belonging to core 0.
 
-`examples/virtdev` is the opposite demonstration: it declares a size matching
-nothing on the board, checks every SDL answer about the display against what
-it declared, and makes each declaration the library refuses so the reason for
-each is on the serial log.
+`virtdev` is the opposite demonstration: it states a size matching nothing on
+the board, checks every SDL display answer against it, and makes each
+statement the library refuses so the reason for each appears on the serial
+log.
 
 `b2eca5c`, `1c83bcf`, `6741ffe`
 
-### Half the presentation core, from deleting a scaling optimisation
+### The screen size comes from the firmware, and no mode is ever requested by default
 
-Scaling a frame up reuses a source row for several destination rows, and the
-scaler took the obvious shortcut: having built one destination row, it copied
-that row back for the next destination row mapping to the same source. The
-comment claimed copying it back beat resampling it. Measured, it is the
-opposite, and not by a little.
+The library reads the screen size back from the firmware after allocating the
+framebuffer, and never calculates it.
 
-On a Pi 5 at a locked 59.9 frames per second, scaling a 398x224 source into a
-796x448 canvas on a 1920x1080 panel, the presentation core was awake:
+**It asks the firmware for a display mode only when the operator names one.**
+Asking is what sets a mode, so a card that names no size gets the mode the
+screen is already using.
 
-| | awake share of wall time |
-|---|---|
-| with the row copy-back | 76.4% |
-| without it | 33-41% |
+**On a Pi 5, name no display mode.** That board settles its mode before any
+kernel starts and will not change it. It accepts a `width=`/`height=`
+request, reports the requested mode back as though it had applied it, and
+carries on sending its own mode to the screen — so everything downstream
+works from a size that is not real. Leave `width=` and `height=` out of
+`cmdline.txt` there, or set them to exactly the mode the screen is already
+using.
 
-The copy reads the wide side. A source row here is 398 pixels, about 1.6 KB;
-the destination row it would be copied from is the magnified one, 1918
-pixels, about 7.6 KB. So the shortcut reads five times as much as resampling
-from the source would, to save some index arithmetic.
+A Pi 3 and a Pi 4 apply a requested mode and report it correctly, so on those
+boards the setting behaves as you would expect.
 
-The cache is what turns that into half a core. The destination is a
-whole-screen shadow buffer, megabytes of it, and reading those lines back
-fills the cache with data nothing will ever read again — evicting the one
-small source row that every destination row mapping to it still needs.
+`1c83bcf`, `88817b2`
 
-It also disguised itself. The more a picture is magnified, the more rows are
-"reused" and the more the penalty applies, so a low source resolution paid
-more of it than a high one: the cheaper mode measured as the dearer, which is
-backwards and had made the scaling numbers impossible to read.
+### Putting a frame on the screen costs about half of a core
 
-Every destination row is resampled from the source now. The integer
-horizontal replication path is unchanged — it reads the source once and only
-writes the destination, so it is not the same mistake. The blended path never
-had the shortcut, because compositing reads the destination anyway.
+Enlarging a 398x224 picture to fill a 1920x1080 screen at a steady 59.9
+frames per second occupies 41% of the core that does it, measured on a Pi 5.
+That is roughly half what the same work cost in vPoC2.
 
-This affects every consumer on every board, and the penalty grows with
-magnification.
+Every output row is built from the source picture. Rows are never copied from
+other output rows: an output row is several times wider than the source row
+it comes from, so copying moves more memory than recalculating, and it fills
+the cache with output data at the expense of the source row still being read.
+
+The saving grows with how much the picture is enlarged, and applies to every
+application on every board.
 
 `b16ac3e`
 
-### The library supplies a scheduler when the host has none
+### A picture that fits exactly fills the screen exactly
 
-Running the core split needed a `CScheduler` in the system, and a host
-without one did not get an error — it got a dead board. The servo and the
-watchdog are Circle tasks, a task registers itself with the scheduler while
-it is being constructed, and it does that through `CScheduler::Get()`, which
-stops the machine rather than reporting an absence. The fault landed inside a
-constructor with nothing said.
-
-`SDL2Circle_SplitInit` now asks `CScheduler::IsActive()` — a safe question,
-unlike `CCPUThrottle`, which cannot be asked at all — and creates a scheduler
-only where there is not one already.
-
-**A host that declares its own keeps it and needs to change nothing.** The
-library only ever asks whether one exists; it never replaces, wraps or
-reconfigures a scheduler it did not make. A host with no use of its own for
-one can now stop declaring it.
-
-A scheduler the library made is never destroyed, for the same reason the CPU
-throttle it owns is never destroyed: the servo and the watchdog are
-registered with it and run for as long as the machine does.
-
-`0eed6e8`
-
-### How much of a frame crosses between the cores is a build-time choice
-
-`make PRESENT_CMDS=n` sets how many drawing commands may travel to the
-presentation core as a list. A frame whose draw list fits within the count
-crosses as a list and is composed on the far side; a frame that does not fit
-crosses as a finished picture instead. The default is zero — every frame a
-picture.
-
-Zero costs nothing extra, which is the point of it. The usual frame is a
-clear plus one opaque blit, and that shape already IS the finished picture:
-the application's own texture, where it already sits in memory. The library
-recognises the shape and sends the texture, painting nothing.
-
-That had not been true. Recognising the shape and sizing the crossing list
-were the same number, so a low count starved the recogniser as well as the
-crossing: the recorder gave up on the first draw call, the simple shape could
-never be seen, and every frame paid for a full canvas paint it did not need.
-The count could therefore only usefully be set high, and what should have
-been one dial behaved like two settings with nothing useful between them.
-
-The recorder's capacity and the crossing count are separate now. Recognising
-a clear plus one blit takes a couple of recorded commands and keeps working
-however few commands a build lets cross.
-
-Painting also begins earlier when it is going to be needed at all. A frame
-is held back only while it could still be the simple shape or could still be
-short enough to send as a list; the first draw call that ends both
-possibilities starts the painting there and then, rather than leaving it to
-land in one lump at present. The work is the same, spread across the
-application's own draw calls.
-
-Which grant the firmware made no longer decides any of this. It had: a
-two-screen grant sent the recorded list, a single-screen grant sent a reduced
-frame. That read as a constraint and was only ever a judgement about what
-each grant makes cheap — both endings reach the same executor, which writes
-into the shadow buffer or the staging frame according to what was granted, so
-the flip is the grant's business and the crossing never needed to know.
-
-The count is baked into the archive and appears in no installed header, so an
-application's own translation units neither see it nor need to match it.
-Objects are kept in per-count trees, and changing the count deletes the
-archive rather than leave the previous build under the same name.
-
-No count has been measured against a real workload.
-
-`e92239f`, `90e78a2`
-
-### A picture that fits exactly now fills the screen exactly
-
-Placing the canvas on the scanout formed the scale factor as a 16.16
-fixed-point fraction, and a canvas whose aspect ratio matched the scanout's
-came out one pixel short on each axis: a black line down the right edge and
-along the bottom. An 800x450 canvas on a 1920x1080 display is exactly 2.4,
-2.4 has no exact representation in 16.16, and the value was truncated twice —
-once forming the ratio and once multiplying it back out.
-
-Ratios that do happen to be representable, 1.5 and 3.0 among them, were
-always correct, which is what made the arithmetic look sound.
-
-The fit is worked out in exact integers now. Which axis limits is decided by
-comparing two cross products, so no ratio is formed and nothing is rounded in
-order to choose; the limiting axis is then the scanout's own measurement with
-no arithmetic on it at all, and the other axis takes a single divide. A
-canvas that genuinely cannot fit whole still floors, so the picture stays
-inside the scanout.
-
-This is settled once at start-up, before any frame exists, and is written for
-correctness rather than speed for that reason.
+Placement is calculated in exact integers. A picture whose shape matches the
+screen's fills it with nothing left over, and one that does not stays inside
+it.
 
 `bea47e3`
 
-### The physical resolution comes from the firmware, not from arithmetic
+### The library provides a scheduler when the host has none
 
-The scanout the presentation path scales onto is now read back from the
-firmware after the framebuffer is allocated, using the firmware's own display
-mailbox tag. It had been worked out instead — from the framebuffer's pitch
-and buffer size, or from the width and height Circle reports.
+`SDL2Circle_SplitInit` creates a `CScheduler` if the system does not already
+have one. The servo and watchdog are Circle tasks and a task cannot be
+constructed without a scheduler present.
 
-Neither source could be right. Circle's `CBcmFrameBuffer` sends one combined
-tag call whose reply the firmware writes its real geometry into, and Circle
-relies on that itself, testing the returned physical width and height before
-it accepts the allocation. It then keeps only the buffer address, the size
-and the pitch, and never updates its own width and height — so `GetWidth()`
-and `GetHeight()` echo the constructor's arguments for the object's whole
-life, and the reply holding the real answer is private. Deriving the display
-from the pitch instead gives the padded stride rather than the picture, and
-deriving the height from the buffer size gives every granted row, which is
-two screens on a double-buffered grant.
+**A host with its own scheduler keeps it and needs to change nothing.** The
+library only asks whether one exists; it never replaces or reconfigures a
+scheduler it did not create. A host that declared one purely to satisfy this
+requirement can now stop.
 
-Asking the firmware makes a Pi 5 — which acknowledges a mode request and then
-scans out its display's own mode regardless — describe itself correctly
-without the library inferring anything.
+`0eed6e8`
 
-With that in place the request itself had to be corrected, because asking is
-what SETS the mode. The library had been asking for 640x480 whenever
-`cmdline.txt` named no size, so a card that expressed no preference had one
-imposed on it: on a Pi 5 the panel was driven at 640x480 inside a 1920x1080
-grant, the picture appeared twice and small in the corner, and the read-back
-faithfully reported the 640x480 that had just been set. There is no default
-resolution now. Where the operator names no size the library asks for none —
-Circle's "no size requested", which takes the display's own dimensions — and
-the panel keeps the mode it already had. Where the operator does name one it
-is asked for exactly as before.
+### How much of a frame crosses between cores is a build-time setting
 
-`1c83bcf`, `6741ffe`, `88817b2`
+`make PRESENT_CMDS=n` sets how many drawing commands may travel to the
+presentation core as a list. A frame whose drawing fits within that count
+crosses as a list and is assembled on the far side; a frame that does not fit
+crosses as a finished picture. The default is zero, so every frame crosses as
+a picture.
+
+Zero costs nothing extra. The usual frame is a screen clear followed by one
+opaque image, and that is already a finished picture — the application's own
+texture, where it already sits in memory. The library recognises that shape
+and sends the texture, drawing nothing. Recognising it works at any setting,
+including zero.
+
+Drawing starts as soon as it is known to be needed. A frame is held back only
+while it could still be the simple shape or still be short enough to send as
+a list; the first drawing call that rules out both starts the work
+immediately rather than leaving it until the frame is presented.
+
+The framebuffer the firmware granted does not affect the choice. Both paths
+end at the same place, and the page flip or copy to the screen is decided by
+the grant separately.
+
+The setting is compiled into the library and appears in no installed header,
+so an application's own source neither sees it nor needs to match it.
+
+Only the default has been measured against a real workload.
+
+`e92239f`, `90e78a2`
 
 ## vPoC2
 
