@@ -667,9 +667,9 @@ Lines from other cores appear when the servo next drains, so they carry the
 drain's timestamp rather than the moment they were produced, and they are
 ordered per core rather than against each other. For working out what
 happened that is enough; for measuring how long something took, use the
-performance receipts below.
+performance reports below.
 
-## Performance receipts
+## Performance reports
 
 Call `SDL2Circle_SetPerfInterval(10)` and the library prints, every 10
 seconds, one line per core that has run instrumented code. It is silent

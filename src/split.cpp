@@ -301,7 +301,7 @@ extern "C" void SDL2Circle_SplitPresentCore(void)
         u64 seq = g_frame.seq.load(std::memory_order_acquire);
         if (seq == done)
         {
-            // Idle between frames. Instrumented so this core's receipt says
+            // Idle between frames. Instrumented so this core's report says
             // how much of it was spare: at a locked frame rate that is most
             // of it, and it must not read as work.
             SDL2CirclePerfScope wait(SDL2CIRCLE_PERF_WAIT);
@@ -636,7 +636,7 @@ public:
             // Call mailbox (init, window/audio creation, I/O service).
             // Scoped because on the hardware core this is not housekeeping,
             // it is another core's work being done here — and how much of
-            // it there is, is the question a split receipt exists to answer.
+            // it there is, is the question a split report exists to answer.
             u64 req = g_call.req.load(std::memory_order_acquire);
             if (req > g_call.ack.load(std::memory_order_relaxed))
             {
@@ -679,7 +679,7 @@ public:
                 SDL2Circle_LogDrain();
             }
 
-            // Performance receipts. The pump's tail call never runs under
+            // Performance reports. The pump's tail call never runs under
             // the split (the application core's pump early-returns after its
             // shared-memory work), so the reporter's home is here on the
             // hardware core: the logger is core 0's device, and the other

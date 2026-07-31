@@ -486,7 +486,7 @@ static size_t s_shadow_bytes = 0;
 //
 // 8 beats is 128 bytes a transaction: two cache lines, four times the
 // payload, and still well under the 15 the controller allows, which leaves
-// room to go further if a receipt ever asks for it.
+// room to go further if a report ever asks for it.
 static const unsigned SHADOW_DMA_BURST = 8;
 
 static CDMAChannel *s_dma = nullptr;   // null: the CPU does the copy

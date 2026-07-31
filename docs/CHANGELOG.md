@@ -470,7 +470,7 @@ the record.
 
 `edb8655`
 
-### Performance receipts
+### Performance reports
 
 `SDL2Circle_SetPerfInterval(N)` prints one
 serial line every N seconds: frames presented per second, and a cycle-count

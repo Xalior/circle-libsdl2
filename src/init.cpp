@@ -158,7 +158,7 @@ extern "C" int SDL_InitSubSystem(Uint32 flags)
     // from here on.
     s_bKernelTimerUp = true;
 
-    // Performance receipts stay silent unless the HOST arms them through
+    // Performance reports stay silent unless the HOST arms them through
     // SDL2Circle_SetPerfInterval. The library reads no boot configuration
     // for this: cmdline.txt describes the machine, and how an instrument
     // is switched on — a stamped defaults block, a host option, nothing at

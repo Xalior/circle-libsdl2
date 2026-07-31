@@ -28,7 +28,7 @@
 
 // The counter backend is AArch64 system-register assembly (PMCCNTR_EL0 and
 // friends), which does not exist on 32-bit builds. On any other
-// architecture the whole instrument compiles to its inert form: receipts
+// architecture the whole instrument compiles to its inert form: reports
 // simply never arm, every scope costs its one disabled-branch, and nothing
 // here blocks the build. A 32-bit counter backend is possible later; until
 // someone writes it, absent is the honest state.
@@ -58,12 +58,12 @@ static u64 s_lastReportTicks;     // CNTVCT at last report
 // MEASURED, not asked for. It used to come from a firmware query, and a
 // firmware query can answer zero — which divides into an awake figure of
 // exactly 100% on every core, indistinguishable from a machine that never
-// sleeps. A number the whole receipt is divided by must not have a failure
+// sleeps. A number the whole report is divided by must not have a failure
 // mode that looks like an answer.
 //
 // Counting cycles against the system counter over a short interval cannot
 // fail and cannot return zero, needs nothing outside the core it runs on,
-// and uses the very two counters the receipt already compares. It costs one
+// and uses the very two counters the report already compares. It costs one
 // millisecond, once.
 static unsigned s_cpuHz;
 
@@ -112,7 +112,7 @@ bool SDL2Circle_PerfEnabled(void)
 {
     // Global intent, read by every core. Arming is one core's decision and
     // every other core has to see it, or it never starts its own counter
-    // and never appears in the receipt at all.
+    // and never appears in the report at all.
     return s_interval.load(std::memory_order_acquire) != 0;
 }
 
@@ -297,7 +297,7 @@ extern "C" void SDL2Circle_SetPerfInterval(unsigned nSeconds)
 {
     if (nSeconds)
         SDL2Circle_Log("sdl2perf", SDL2CIRCLE_LOG_WARNING,
-                              "perf receipts unavailable: no cycle-counter backend for this architecture");
+                              "performance reports unavailable: no cycle-counter backend for this architecture");
 }
 
 #endif

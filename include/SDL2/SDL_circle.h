@@ -73,7 +73,7 @@ int SDL2Circle_SplitActive(void);
 // route, and it is valid from any core already.
 void SDL2Circle_CallOn0(void (*fn)(void *), void *arg);
 
-// Performance receipts on the serial log: every nSeconds, one line with the
+// Performance reports on the serial log: every nSeconds, one line with the
 // presented frame rate and a PMU cycle split across the shim's instrumented
 // sections (render, audio, input, yield) with the remainder attributed to
 // the application's own compute. Costs one branch per section while off.
