@@ -10,135 +10,53 @@ followed.
 
 ## vPoC3
 
-### An application states the display size it is given
+### You must add one call
 
-**Consumers must act:** every consumer must now call
-`SDL2Circle_DeclareVirtualDevice(32, width, height)` before `SDL_Init`.
-`SDL_Init` fails without it, and an existing kernel will not run until the
-call is added.
+```c
+SDL2Circle_DeclareVirtualDevice(32, width, height);   // before SDL_Init
+```
 
-An application states the display size it wants and is given exactly that,
-whatever the attached screen is doing. Every SDL answer about the display
-reports the stated size: the current, desktop and enumerated modes, the
-display bounds, the window size and the renderer's output size. The library
-fits each finished frame onto the real screen.
+Without it your kernel will not start. `SDL_Init` fails and says so.
 
-This is for an application whose size is a fact about the program rather than
-a preference — an emulated machine, a fixed layout, a port of something with
-a native resolution.
+You are telling the library what size display your application wants. It gets
+that size whatever screen is attached, and the library fits each frame onto
+the real screen for you. 32 bits per pixel only.
 
-**Where the numbers come from is entirely the application's business.** A
-constant in its own source, a configuration file, a query it makes to the
-firmware itself, a value read off a network port. The library is told the
-size and works nothing out. It offers no way to ask what the screen is: an
-application that wants the two to match determines the screen size itself and
-passes it in.
+If you want the size to match the screen, ask the firmware for it and pass
+the answer in. Five of the examples do this in a few lines each.
 
-The statement is fixed for the run. One is accepted, before anything has
-asked the library about the display. A second is refused, and so is one made
-after the display size has been settled by the first display query or the
-first window.
+### Do not set a display mode on a Pi 5
 
-Only 32 bits per pixel is supported: the framebuffer is allocated at 32 bits
-and streaming ARGB8888 is the only texture format, so any other depth is
-refused rather than quietly rounded. Width and height must both be greater
-than zero. A refusal returns -1 with `SDL_GetError` giving the reason and
-changes nothing.
+That board fixes its display mode before your kernel starts, and will not
+change it. It accepts a `width=`/`height=` line in `cmdline.txt`, tells you
+it applied it, and carries on sending its own mode to the screen. Everything
+after that is working from a size that is not real.
 
-**There is no default and no fallback.** An application that states no size
-has not said what display it wants, and the library stops rather than choose
-one for it.
+Leave those lines out on a Pi 5. A Pi 3 and a Pi 4 handle them correctly.
 
-Five examples — `gradient`, `keyecho`, `tone`, `padview` and `videocycle` —
-each ask the firmware for the screen size and state that, which is how an
-application makes the two match. Each carries the query in its own source
-rather than sharing one, so each stands alone as a complete answer.
-`videocycle` additionally shows what an application running off core 0 needs,
-the firmware mailbox belonging to core 0.
+### Frames cost about half as much to put on screen
 
-`virtdev` is the opposite demonstration: it states a size matching nothing on
-the board, checks every SDL display answer against it, and makes each
-statement the library refuses so the reason for each appears on the serial
-log.
+On a Pi 5, filling a 1920x1080 screen from a 398x224 picture at 59.9 frames
+per second now uses 41% of one core. It was 76%.
 
-### The screen size comes from the firmware, and no mode is ever requested by default
+The bigger the enlargement, the bigger the saving. Every board benefits.
 
-The library reads the screen size back from the firmware after allocating the
-framebuffer, and never calculates it.
+### A picture shaped like your screen now fills it
 
-**It asks the firmware for a display mode only when the operator names one.**
-Asking is what sets a mode, so a card that names no size gets the mode the
-screen is already using.
+There is no longer a thin black line down the right edge and along the
+bottom.
 
-**On a Pi 5, name no display mode.** That board settles its mode before any
-kernel starts and will not change it. It accepts a `width=`/`height=`
-request, reports the requested mode back as though it had applied it, and
-carries on sending its own mode to the screen — so everything downstream
-works from a size that is not real. Leave `width=` and `height=` out of
-`cmdline.txt` there, or set them to exactly the mode the screen is already
-using.
+### The library creates a scheduler if you have not
 
-A Pi 3 and a Pi 4 apply a requested mode and report it correctly, so on those
-boards the setting behaves as you would expect.
+The core split needs a `CScheduler`. If your kernel does not create one, the
+library does. If it does, nothing changes.
 
-### Putting a frame on the screen costs about half of a core
+### New build setting: what crosses between the cores
 
-Enlarging a 398x224 picture to fill a 1920x1080 screen at a steady 59.9
-frames per second occupies 41% of the core that does it, measured on a Pi 5.
-That is roughly half what the same work cost in vPoC2.
-
-Every output row is built from the source picture. Rows are never copied from
-other output rows: an output row is several times wider than the source row
-it comes from, so copying moves more memory than recalculating, and it fills
-the cache with output data at the expense of the source row still being read.
-
-The saving grows with how much the picture is enlarged, and applies to every
-application on every board.
-
-### A picture that fits exactly fills the screen exactly
-
-Placement is calculated in exact integers. A picture whose shape matches the
-screen's fills it with nothing left over, and one that does not stays inside
-it.
-
-### The library provides a scheduler when the host has none
-
-`SDL2Circle_SplitInit` creates a `CScheduler` if the system does not already
-have one. The servo and watchdog are Circle tasks and a task cannot be
-constructed without a scheduler present.
-
-**A host with its own scheduler keeps it and needs to change nothing.** The
-library only asks whether one exists; it never replaces or reconfigures a
-scheduler it did not create. A host that declared one purely to satisfy this
-requirement can now stop.
-
-### How much of a frame crosses between cores is a build-time setting
-
-`make PRESENT_CMDS=n` sets how many drawing commands may travel to the
-presentation core as a list. A frame whose drawing fits within that count
-crosses as a list and is assembled on the far side; a frame that does not fit
-crosses as a finished picture. The default is zero, so every frame crosses as
-a picture.
-
-Zero costs nothing extra. The usual frame is a screen clear followed by one
-opaque image, and that is already a finished picture — the application's own
-texture, where it already sits in memory. The library recognises that shape
-and sends the texture, drawing nothing. Recognising it works at any setting,
-including zero.
-
-Drawing starts as soon as it is known to be needed. A frame is held back only
-while it could still be the simple shape or still be short enough to send as
-a list; the first drawing call that rules out both starts the work
-immediately rather than leaving it until the frame is presented.
-
-The framebuffer the firmware granted does not affect the choice. Both paths
-end at the same place, and the page flip or copy to the screen is decided by
-the grant separately.
-
-The setting is compiled into the library and appears in no installed header,
-so an application's own source neither sees it nor needs to match it.
-
-Only the default has been measured against a real workload.
+`make PRESENT_CMDS=n` sets how many drawing commands may cross to the
+presentation core as a list; anything longer crosses as a finished picture.
+The default of zero sends every frame as a picture and is the fastest setting
+for a normal game. Only that default has been measured.
 
 ## vPoC2
 
