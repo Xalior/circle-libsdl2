@@ -90,15 +90,63 @@ OBJDIR = build/$(BOARD)-cmds$(PRESENT_CMDS)
 #
 # It is on Codeberg because that is the only place it exists: the tag names a
 # tree carrying the bare-metal patches, and neither the tag nor its commits
-# are in llvm/llvm-project. Codeberg times out often enough to fail a build
-# that would otherwise have worked, so override LLVM_REPO to clone from a
-# mirror of your own.
+# are in llvm/llvm-project. Codeberg is a small volunteer-run forge and it
+# times out often enough to fail a build that would otherwise have worked, so
+# override LLVM_REPO to clone from a mirror of your own.
 LLVM_REPO ?= https://codeberg.org/larchcone/llvm-project.git
 LLVM_TAG  ?= circle-stdlib-22.1.3-v2
 
-# How many times to try that clone before giving up. A gateway timeout on a
-# 3 GB fetch is a bad reason to lose a whole dependency build.
+# How many times to try that clone before giving up. A gateway timeout on the
+# fetch is a bad reason to lose a whole dependency build.
 LLVM_CLONE_TRIES ?= 3
+
+# ONE checkout of that tag, shared by every world. The worlds differ in how
+# they are CONFIGURED, never in these sources, so three copies of one
+# immutable tag was three downloads of identical bytes and three times the
+# disk.
+#
+# Sharing was previously ruled out because a shallow clone cannot be a
+# --reference source, and a full clone to share objects is larger than three
+# shallow ones. A sparse checkout answers both: it is its own shallow clone,
+# so nothing references anything, and it is far smaller than even one full
+# checkout. The worlds then symlink to it.
+#
+# The subset is the three runtime libraries, the cmake modules
+# runtimes/CMakeLists.txt reaches for (../cmake, ../llvm/cmake, ../third-party,
+# and ../llvm for llvm/utils/llvm-lit), and libc -- libc++'s from_chars
+# includes libc/shared, which in turn reaches libc/src/__support. Around
+# 525 MB against a 2.8 GB worktree; clang, lldb, mlir, flang and the rest
+# never arrive.
+#
+# Every entry is here because cmake or a compile named the thing it could not
+# find. Trim one and the build tells you which, some minutes in.
+#
+# CIRCLE_LLVM names the checkout. The default sits beside this repository, so
+# a plain clone and a CI runner are each self-contained with nothing set;
+# point several projects at one path to share the fetch across all of them.
+CIRCLE_LLVM ?= $(abspath $(CURDIR)/../circle-llvm)
+LLVM_SPARSE  = libcxx libcxxabi libunwind runtimes cmake llvm/cmake \
+               llvm/utils third-party libc
+
+# Fetched once, then left alone: the tag is immutable, so a checkout that
+# already carries the runtimes tree is finished by definition.
+.PHONY: llvm-cache
+llvm-cache:
+	@[ -f $(CIRCLE_LLVM)/runtimes/CMakeLists.txt ] || { \
+		n=1; \
+		echo "  LLVM  $(LLVM_TAG) -> $(CIRCLE_LLVM) (once)"; \
+		until git clone --quiet --depth 1 --branch $(LLVM_TAG) --no-checkout \
+					--sparse $(LLVM_REPO) $(CIRCLE_LLVM) \
+			&& git -C $(CIRCLE_LLVM) sparse-checkout set --cone $(LLVM_SPARSE) \
+			&& git -C $(CIRCLE_LLVM) checkout --quiet; do \
+			rm -rf $(CIRCLE_LLVM); \
+			if [ $$n -ge $(LLVM_CLONE_TRIES) ]; then \
+				echo "  LLVM  clone failed $$n times from $(LLVM_REPO)"; \
+				exit 1; \
+			fi; \
+			echo "  LLVM  clone failed, retrying ($$n of $(LLVM_CLONE_TRIES))"; \
+			n=$$((n+1)); sleep 15; \
+		done; }
 
 # deps splits into two phases so a parallel build is safe: the git-heavy FETCH
 # (nested-submodule init + LLVM clone) is lock-prone and runs serially, one
@@ -111,24 +159,13 @@ deps:
 	@$(MAKE) all-boards
 
 # FETCH (git, run serially): populate one board's world source. Idempotent.
-# LLVM is cloned per world at --depth 1: a shallow clone can't be a --reference
-# source ("reference repository is shallow"), and a full clone to share objects
-# is larger than three shallow ones — so each world fetches its own shallow copy.
+# The world's libc++ sources are a symlink to the one shared checkout above,
+# which every board and every project beside this one points at.
 .PHONY: world-fetch
-world-fetch:
+world-fetch: llvm-cache
 	git submodule update --init --recursive $(CIRCLE_STDLIB)
-	@[ -f $(CIRCLE_STDLIB)/libs/llvm-project/runtimes/CMakeLists.txt ] || { \
-		n=1; \
-		until git clone --depth 1 --branch $(LLVM_TAG) $(LLVM_REPO) \
-				$(CIRCLE_STDLIB)/libs/llvm-project; do \
-			rm -rf $(CIRCLE_STDLIB)/libs/llvm-project; \
-			if [ $$n -ge $(LLVM_CLONE_TRIES) ]; then \
-				echo "  LLVM  clone failed $$n times from $(LLVM_REPO)"; \
-				exit 1; \
-			fi; \
-			echo "  LLVM  clone failed, retrying ($$n of $(LLVM_CLONE_TRIES))"; \
-			n=$$((n+1)); sleep 15; \
-		done; }
+	@[ -f $(CIRCLE_STDLIB)/libs/llvm-project/runtimes/CMakeLists.txt ] || \
+		ln -sfn $(CIRCLE_LLVM) $(CIRCLE_STDLIB)/libs/llvm-project
 
 # COMPILE (isolated per world, safe to run in parallel across boards). Idempotent:
 # skips re-configure when Config.mk is already present.
