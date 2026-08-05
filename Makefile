@@ -194,7 +194,8 @@ include $(CIRCLESTDLIBHOME)/Config.mk
 SRCS = src/init.cpp src/error.cpp src/timer.cpp src/hints.cpp src/events.cpp \
        src/video.cpp src/surface.cpp src/input.cpp src/joystick.cpp \
        src/gamecontroller.cpp src/rwops.cpp src/audio.cpp src/perf.cpp \
-       src/split.cpp src/log.cpp src/coreruntime.cpp src/hardware.cpp
+       src/split.cpp src/log.cpp src/coreruntime.cpp src/hardware.cpp \
+       src/mouse.cpp
 OBJS = $(SRCS:src/%.cpp=$(OBJDIR)/%.o)
 DEPS = $(OBJS:.o=.d)
 
