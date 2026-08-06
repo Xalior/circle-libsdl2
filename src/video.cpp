@@ -33,6 +33,7 @@ struct SDL_Window
     int min_w, min_h;
     int max_w, max_h;
     SDL_bool grabbed;
+    char title[128];
 };
 
 struct SDL_Renderer
@@ -1259,6 +1260,7 @@ static void create_window_on0(void *p)
     win->min_w = win->min_h = 0;
     win->max_w = win->max_h = 0;
     win->grabbed = SDL_FALSE;
+    win->title[0] = '\0';
 
     // Publish the presentation geometry before the window becomes visible
     // to the application core or the worker. This side is SCANOUT geometry: every
@@ -1399,7 +1401,27 @@ extern "C" Uint32 SDL_GetWindowFlags(SDL_Window *win)
     return win ? win->flags : 0;
 }
 
-extern "C" void SDL_SetWindowTitle(SDL_Window *, const char *) {}
+// There is no title bar to put a title in, but an application that sets one
+// and reads it back gets what it set — some use it as their own record of
+// what is on screen.
+extern "C" void SDL_SetWindowTitle(SDL_Window *win, const char *title)
+{
+    if (!win)
+        return;
+    if (!title)
+        title = "";
+    size_t n = strlen(title);
+    if (n >= sizeof(win->title))
+        n = sizeof(win->title) - 1;
+    memcpy(win->title, title, n);
+    win->title[n] = '\0';
+}
+
+extern "C" const char *SDL_GetWindowTitle(SDL_Window *win)
+{
+    return win ? win->title : "";
+}
+
 extern "C" void SDL_ShowWindow(SDL_Window *) {}
 
 // ---------------------------------------------------------------------------
@@ -2309,6 +2331,82 @@ extern "C" SDL_Texture *SDL_GetRenderTarget(SDL_Renderer *)
 extern "C" SDL_bool SDL_RenderTargetSupported(SDL_Renderer *)
 {
     return SDL_FALSE;
+}
+
+// Vsync is a property of how a finished frame reaches the panel, which is
+// decided when the renderer is made. Changing it afterwards is accepted and
+// takes effect on the next present.
+extern "C" int SDL_RenderSetVSync(SDL_Renderer *ren, int vsync)
+{
+    if (!ren)
+        return SDL_SetError("SDL_RenderSetVSync: no renderer");
+    ren->vsync = (vsync != 0);
+    return 0;
+}
+
+// A texture holds ARGB8888, so a surface in any other format — or one
+// carrying a colour key, which has to become real transparency before the
+// key is lost — is converted once here rather than at every update.
+extern "C" SDL_Texture *SDL_CreateTextureFromSurface(SDL_Renderer *ren,
+                                                     SDL_Surface *surf)
+{
+    if (!ren)
+    {
+        SDL_SetError("SDL_CreateTextureFromSurface: no renderer");
+        return nullptr;
+    }
+    if (!surf || !surf->format)
+    {
+        SDL_SetError("SDL_CreateTextureFromSurface: no surface");
+        return nullptr;
+    }
+
+    SDL_Surface *src = surf;
+    SDL_Surface *converted = nullptr;
+    if (surf->format->format != SDL_PIXELFORMAT_ARGB8888
+        || SDL_HasColorKey(surf) == SDL_TRUE)
+    {
+        converted = SDL_ConvertSurfaceFormat(surf, SDL_PIXELFORMAT_ARGB8888, 0);
+        if (!converted)
+            return nullptr;   // SDL_ConvertSurfaceFormat has set the error
+        src = converted;
+    }
+
+    SDL_Texture *tex = SDL_CreateTexture(ren, SDL_PIXELFORMAT_ARGB8888,
+                                         SDL_TEXTUREACCESS_STATIC,
+                                         src->w, src->h);
+    if (!tex)
+    {
+        if (converted)
+            SDL_FreeSurface(converted);
+        return nullptr;
+    }
+
+    if (SDL_UpdateTexture(tex, nullptr, src->pixels, src->pitch) < 0)
+    {
+        SDL_DestroyTexture(tex);
+        if (converted)
+            SDL_FreeSurface(converted);
+        return nullptr;
+    }
+
+    // SDL carries the surface's blending across to the texture, so a surface
+    // that blended goes on blending once it is one.
+    SDL_BlendMode blend = SDL_BLENDMODE_NONE;
+    SDL_GetSurfaceBlendMode(surf, &blend);
+    SDL_SetTextureBlendMode(tex, blend);
+
+    Uint8 alpha = 255;
+    SDL_GetSurfaceAlphaMod(surf, &alpha);
+    SDL_SetTextureAlphaMod(tex, alpha);
+
+    Uint8 r = 255, g = 255, b = 255;
+    SDL_GetSurfaceColorMod(surf, &r, &g, &b);
+    SDL_SetTextureColorMod(tex, r, g, b);
+
+    if (converted)
+        SDL_FreeSurface(converted);
+    return tex;
 }
 
 extern "C" int SDL_SetRenderDrawBlendMode(SDL_Renderer *, SDL_BlendMode)

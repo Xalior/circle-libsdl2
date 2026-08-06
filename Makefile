@@ -28,6 +28,20 @@ RASPPI_rpi3 = 3
 RASPPI_rpi4 = 4
 RASPPI_rpi5 = 5
 
+# An unknown board name otherwise reaches every rule below as an empty RASPPI
+# and a world directory that does not exist, and surfaces as make reporting no
+# rule for an archive it was never going to be able to name.
+ifeq ($(filter $(BOARD),$(BOARDS)),)
+$(error BOARD must be one of: $(BOARDS) — not `$(BOARD)`)
+endif
+
+# `make -n` EXECUTES any recipe line containing $(MAKE): make marks such a line
+# always-run so a dry run can descend into the sub-make. Every recursive target
+# here would therefore build for real. They refuse instead, from a line
+# prefixed `+` so that it too runs under -n.
+DRY_RUN     := $(findstring n,$(firstword -$(MAKEFLAGS)))
+NOT_DRY_RUN  = $(if $(DRY_RUN),echo "$@: no dry run — this recipe drives sub-makes and make -n executes those for real." >&2; exit 1,:)
+
 # THE CROSSING COUNT: how many drawing commands may cross to the presentation
 # core as a LIST. A build-time value baked into the archive — not a boot
 # option and not decided by the board.
@@ -199,6 +213,7 @@ llvm-cache:
 # isolated checkout, so the three can run concurrently (e.g. one agent/board).
 .PHONY: deps
 deps:
+	+@$(NOT_DRY_RUN)
 	@for b in $(BOARDS); do $(MAKE) world-fetch BOARD=$$b || exit 1; done
 	@for b in $(BOARDS); do $(MAKE) world-build BOARD=$$b || exit 1; done
 	@$(MAKE) all-boards
@@ -216,6 +231,7 @@ world-fetch: llvm-cache
 # skips re-configure when Config.mk is already present.
 .PHONY: world-build
 world-build:
+	+@$(NOT_DRY_RUN)
 	@[ -f $(CIRCLE_STDLIB)/Config.mk ] || \
 		( cd $(CIRCLE_STDLIB) && bash ./configure -r $(RASPPI_$(BOARD)) -p aarch64-none-elf- \
 			--libcxx-repo --kernel-max-size 256 -o ARM_ALLOW_MULTI_CORE && $(MAKE) MAKEINFO=true )
@@ -223,11 +239,13 @@ world-build:
 # Convenience: fetch then build one board's world.
 .PHONY: world
 world:
+	+@$(NOT_DRY_RUN)
 	@$(MAKE) world-fetch BOARD=$(BOARD)
 	@$(MAKE) world-build BOARD=$(BOARD)
 
 .PHONY: all-boards
 all-boards:
+	+@$(NOT_DRY_RUN)
 	@for b in $(BOARDS); do $(MAKE) libSDL2-$$b.a BOARD=$$b || exit 1; done
 
 # The shim targets need the selected board's Config.mk + Rules.mk; guard them so
@@ -241,9 +259,27 @@ SRCS = src/init.cpp src/error.cpp src/timer.cpp src/hints.cpp src/events.cpp \
        src/gamecontroller.cpp src/rwops.cpp src/audio.cpp src/perf.cpp \
        src/split.cpp src/log.cpp src/coreruntime.cpp src/hardware.cpp \
        src/mouse.cpp src/pixels.cpp src/blit.cpp src/bmp.cpp src/rect.cpp \
-       src/threads.cpp src/stdinc.cpp src/filesystem.cpp src/clipboard.cpp
+       src/threads.cpp src/stdinc.cpp src/filesystem.cpp src/clipboard.cpp \
+       src/messagebox.cpp src/keyname.cpp src/platform.cpp
 OBJS = $(SRCS:src/%.cpp=$(OBJDIR)/%.o)
 DEPS = $(OBJS:.o=.d)
+
+# Dependency files are written as a side effect of compiling rather than by
+# rules of their own, and Circle's Rules.mk is told to keep its hands off
+# (CHECK_DEPS) so its `-M -MG` .d rules are not defined for these objects.
+#
+# -MG lists a header make has no rule for as a prerequisite of the object,
+# which stops the build; GNU make 3.81, which macOS ships, stops with exit 2
+# and prints not one line saying why. A .d left over from an earlier build
+# naming a header that has since moved or been deleted stops it the same way,
+# and is why "delete the object directory" kept being the cure.
+#
+# -MD writes the dependency file alongside the object it belongs to, so the
+# two can never disagree about the flags that produced them, and -MP adds a
+# rule with no recipe for every header named, so a header that disappears
+# means a rebuild instead of a dead stop.
+CHECK_DEPS = 0
+DEPFLAGS   = -MD -MP
 
 # Which crossing count the archive on disk was last built with.
 #
@@ -288,17 +324,28 @@ INCLUDE := -I include $(CIRCLE_STDLIB_INCLUDES) $(INCLUDE)
 
 # Per-board compile into $(OBJDIR) (Circle's Rules.mk %.o rule builds in-place;
 # this more-specific rule wins for the board-scoped object paths). Same recipe
-# as Rules.mk, just a redirected output dir.
+# as Rules.mk, plus $(DEPFLAGS) and a redirected output dir.
 $(OBJDIR)/%.o: src/%.cpp | $(OBJDIR)
 	@echo "  CPP   $@"
-	@$(CPP) $(CPPFLAGS) -c -o $@ $<
-
-$(OBJDIR)/%.d: src/%.cpp | $(OBJDIR)
-	@$(CPP) $(CPPFLAGS) -M -MG -MT $(@:.d=.o) -MT $@ -MF $@ $<
+	@$(CPP) $(CPPFLAGS) $(DEPFLAGS) -c -o $@ $<
 
 $(OBJDIR):
 	@mkdir -p $(OBJDIR)
 
 -include $(DEPS)
+
+else
+
+# The board's world has not been configured, so not one of the rules above
+# exists — including the rule for this board's archive. The archive FILE is
+# still on disk from whenever it was last built, so make would find the
+# requested target up to date, print "Nothing to be done" and exit zero: a
+# build that never ran, reported as a success, with a stale archive left for
+# the next kernel to link against. Phony so the file cannot answer for it.
+.PHONY: libSDL2-$(BOARD).a
+libSDL2-$(BOARD).a:
+	@echo "$(CIRCLESTDLIBHOME)/Config.mk is missing: the $(BOARD) world is not configured."
+	@echo "Run: $(MAKE) world BOARD=$(BOARD)"
+	@exit 1
 
 endif

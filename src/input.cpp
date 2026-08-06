@@ -730,6 +730,16 @@ extern "C" SDL_Keymod SDL_GetModState(void)
     return (SDL_Keymod)s_modState;
 }
 
+// SDL lets an application state the modifier state rather than only read it.
+// An on-screen keyboard uses it to hold shift down while the physical
+// keyboard has nothing held, and the next SDL_GetModState must report what
+// was set. It stands until the next real modifier key changes it, which is
+// SDL's behaviour too.
+extern "C" void SDL_SetModState(SDL_Keymod modstate)
+{
+    s_modState = (Uint16)modstate;
+}
+
 extern "C" SDL_Keycode SDL_GetKeyFromScancode(SDL_Scancode scancode)
 {
     return KeycodeFor(scancode);

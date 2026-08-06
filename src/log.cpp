@@ -251,3 +251,187 @@ void SDL2Circle_LogDrain(void)
                                   "core %u: %u log lines dropped, ring full", c, lost);
     }
 }
+
+// ---------------------------------------------------------------------------
+// SDL's own logging API
+//
+// SDL_Log and its family are an application's diagnostic channel, and for
+// some applications the only one they have. Every one of them ends up in
+// SDL2Circle_Log, so a line an application writes takes exactly the same
+// route as a line the library writes: into the calling core's ring, drained
+// by core 0's servo. That matters more here than it looks — the serial
+// console is a device, a device belongs to core 0, and an application runs
+// on another core by construction. Writing it directly would be writing a
+// device from the wrong core.
+//
+// A category's priority is honoured before the line is formatted, so a
+// suppressed line costs no formatting.
+// ---------------------------------------------------------------------------
+
+namespace
+{
+
+// SDL's documented defaults: application at INFO, assert at WARN, test at
+// VERBOSE, everything else at ERROR. `s_priority` holds a category's
+// priority once it has been set, and 0 means "still the default".
+SDL_LogPriority s_priority[SDL_LOG_CATEGORY_CUSTOM] = {};
+SDL_LogPriority s_all_priority = (SDL_LogPriority)0;
+
+SDL_LogOutputFunction s_output = nullptr;
+void *s_output_userdata = nullptr;
+
+SDL_LogPriority DefaultPriority(int category)
+{
+    switch (category)
+    {
+    case SDL_LOG_CATEGORY_APPLICATION: return SDL_LOG_PRIORITY_INFO;
+    case SDL_LOG_CATEGORY_ASSERT:      return SDL_LOG_PRIORITY_WARN;
+    case SDL_LOG_CATEGORY_TEST:        return SDL_LOG_PRIORITY_VERBOSE;
+    default:                           return SDL_LOG_PRIORITY_ERROR;
+    }
+}
+
+SDL_LogPriority PriorityOf(int category)
+{
+    if (category >= 0 && category < SDL_LOG_CATEGORY_CUSTOM && s_priority[category])
+        return s_priority[category];
+    if (s_all_priority)
+        return s_all_priority;
+    return DefaultPriority(category);
+}
+
+// SDL's six priorities onto the four severities the serial log carries.
+unsigned ToSeverity(SDL_LogPriority priority)
+{
+    switch (priority)
+    {
+    case SDL_LOG_PRIORITY_CRITICAL:
+    case SDL_LOG_PRIORITY_ERROR:    return SDL2CIRCLE_LOG_ERROR;
+    case SDL_LOG_PRIORITY_WARN:     return SDL2CIRCLE_LOG_WARNING;
+    case SDL_LOG_PRIORITY_INFO:     return SDL2CIRCLE_LOG_NOTICE;
+    default:                        return SDL2CIRCLE_LOG_DEBUG;
+    }
+}
+
+// The name each category is logged under, so a line says where it came from
+// the way every other line on the log does.
+const char *CategoryName(int category)
+{
+    switch (category)
+    {
+    case SDL_LOG_CATEGORY_APPLICATION: return "app";
+    case SDL_LOG_CATEGORY_ERROR:       return "sdlerror";
+    case SDL_LOG_CATEGORY_ASSERT:      return "sdlassert";
+    case SDL_LOG_CATEGORY_SYSTEM:      return "sdlsystem";
+    case SDL_LOG_CATEGORY_AUDIO:       return "sdlaudio";
+    case SDL_LOG_CATEGORY_VIDEO:       return "sdlvideo";
+    case SDL_LOG_CATEGORY_RENDER:      return "sdlrender";
+    case SDL_LOG_CATEGORY_INPUT:       return "sdlinput";
+    case SDL_LOG_CATEGORY_TEST:        return "sdltest";
+    default:                           return "sdl";
+    }
+}
+
+} // namespace
+
+extern "C" void SDL_LogMessageV(int category, SDL_LogPriority priority,
+                                const char *fmt, va_list ap)
+{
+    if (!fmt || priority < PriorityOf(category))
+        return;
+
+    // An installed output function is given the finished text, as SDL does,
+    // and takes the place of the log entirely.
+    if (s_output)
+    {
+        char line[LOG_LINE_MAX + 1];
+        va_list copy;
+        va_copy(copy, ap);
+        int n = vsnprintf(line, sizeof(line), fmt, copy);
+        va_end(copy);
+        if (n < 0)
+            return;
+        line[(unsigned)n < LOG_LINE_MAX ? (unsigned)n : LOG_LINE_MAX] = '\0';
+        s_output(s_output_userdata, category, priority, line);
+        return;
+    }
+
+    SDL2Circle_LogV(CategoryName(category), ToSeverity(priority), fmt, ap);
+}
+
+extern "C" void SDL_LogMessage(int category, SDL_LogPriority priority,
+                               const char *fmt, ...)
+{
+    va_list ap;
+    va_start(ap, fmt);
+    SDL_LogMessageV(category, priority, fmt, ap);
+    va_end(ap);
+}
+
+// SDL_Log is the application category at INFO; the rest name their priority
+// and share it.
+#define SDL2CIRCLE_LOG_AT(name, category, priority)                       \
+    extern "C" void name(int cat, const char *fmt, ...)                   \
+    {                                                                     \
+        va_list ap;                                                       \
+        va_start(ap, fmt);                                                \
+        SDL_LogMessageV(cat, priority, fmt, ap);                          \
+        va_end(ap);                                                       \
+        (void)(category);                                                 \
+    }
+
+SDL2CIRCLE_LOG_AT(SDL_LogVerbose,  0, SDL_LOG_PRIORITY_VERBOSE)
+SDL2CIRCLE_LOG_AT(SDL_LogDebug,    0, SDL_LOG_PRIORITY_DEBUG)
+SDL2CIRCLE_LOG_AT(SDL_LogInfo,     0, SDL_LOG_PRIORITY_INFO)
+SDL2CIRCLE_LOG_AT(SDL_LogWarn,     0, SDL_LOG_PRIORITY_WARN)
+SDL2CIRCLE_LOG_AT(SDL_LogError,    0, SDL_LOG_PRIORITY_ERROR)
+SDL2CIRCLE_LOG_AT(SDL_LogCritical, 0, SDL_LOG_PRIORITY_CRITICAL)
+
+#undef SDL2CIRCLE_LOG_AT
+
+extern "C" void SDL_Log(const char *fmt, ...)
+{
+    va_list ap;
+    va_start(ap, fmt);
+    SDL_LogMessageV(SDL_LOG_CATEGORY_APPLICATION, SDL_LOG_PRIORITY_INFO, fmt, ap);
+    va_end(ap);
+}
+
+extern "C" void SDL_LogSetPriority(int category, SDL_LogPriority priority)
+{
+    if (category >= 0 && category < SDL_LOG_CATEGORY_CUSTOM)
+        s_priority[category] = priority;
+}
+
+extern "C" SDL_LogPriority SDL_LogGetPriority(int category)
+{
+    return PriorityOf(category);
+}
+
+extern "C" void SDL_LogSetAllPriority(SDL_LogPriority priority)
+{
+    s_all_priority = priority;
+    for (int i = 0; i < SDL_LOG_CATEGORY_CUSTOM; i++)
+        s_priority[i] = priority;
+}
+
+extern "C" void SDL_LogResetPriorities(void)
+{
+    s_all_priority = (SDL_LogPriority)0;
+    for (int i = 0; i < SDL_LOG_CATEGORY_CUSTOM; i++)
+        s_priority[i] = (SDL_LogPriority)0;
+}
+
+extern "C" void SDL_LogSetOutputFunction(SDL_LogOutputFunction callback,
+                                         void *userdata)
+{
+    s_output = callback;
+    s_output_userdata = userdata;
+}
+
+extern "C" void SDL_LogGetOutputFunction(SDL_LogOutputFunction *callback,
+                                         void **userdata)
+{
+    if (callback) *callback = s_output;
+    if (userdata) *userdata = s_output_userdata;
+}
