@@ -31,3 +31,24 @@ extern "C" char *SDL_GetErrorMsg(char *errstr, int maxlen)
     snprintf(errstr, maxlen, "%s", s_error);
     return errstr;
 }
+
+// SDL's internal error reporter, and the one every SDL_OutOfMemory() and
+// SDL_Unsupported() in the headers expands into. Those are macros, so a call
+// site can be anywhere — including inside another library's headers — and
+// this has to exist for the archive to be self-contained.
+//
+// It unconditionally returns -1, which is what lets a caller write
+// `return SDL_OutOfMemory();` from a function returning int.
+extern "C" int SDL_Error(SDL_errorcode code)
+{
+    switch (code)
+    {
+    case SDL_ENOMEM:      SDL_SetError("Out of memory"); break;
+    case SDL_EFREAD:      SDL_SetError("Error reading from datastream"); break;
+    case SDL_EFWRITE:     SDL_SetError("Error writing to datastream"); break;
+    case SDL_EFSEEK:      SDL_SetError("Error seeking in datastream"); break;
+    case SDL_UNSUPPORTED: SDL_SetError("That operation is not supported"); break;
+    default:              SDL_SetError("Unknown SDL error"); break;
+    }
+    return -1;
+}

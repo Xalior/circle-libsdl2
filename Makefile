@@ -306,7 +306,7 @@ SRCS = src/init.cpp src/error.cpp src/timer.cpp src/hints.cpp src/events.cpp \
        src/split.cpp src/log.cpp src/coreruntime.cpp src/hardware.cpp \
        src/mouse.cpp src/pixels.cpp src/blit.cpp src/bmp.cpp src/rect.cpp \
        src/threads.cpp src/stdinc.cpp src/filesystem.cpp src/clipboard.cpp \
-       src/messagebox.cpp src/keyname.cpp src/platform.cpp src/image.cpp
+       src/messagebox.cpp src/keyname.cpp src/platform.cpp src/image.cpp src/audiocvt.cpp src/mixer.cpp
 OBJS = $(SRCS:src/%.cpp=$(OBJDIR)/%.o)
 DEPS = $(OBJS:.o=.d)
 
