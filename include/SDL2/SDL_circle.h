@@ -136,6 +136,44 @@ void SDL2Circle_SetPerfInterval(unsigned nSeconds);
 // never set the virtual display, and this call never sets the physical one.
 int SDL2Circle_DeclareVirtualDevice(unsigned depth, int width, int height);
 
+// ---- the application's base path ---------------------------------------------
+
+// Declare the directory the application was installed in — the one
+// SDL_GetBasePath answers with, and the one SDL_GetPrefPath composes its own
+// answer below.
+//
+// On a desktop SDL works this out by asking the operating system where the
+// running program came from. There is nothing to ask here: the payload was
+// chain-loaded or started from a card, and where its files were put is a
+// decision the consumer made when it built the card. So the consumer states
+// it, exactly as it states the virtual display.
+//
+// THE LIBRARY LEARNS NOTHING ELSE FROM THIS. It does not read the path, does
+// not check that it exists, and holds no opinion about what should be in it.
+// It is repeated back by SDL_GetBasePath and used as the prefix for
+// SDL_GetPrefPath, and that is all.
+//
+// The path must be absolute (it must begin with `/`). A trailing separator is
+// added if it is missing, because SDL's contract is that both path functions
+// answer with one.
+//
+// The declaration is FIXED, on the same terms as the virtual device above: it
+// is accepted once, before anything has asked the library for a path, and a
+// second declaration — or one made after SDL_GetBasePath or SDL_GetPrefPath
+// has already answered — is refused. So call it before SDL_Init.
+//
+// UNDECLARED IS NOT AN ERROR, and this differs deliberately from the virtual
+// device. A board has exactly one filesystem and `/` is a real, working
+// directory in it, so that is what an undeclared consumer gets, with one
+// warning on the log the first time. SDL never returns a null path on a
+// desktop and applications are written accordingly — a great many of them
+// dereference the answer without looking — so the failure mode of refusing
+// would be a crash inside the application rather than a message from us.
+//
+// Returns 0 when the declaration is accepted, and -1 when it is refused, with
+// SDL_GetError describing why. A refused declaration changes nothing.
+int SDL2Circle_DeclareBasePath(const char *path);
+
 // ---- board hardware: CPU clock and case fan ---------------------------------
 //
 // Circle's CCPUThrottle sets the CPU clock rate and, where cmdline.txt names

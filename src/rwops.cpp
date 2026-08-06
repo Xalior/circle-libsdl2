@@ -322,3 +322,113 @@ extern "C" SDL_RWops *SDL_RWFromFile(const char *file, const char *mode)
     rw->hidden.unknown.data2 = nullptr;
     return rw;
 }
+
+// ---------------------------------------------------------------------------
+// Sized, endian-aware reads and writes
+//
+// SDL2 offers these so that a file format's byte order can be stated at the
+// call site instead of being fought with per platform. On an AArch64 Pi the
+// machine is little-endian, so the LE forms are plain reads and the BE forms
+// swap; the code below says which is which explicitly rather than relying on
+// that, because the statement is the point.
+//
+// A short read returns 0, which is SDL2's documented behaviour and the
+// reason a loader must check its lengths rather than its values.
+// ---------------------------------------------------------------------------
+
+extern "C" Uint8 SDL_ReadU8(SDL_RWops *src)
+{
+    Uint8 value = 0;
+    if (SDL_RWread(src, &value, sizeof(value), 1) != 1)
+        return 0;
+    return value;
+}
+
+extern "C" Uint16 SDL_ReadLE16(SDL_RWops *src)
+{
+    Uint16 value = 0;
+    if (SDL_RWread(src, &value, sizeof(value), 1) != 1)
+        return 0;
+    return SDL_SwapLE16(value);
+}
+
+extern "C" Uint16 SDL_ReadBE16(SDL_RWops *src)
+{
+    Uint16 value = 0;
+    if (SDL_RWread(src, &value, sizeof(value), 1) != 1)
+        return 0;
+    return SDL_SwapBE16(value);
+}
+
+extern "C" Uint32 SDL_ReadLE32(SDL_RWops *src)
+{
+    Uint32 value = 0;
+    if (SDL_RWread(src, &value, sizeof(value), 1) != 1)
+        return 0;
+    return SDL_SwapLE32(value);
+}
+
+extern "C" Uint32 SDL_ReadBE32(SDL_RWops *src)
+{
+    Uint32 value = 0;
+    if (SDL_RWread(src, &value, sizeof(value), 1) != 1)
+        return 0;
+    return SDL_SwapBE32(value);
+}
+
+extern "C" Uint64 SDL_ReadLE64(SDL_RWops *src)
+{
+    Uint64 value = 0;
+    if (SDL_RWread(src, &value, sizeof(value), 1) != 1)
+        return 0;
+    return SDL_SwapLE64(value);
+}
+
+extern "C" Uint64 SDL_ReadBE64(SDL_RWops *src)
+{
+    Uint64 value = 0;
+    if (SDL_RWread(src, &value, sizeof(value), 1) != 1)
+        return 0;
+    return SDL_SwapBE64(value);
+}
+
+extern "C" size_t SDL_WriteU8(SDL_RWops *dst, Uint8 value)
+{
+    return SDL_RWwrite(dst, &value, sizeof(value), 1);
+}
+
+extern "C" size_t SDL_WriteLE16(SDL_RWops *dst, Uint16 value)
+{
+    const Uint16 swapped = SDL_SwapLE16(value);
+    return SDL_RWwrite(dst, &swapped, sizeof(swapped), 1);
+}
+
+extern "C" size_t SDL_WriteBE16(SDL_RWops *dst, Uint16 value)
+{
+    const Uint16 swapped = SDL_SwapBE16(value);
+    return SDL_RWwrite(dst, &swapped, sizeof(swapped), 1);
+}
+
+extern "C" size_t SDL_WriteLE32(SDL_RWops *dst, Uint32 value)
+{
+    const Uint32 swapped = SDL_SwapLE32(value);
+    return SDL_RWwrite(dst, &swapped, sizeof(swapped), 1);
+}
+
+extern "C" size_t SDL_WriteBE32(SDL_RWops *dst, Uint32 value)
+{
+    const Uint32 swapped = SDL_SwapBE32(value);
+    return SDL_RWwrite(dst, &swapped, sizeof(swapped), 1);
+}
+
+extern "C" size_t SDL_WriteLE64(SDL_RWops *dst, Uint64 value)
+{
+    const Uint64 swapped = SDL_SwapLE64(value);
+    return SDL_RWwrite(dst, &swapped, sizeof(swapped), 1);
+}
+
+extern "C" size_t SDL_WriteBE64(SDL_RWops *dst, Uint64 value)
+{
+    const Uint64 swapped = SDL_SwapBE64(value);
+    return SDL_RWwrite(dst, &swapped, sizeof(swapped), 1);
+}

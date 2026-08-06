@@ -8,6 +8,7 @@
 #include <SDL2/SDL.h>
 #include "sdl2circle.h"
 #include "shim_internal.h"
+#include "pixels.h"
 #include <circle/bcmframebuffer.h>
 #include <circle/bcmpropertytags.h>
 #include <circle/dmachannel.h>
@@ -33,6 +34,27 @@ struct SDL_Renderer
     unsigned back;     // half we're drawing into: 0 = top, 1 = bottom
     bool vsync;        // present blocks for vertical sync
     Uint8 r, g, b, a;  // draw color
+    SDL_BlendMode draw_blend;
+
+    // The coordinate system the application draws in, and how it lands on
+    // the window. SDL2 lets an application say "I draw 320x200" and have
+    // every rectangle it hands over scaled and centred for it; a game
+    // written for a fixed retro resolution relies on that rather than doing
+    // the arithmetic itself.
+    //
+    // logical_w/h is 0 when no logical size is set, and the window's own
+    // size is then the coordinate system — the identity case, which costs
+    // one comparison.
+    int   logical_w, logical_h;
+    bool  integer_scale;
+    float scale_x, scale_y;      // SDL_RenderSetScale, applied on top
+
+    // The sub-rectangle of the window drawing is confined to, and the clip
+    // inside it. Both are in the application's coordinates.
+    SDL_Rect viewport;
+    bool     viewport_set;
+    SDL_Rect clip;
+    bool     clip_enabled;
 
     // Draw calls become present commands. Single-core they execute
     // immediately (the degenerate case of the same design); under the core
@@ -76,16 +98,42 @@ static u8 *s_canvas_surface = nullptr;
 static unsigned s_canvas_surface_idx = 0;
 static unsigned s_canvas_surface_pitch = 0;
 
+// A texture is STORED as ARGB8888 whatever format it was asked for, because
+// the presentation path reads a texture's pixels directly — a frame that is
+// one opaque copy crosses to the presentation core as that texture, in
+// place, with nothing painted. Storing a texture in the application's format
+// would mean converting during presentation, on the core that must not be
+// delayed, every frame.
+//
+// So the format is honoured at the EDGE instead. `format` is what the
+// application asked for and what SDL_QueryTexture answers; pixels handed in
+// through SDL_UpdateTexture are converted on the way in, and
+// SDL_LockTexture hands back a staging buffer in the application's format
+// which SDL_UnlockTexture converts. An application therefore writes the
+// pixels it believes it is writing, and the cost falls on its own core.
+//
+// When the application's format IS ARGB8888 — still the common case — there
+// is no staging buffer and no conversion, and the path is exactly what it
+// was.
 struct SDL_Texture
 {
     int w, h;
-    Uint32 format;
+    Uint32 format;     // the format the APPLICATION asked for
+    int access;        // SDL_TEXTUREACCESS_*, as asked for
     u8 *pixels[2];     // [1] exists only under the core split: the app
                        // renders into one buffer while the presentation
                        // worker still reads the frame in flight
     u8 widx;           // buffer the app writes next
     u8 posted;         // buffer referenced by the last recorded COPY (0xFF none)
-    int pitch;
+    int pitch;         // stored pitch, always w * 4
+
+    // Only for a texture whose format is not the stored one.
+    int  app_bpp;      // bytes per pixel in the application's format
+    u8  *staging;      // lock buffer in the application's format
+    int  staging_pitch;
+    SDL_Rect locked_rect;
+    bool locked;
+
     SDL_BlendMode blend;
     Uint8 alphamod;
 };
@@ -1070,31 +1118,9 @@ extern "C" int SDL_GetNumVideoDrivers(void) { return 1; }
 extern "C" const char *SDL_GetVideoDriver(int) { return "circle"; }
 extern "C" const char *SDL_GetCurrentVideoDriver(void) { return "circle"; }
 
-extern "C" SDL_bool SDL_PixelFormatEnumToMasks(Uint32 format, int *bpp,
-                                               Uint32 *Rmask, Uint32 *Gmask,
-                                               Uint32 *Bmask, Uint32 *Amask)
-{
-    switch (format)
-    {
-    case SDL_PIXELFORMAT_ARGB8888:
-        *bpp = 32;
-        *Rmask = 0x00FF0000;
-        *Gmask = 0x0000FF00;
-        *Bmask = 0x000000FF;
-        *Amask = 0xFF000000;
-        return SDL_TRUE;
-    case SDL_PIXELFORMAT_RGB888:   // XRGB, no alpha
-        *bpp = 32;
-        *Rmask = 0x00FF0000;
-        *Gmask = 0x0000FF00;
-        *Bmask = 0x000000FF;
-        *Amask = 0;
-        return SDL_TRUE;
-    default:
-        SDL_SetError("unsupported pixel format");
-        return SDL_FALSE;
-    }
-}
+// SDL_PixelFormatEnumToMasks and the rest of the format machinery live in
+// pixels.cpp, which is where every format this library understands is
+// described once.
 
 namespace
 {
@@ -1387,8 +1413,101 @@ extern "C" SDL_Renderer *SDL_CreateRenderer(SDL_Window *win, int, Uint32 flags)
     ren->border_color = 0;
     ren->frame_x = ren->frame_y = ren->frame_w = ren->frame_h = -1;
     ren->border_repaint = 0;
+    ren->draw_blend = SDL_BLENDMODE_NONE;
+    ren->logical_w = 0;
+    ren->logical_h = 0;
+    ren->integer_scale = false;
+    ren->scale_x = 1.0f;
+    ren->scale_y = 1.0f;
+    ren->viewport = { 0, 0, win->w, win->h };
+    ren->viewport_set = false;
+    ren->clip = { 0, 0, 0, 0 };
+    ren->clip_enabled = false;
     return ren;
 }
+
+// ---------------------------------------------------------------------------
+// The application's coordinates, and where they land on the window
+//
+// Three things sit between what an application draws and what the window
+// receives, in the order SDL2 applies them: the render scale, the logical
+// size (which scales and centres), and the viewport (which offsets). One
+// function does all three, and every entry point that takes a destination
+// rectangle goes through it, so an application cannot find one call honouring
+// its logical size and another ignoring it.
+// ---------------------------------------------------------------------------
+
+namespace
+{
+struct LogicalMap
+{
+    float sx, sy;     // application units -> window pixels
+    int   ox, oy;     // where the application's origin sits in the window
+};
+
+LogicalMap logical_map(const SDL_Renderer *ren)
+{
+    LogicalMap m = { ren->scale_x, ren->scale_y, 0, 0 };
+
+    if (ren->logical_w > 0 && ren->logical_h > 0)
+    {
+        const int ow = ren->window->w;
+        const int oh = ren->window->h;
+        float sx = (float)ow / (float)ren->logical_w;
+        float sy = (float)oh / (float)ren->logical_h;
+
+        if (ren->integer_scale)
+        {
+            // Whole pixels only: what a pixel-art game asks for so that
+            // every source pixel is the same size on screen. Below 1:1
+            // there is no whole factor to use, so the fractional one
+            // stands rather than the picture vanishing.
+            float s = (sx < sy) ? sx : sy;
+            if (s >= 1.0f)
+                s = (float)(int)s;
+            sx = sy = s;
+        }
+        else
+        {
+            // Letterbox: one factor for both axes so the aspect is kept.
+            const float s = (sx < sy) ? sx : sy;
+            sx = sy = s;
+        }
+
+        m.sx = sx * ren->scale_x;
+        m.sy = sy * ren->scale_y;
+        m.ox = (int)((ow - ren->logical_w * m.sx) / 2.0f);
+        m.oy = (int)((oh - ren->logical_h * m.sy) / 2.0f);
+    }
+
+    if (ren->viewport_set)
+    {
+        m.ox += ren->viewport.x;
+        m.oy += ren->viewport.y;
+    }
+    return m;
+}
+
+// Map one destination rectangle from the application's coordinates into the
+// window's. Returns false when the result has no area, which is a no-op and
+// not an error.
+bool map_dst(const SDL_Renderer *ren, int &x, int &y, int &w, int &h)
+{
+    const LogicalMap m = logical_map(ren);
+    if (m.sx == 1.0f && m.sy == 1.0f && m.ox == 0 && m.oy == 0)
+        return (w > 0 && h > 0);
+
+    const int x1 = m.ox + (int)(x * m.sx);
+    const int y1 = m.oy + (int)(y * m.sy);
+    const int x2 = m.ox + (int)((x + w) * m.sx);
+    const int y2 = m.oy + (int)((y + h) * m.sy);
+    x = x1;
+    y = y1;
+    w = x2 - x1;
+    h = y2 - y1;
+    return (w > 0 && h > 0);
+}
+} // namespace
 
 extern "C" void SDL_DestroyRenderer(SDL_Renderer *ren)
 {
@@ -1429,23 +1548,72 @@ extern "C" int SDL_RenderClear(SDL_Renderer *ren)
 extern "C" SDL_Texture *SDL_CreateTexture(SDL_Renderer *, Uint32 format,
                                           int access, int w, int h)
 {
-    if (format != SDL_PIXELFORMAT_ARGB8888 || access != SDL_TEXTUREACCESS_STREAMING)
+    if (w <= 0 || h <= 0)
     {
-        SDL_SetError("only streaming ARGB8888 textures are implemented");
+        SDL_SetError("texture dimensions must be positive");
         return nullptr;
     }
+    if (access == SDL_TEXTUREACCESS_TARGET)
+    {
+        // Render-to-texture would need the whole draw path to be able to
+        // aim somewhere other than the frame, which it cannot. Saying so is
+        // the point: an application that checks
+        // SDL_RenderTargetSupported gets FALSE and takes its other path.
+        SDL_SetError("render targets are not supported");
+        return nullptr;
+    }
+    const int app_bpp = SDL2Circle_BytesPerPixel(format);
+    if (app_bpp == 0)
+    {
+        SDL_SetError("texture pixel format 0x%08x is not supported",
+                     (unsigned)format);
+        return nullptr;
+    }
+    if (format == SDL_PIXELFORMAT_INDEX8)
+    {
+        // SDL2 gives a texture no palette — SDL_UpdateTexture takes pixels
+        // and nothing else — so an indexed texture has no way to say what
+        // its indices mean. A paletted game wants an indexed SURFACE, which
+        // this library does provide, converted on the way to a texture.
+        SDL_SetError("indexed textures have no palette in SDL2; use an "
+                     "indexed surface and convert it");
+        return nullptr;
+    }
+
     SDL_Texture *tex = new SDL_Texture;
     tex->w = w;
     tex->h = h;
     tex->format = format;
+    tex->access = access;
     tex->pitch = w * 4;
     tex->pixels[0] = (u8 *)malloc((size_t)tex->pitch * h);
     tex->pixels[1] = nullptr;   // allocated on first split-mode reuse
     tex->widx = 0;
     tex->posted = 0xFF;
+    tex->app_bpp = app_bpp;
+    tex->staging = nullptr;
+    tex->staging_pitch = 0;
+    tex->locked_rect = { 0, 0, 0, 0 };
+    tex->locked = false;
     tex->blend = SDL_BLENDMODE_NONE;
     tex->alphamod = 255;
+
+    if (tex->pixels[0] == nullptr)
+    {
+        delete tex;
+        SDL_SetError("out of memory allocating texture");
+        return nullptr;
+    }
+    memset(tex->pixels[0], 0, (size_t)tex->pitch * h);
     return tex;
+}
+
+// Whether this texture's pixels are stored in the format the application
+// believes it is writing. When they are, every path below is a straight
+// copy; when they are not, a conversion sits in the way.
+static inline bool texture_is_native(const SDL_Texture *tex)
+{
+    return tex->format == SDL_PIXELFORMAT_ARGB8888;
 }
 
 // Core split: a texture referenced by the frame in flight must not be
@@ -1472,8 +1640,10 @@ static u8 *texture_write_buffer(SDL_Texture *tex, bool preserve)
 extern "C" int SDL_QueryTexture(SDL_Texture *tex, Uint32 *format, int *access,
                                 int *w, int *h)
 {
+    if (tex == nullptr)
+        return SDL_InvalidParamError("texture");
     if (format) *format = tex->format;
-    if (access) *access = SDL_TEXTUREACCESS_STREAMING;
+    if (access) *access = tex->access;
     if (w) *w = tex->w;
     if (h) *h = tex->h;
     return 0;
@@ -1483,21 +1653,47 @@ extern "C" int SDL_UpdateTexture(SDL_Texture *tex, const SDL_Rect *rect,
                                  const void *pixels, int pitch)
 {
     SDL2CirclePerfScope perf(SDL2CIRCLE_PERF_RENDER);
+    if (tex == nullptr)
+        return SDL_InvalidParamError("texture");
+    if (pixels == nullptr)
+        return SDL_InvalidParamError("pixels");
+
     int x = rect ? rect->x : 0;
     int y = rect ? rect->y : 0;
     int w = rect ? rect->w : tex->w;
     int h = rect ? rect->h : tex->h;
+    if (x < 0 || y < 0 || w < 0 || h < 0 || x + w > tex->w || y + h > tex->h)
+        return SDL_SetError("update rectangle lies outside the texture");
+    if (w == 0 || h == 0)
+        return 0;
+
     bool partial = (x != 0) || (y != 0) || (w != tex->w) || (h != tex->h);
-    const u8 *src = (const u8 *)pixels;
     u8 *dst = texture_write_buffer(tex, partial)
               + (size_t)y * tex->pitch + (size_t)x * 4;
-    for (int row = 0; row < h; row++)
+
+    if (texture_is_native(tex))
     {
-        memcpy(dst, src, (size_t)w * 4);
-        src += pitch;
-        dst += tex->pitch;
+        const u8 *src = (const u8 *)pixels;
+        for (int row = 0; row < h; row++)
+        {
+            memcpy(dst, src, (size_t)w * 4);
+            src += pitch;
+            dst += tex->pitch;
+        }
+        return 0;
     }
-    return 0;
+
+    return SDL_ConvertPixels(w, h, tex->format, pixels, pitch,
+                             SDL_PIXELFORMAT_ARGB8888, dst, tex->pitch);
+}
+
+extern "C" int SDL_UpdateYUVTexture(SDL_Texture *, const SDL_Rect *,
+                                    const Uint8 *, int, const Uint8 *, int,
+                                    const Uint8 *, int)
+{
+    // No YUV texture can be created here (SDL_CreateTexture refuses the
+    // formats), so there is never a texture for this call to update.
+    return SDL_SetError("YUV textures are not supported");
 }
 
 extern "C" int SDL_SetTextureBlendMode(SDL_Texture *tex, SDL_BlendMode blend)
@@ -1532,22 +1728,95 @@ extern "C" void SDL_DestroyTexture(SDL_Texture *tex)
     SDL2Circle_PresentQuiesce();
     free(tex->pixels[0]);
     free(tex->pixels[1]);
+    free(tex->staging);
     delete tex;
 }
 
 extern "C" int SDL_LockTexture(SDL_Texture *tex, const SDL_Rect *rect,
                                void **pixels, int *pitch)
 {
+    if (tex == nullptr)
+        return SDL_InvalidParamError("texture");
+    if (pixels == nullptr || pitch == nullptr)
+        return SDL_InvalidParamError("pixels");
+    if (tex->access != SDL_TEXTUREACCESS_STREAMING)
+        return SDL_SetError("only a streaming texture can be locked");
+    if (tex->locked)
+        return SDL_SetError("texture is already locked");
+
+    const SDL_Rect area = rect ? *rect : SDL_Rect{ 0, 0, tex->w, tex->h };
+    if (area.x < 0 || area.y < 0 || area.w < 0 || area.h < 0 ||
+        area.x + area.w > tex->w || area.y + area.h > tex->h)
+        return SDL_SetError("lock rectangle lies outside the texture");
+
     u8 *buf = texture_write_buffer(tex, rect != nullptr);
-    if (rect)
-        *pixels = buf + (size_t)rect->y * tex->pitch + (size_t)rect->x * 4;
-    else
-        *pixels = buf;
-    *pitch = tex->pitch;
+
+    if (texture_is_native(tex))
+    {
+        *pixels = buf + (size_t)area.y * tex->pitch + (size_t)area.x * 4;
+        *pitch  = tex->pitch;
+        tex->locked_rect = area;
+        tex->locked = true;
+        return 0;
+    }
+
+    // The application must see its OWN format under the lock, so it gets a
+    // staging buffer the size of the whole texture — kept between locks,
+    // because a streaming texture is locked every frame and reallocating it
+    // each time is the cost this path is trying to avoid.
+    const int need_pitch = tex->w * tex->app_bpp;
+    if (tex->staging == nullptr)
+    {
+        tex->staging = (u8 *)malloc((size_t)need_pitch * tex->h);
+        if (tex->staging == nullptr)
+            return SDL_SetError("out of memory allocating texture lock buffer");
+        tex->staging_pitch = need_pitch;
+        memset(tex->staging, 0, (size_t)need_pitch * tex->h);
+    }
+
+    *pixels = tex->staging + (size_t)area.y * tex->staging_pitch
+            + (size_t)area.x * tex->app_bpp;
+    *pitch  = tex->staging_pitch;
+    tex->locked_rect = area;
+    tex->locked = true;
     return 0;
 }
 
-extern "C" void SDL_UnlockTexture(SDL_Texture *) {}
+extern "C" int SDL_LockTextureToSurface(SDL_Texture *tex, const SDL_Rect *rect,
+                                        SDL_Surface **surface)
+{
+    if (surface == nullptr)
+        return SDL_InvalidParamError("surface");
+    void *pixels = nullptr;
+    int   pitch  = 0;
+    if (SDL_LockTexture(tex, rect, &pixels, &pitch) < 0)
+        return -1;
+    const SDL_Rect area = rect ? *rect : SDL_Rect{ 0, 0, tex->w, tex->h };
+    *surface = SDL_CreateRGBSurfaceWithFormatFrom(pixels, area.w, area.h, 0,
+                                                  pitch, tex->format);
+    return (*surface != nullptr) ? 0 : -1;
+}
+
+extern "C" void SDL_UnlockTexture(SDL_Texture *tex)
+{
+    if (tex == nullptr || !tex->locked)
+        return;
+    tex->locked = false;
+
+    if (texture_is_native(tex))
+        return;   // the application wrote straight into the stored pixels
+
+    const SDL_Rect &area = tex->locked_rect;
+    if (area.w <= 0 || area.h <= 0)
+        return;
+
+    u8 *dst = tex->pixels[tex->widx]
+            + (size_t)area.y * tex->pitch + (size_t)area.x * 4;
+    const u8 *src = tex->staging + (size_t)area.y * tex->staging_pitch
+                  + (size_t)area.x * tex->app_bpp;
+    SDL_ConvertPixels(area.w, area.h, tex->format, src, tex->staging_pitch,
+                      SDL_PIXELFORMAT_ARGB8888, dst, tex->pitch);
+}
 
 // Clip one axis of a scaled blit: trim the destination span to [0, limit)
 // and take the source span with it, in proportion, so the scale factor
@@ -1589,6 +1858,16 @@ extern "C" int SDL_RenderCopy(SDL_Renderer *ren, SDL_Texture *tex,
     int dw = dstrect ? dstrect->w : ren->window->w;
     int dh = dstrect ? dstrect->h : ren->window->h;
     if (sw <= 0 || sh <= 0 || dw <= 0 || dh <= 0)
+        return 0;
+
+    // An absent destination means the whole render target, which under a
+    // logical size is the logical rectangle rather than the window.
+    if (dstrect == nullptr && ren->logical_w > 0 && ren->logical_h > 0)
+    {
+        dw = ren->logical_w;
+        dh = ren->logical_h;
+    }
+    if (!map_dst(ren, dx, dy, dw, dh))
         return 0;
 
     // Keep the source inside the texture (reading past a texture allocation
