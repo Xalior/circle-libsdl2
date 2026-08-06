@@ -772,22 +772,29 @@ SDL2Circle_Log("mygame", SDL2CIRCLE_LOG_NOTICE, "level %d loaded", n);
   the scarce console on describing its own scarcity. Waiting would put the
   calling core to sleep for the sake of a diagnostic, and overwriting would
   silently corrupt the record.
-- **The console is slower than any core, and dropping is the steady state for
-  an application that talks a lot.** At 115200 baud one ordinary line costs
-  around 7 ms, so the console carries on the order of 140 lines a second
-  whatever is asked of it. A game logging per frame is nowhere near that; a
-  game logging per file while it scans its data can pass it easily. If the
-  lines matter, raise the baud rate or log less — the ring cannot make the
-  wire wider.
-- **The servo's drain is bounded, and this is load-bearing.** It prints for a
-  couple of milliseconds and returns, leaving the rest of the servo loop and
-  the scheduler to run, and resumes at the next core so no ring is starved by
-  a noisier one. An unbounded drain and a producer that never waits are
-  between them enough to stop the board: the ring stays permanently
-  non-empty, the drain never reaches its end, and core 0 stops pumping USB,
-  feeding audio and yielding. It presents as a board that logs healthily for
-  a few seconds and then goes silent for ever, with USB half-enumerated and
-  no picture.
+- **The console is far slower than any core, and dropping is the steady state
+  for an application that talks a lot.** Measure the rate before relying on
+  it: it is much lower than the baud rate alone suggests, and low enough that
+  a game logging once per data file while it scans its content can outrun it
+  without appearing chatty. If the lines matter, raise the baud rate or log
+  less — the ring cannot make the wire wider.
+- **The servo's drain is bounded, and that bound is load-bearing.** It prints
+  for a couple of milliseconds and returns, leaving the rest of the servo
+  loop and the scheduler to run, and resumes at the next core so no ring is
+  starved by a noisier one.
+
+  Both halves of that matter. A drain whose only exit is an empty ring, in
+  front of a producer that never waits, does not terminate at all once an
+  application out-produces the console: the ring stays permanently
+  non-empty, `head` never meets `tail`, and core 0 stops pumping USB,
+  feeding audio and yielding. And a drain that resumed on the core that used
+  up the budget would hand it straight back to the ring that just took it,
+  leaving every core above it permanently silent — which on the wire is
+  indistinguishable from a core that has stopped.
+
+  A budget in TIME rather than in lines is what makes this hold: the cost of
+  a line depends on the console, and a line count that is safe on one is not
+  on another.
 - **`from` is stored as a pointer**, so it must outlive the call — a string
   literal, never a buffer on the stack. It is printed later, on another core.
 - **Byte output has its own entry point.** `SDL2Circle_LogBytes` takes output

@@ -124,6 +124,80 @@ static CallBox g_call;
 static SpinLock g_call_lock;
 static std::atomic<u64> g_calls_served{0};
 
+// Calls the servo has ENTERED, bumped before the handler runs. Against
+// g_calls_served it answers the one question a frozen board cannot otherwise
+// be asked: started == served means core 0 finished everything it was given
+// and stopped somewhere else; started == served + 1 means core 0 is still
+// INSIDE a marshalled call and never came out of it. Those are different
+// faults with different owners, and from outside they look identical.
+static std::atomic<u64> g_calls_started{0};
+
+// Servo passes. Counted separately from the work the servo does, because
+// "core 0 is alive and idle" and "core 0 has stopped" are otherwise the same
+// picture: every other counter here only moves when there is something to
+// do, so a quiet system and a dead one read identically. This one moves on
+// every lap regardless, and it is the difference between the two.
+static std::atomic<u64> g_servo_beats{0};
+
+// ---------------------------------------------------------------------------
+// Reporting a cross-core wait that has gone on too long
+//
+// Every wait below is unbounded by design: the far side owns something this
+// side needs, and giving up would not make the answer arrive, it would carry
+// on without it. So none of them is abandoned here.
+//
+// What they stop doing is waiting SILENTLY. A stall between two cores with no
+// output looks exactly like a board that has died, and the two are
+// investigated completely differently. One line naming what is being waited
+// for, and the counters that say whether the other core is still running,
+// turns a silent freeze into a diagnosis.
+//
+// The line goes through the ordinary log ring, so it costs the waiting core
+// nothing and breaks no rule about who owns the console. If core 0 is alive
+// it appears at once. If core 0 is the side that is stuck, it appears the
+// moment core 0 recovers — and if it never recovers, the wait was never the
+// thing that could have reported it anyway.
+// ---------------------------------------------------------------------------
+
+static const u64 STALL_REPORT_US = 5000000;   // 5 s
+
+namespace
+{
+class StallWatch
+{
+public:
+    explicit StallWatch(const char *what)
+    : m_what(what), m_start(CTimer::GetClockTicks64()), m_reported(false) {}
+
+    void tick(void)
+    {
+        if (m_reported)
+            return;
+        if (CTimer::GetClockTicks64() - m_start < STALL_REPORT_US)
+            return;
+        m_reported = true;
+        SDL2Circle_Log("split", SDL2CIRCLE_LOG_ERROR,
+                       "core %u has waited %us for %s "
+                       "(servo laps %llu, calls started/served %llu/%llu) — %s",
+                       SDL2Circle_ThisCore(),
+                       (unsigned)(STALL_REPORT_US / 1000000), m_what,
+                       (unsigned long long)g_servo_beats.load(std::memory_order_relaxed),
+                       (unsigned long long)g_calls_started.load(std::memory_order_relaxed),
+                       (unsigned long long)g_calls_served.load(std::memory_order_relaxed),
+                       g_calls_started.load(std::memory_order_relaxed)
+                           != g_calls_served.load(std::memory_order_relaxed)
+                           ? "core 0 is INSIDE a marshalled call and has not "
+                             "returned from it"
+                           : "core 0 is not inside a marshalled call");
+    }
+
+private:
+    const char *m_what;
+    u64 m_start;
+    bool m_reported;
+};
+}   // namespace
+
 void SDL2Circle_CallOn0(void (*fn)(void *), void *arg)
 {
     if (!g_split.load(std::memory_order_acquire) || SDL2Circle_ThisCore() == 0)
@@ -138,8 +212,14 @@ void SDL2Circle_CallOn0(void (*fn)(void *), void *arg)
     u64 seq = g_call.req.load(std::memory_order_relaxed) + 1;
     g_call.req.store(seq, std::memory_order_release);
     publish();
-    while (g_call.ack.load(std::memory_order_acquire) < seq)
-        wfe();
+    {
+        StallWatch watch("a call it marshalled to core 0");
+        while (g_call.ack.load(std::memory_order_acquire) < seq)
+        {
+            wfe();
+            watch.tick();
+        }
+    }
     g_call_lock.unlock();
 }
 
@@ -260,8 +340,12 @@ void SDL2Circle_PresentPost(const SDL2CirclePresentCmd *cmds, unsigned ncmds,
         // whether presentation is holding the application up, so it is
         // accounted as waiting and not as render work.
         SDL2CirclePerfScope wait(SDL2CIRCLE_PERF_WAIT);
+        StallWatch watch("the presentation core to take the previous frame");
         while (g_frame.ack.load(std::memory_order_acquire) < seq)
+        {
             wfe();
+            watch.tick();
+        }
     }
 
     if (ncmds > SDL2CIRCLE_RECORD_MAX_CMDS)
@@ -284,8 +368,12 @@ void SDL2Circle_PresentQuiesce(void)
     // it is still using the window and the present buffers. Only the poster
     // bumps `seq`, and this is the poster, so `seq` is stable here.
     u64 seq = g_frame.seq.load(std::memory_order_relaxed);
+    StallWatch watch("the presentation core to finish the frame in flight");
     while (g_frame.done.load(std::memory_order_acquire) < seq)
+    {
         idle_wait();
+        watch.tick();
+    }
 }
 
 extern "C" void SDL2Circle_SplitPresentCore(void)
@@ -633,6 +721,10 @@ public:
     {
         for (;;)
         {
+            // One lap. Counted before any of the work, so the count says the
+            // servo is running even when there is nothing for it to do.
+            g_servo_beats.fetch_add(1, std::memory_order_relaxed);
+
             // Call mailbox (init, window/audio creation, I/O service).
             // Scoped because on the hardware core this is not housekeeping,
             // it is another core's work being done here — and how much of
@@ -641,6 +733,8 @@ public:
             if (req > g_call.ack.load(std::memory_order_relaxed))
             {
                 SDL2CirclePerfScope serve(SDL2CIRCLE_PERF_SERVE);
+                g_calls_started.fetch_add(1, std::memory_order_relaxed);
+                publish();
                 g_call.fn(g_call.arg);
                 g_calls_served.fetch_add(1, std::memory_order_relaxed);
                 g_call.ack.store(req, std::memory_order_release);
@@ -746,8 +840,10 @@ public:
                 CLogger::Get()->Write(From, LogError,
                                       "HEARTBEAT STALLED %us -- state dump:", (unsigned)quiet);
                 CLogger::Get()->Write(From, LogError,
-                                      "beats=%llu calls=%llu io=%llu frames post/ack=%llu/%llu ev push/drop=%llu/%llu",
+                                      "beats=%llu servo=%llu calls start/served=%llu/%llu io=%llu frames post/ack=%llu/%llu ev push/drop=%llu/%llu",
                                       beat,
+                                      g_servo_beats.load(),
+                                      g_calls_started.load(),
                                       g_calls_served.load(),
                                       g_io_ops.load(),
                                       g_frame.seq.load(), g_frame.ack.load(),
