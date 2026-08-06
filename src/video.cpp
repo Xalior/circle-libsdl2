@@ -7,6 +7,7 @@
 //
 #include <SDL2/SDL.h>
 #include "sdl2circle.h"
+#include "shim_internal.h"
 #include <circle/bcmframebuffer.h>
 #include <circle/bcmpropertytags.h>
 #include <circle/dmachannel.h>
@@ -1035,6 +1036,17 @@ extern "C" int SDL_GetDisplayBounds(int, SDL_Rect *rect)
     rect->w = s_window ? s_window->w : s_canvas_w;
     rect->h = s_window ? s_window->h : s_canvas_h;
     return 0;
+}
+
+// Where the mouse pointer is allowed to be (src/mouse.cpp). The application's
+// window while one exists, and the declared canvas before that — the same
+// answer SDL_GetDisplayBounds gives, because on one screen with one fullscreen
+// window the display and the window are the same rectangle. Both numbers are
+// plain reads of state core 0 wrote, so the mouse pump may ask from there.
+void SDL2Circle_PointerBounds(int *w, int *h)
+{
+    if (w) *w = s_window ? s_window->w : s_canvas_w;
+    if (h) *h = s_window ? s_window->h : s_canvas_h;
 }
 
 extern "C" int SDL_GetNumDisplayModes(int) { return 1; }

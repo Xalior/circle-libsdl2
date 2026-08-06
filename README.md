@@ -31,6 +31,7 @@ core that never touches a device.
 | Video: fullscreen window, software `SDL_Renderer`, streaming ARGB8888 textures, alpha blending, scaled `SDL_RenderCopy` | `CBcmFrameBuffer` — double-buffered, vsync page flip. Where the firmware grants one screen instead of two, the finished frame is scaled onto it, on a core of the host's choosing |
 | Display/renderer queries (modes, bounds, formats, masks) | single HDMI panel, or the virtual device the application declared for itself |
 | Keyboard → SDL events, `SDL_GetKeyboardState`, modifiers | Circle USB HID (raw reports; SDL scancodes *are* USB usage codes). Off core 0: USB stays on core 0, events cross by ring |
+| Mouse → SDL events, `SDL_GetMouseState`, relative mode, warping | Circle USB mouse (raw reports — no Circle-drawn cursor). A mouse says how far it moved and never where it is, so the library keeps the position itself and clamps it to the window. Off core 0: USB and event synthesis stay on core 0; the position and buttons are held in memory both cores see |
 | Joysticks, gamepads and wheels: enumeration, hot-plug, axes, hats, buttons, GUIDs, coarse rumble | Circle's USB gamepad drivers — the generic HID one and the console-specific ones. Off core 0: USB and event synthesis stay on core 0; the readings are held in memory both cores see |
 | Game controllers: `gamecontrollerdb.txt` mappings, `SDL_IsGameController`, mapped axes and buttons, controller events | the mapping text is read the way SDL2 reads it, and found by the same joystick GUID SDL2 builds |
 | Files as `SDL_RWops` streams, and streams over memory | the I/O service, so an application off core 0 opens a file with the ordinary SDL call |
@@ -47,7 +48,7 @@ error rather than falling back. Every consumer proven so far (the examples,
 pi-mame) renders 32-bit ARGB8888 end to end; no other pixel depth has been
 exercised on real hardware.
 
-Not yet: mouse, `SDL_Haptic` force feedback, controller motion sensors and
+Not yet: `SDL_Haptic` force feedback, controller motion sensors and
 touchpads, virtual joysticks, OpenGL (the Pi 4 has no bare-metal GPU driver —
 software rendering is the design, not a temporary measure).
 
@@ -930,6 +931,12 @@ templates, and the way a change is proven before it ships:
 
 - `examples/gradient` — animated full-screen gradient (video path)
 - `examples/keyecho` — scancode display, modifier lights, held-key grid (input)
+- `examples/mouseview` — the pointer on screen with the button lights, the
+  wheel total and the frame's own relative reading beside it, and a bar per
+  event type so a click that produced no event is visible. It also hands its
+  serial port to the library's input-injection channel, so the pointer can be
+  driven from a terminal — `mouse to 100 100`, `mouse tap left` — when there
+  is nobody at the desk (mouse)
 - `examples/tone` — 1 kHz sine over HDMI via the callback API (audio)
 - `examples/padview` — every attached joystick, gamepad and wheel on screen at
   once: name, GUID, USB IDs, whether the mapping database recognised it, live

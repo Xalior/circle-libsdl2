@@ -45,6 +45,29 @@ Uint8  SDL2Circle_JoySlotButton(int slot, int button);
 
 SDL_Joystick *SDL2Circle_JoyOpenSlot(int slot);
 
+// ---- mouse.cpp -------------------------------------------------------------
+
+// Attach, detach and report translation for Circle's USB mouse. CORE 0 ONLY,
+// on the same terms as the joystick pump above, and given the same
+// plug-and-play signal.
+void SDL2Circle_MousePump(bool bPlugAndPlayChanged);
+
+// A mouse report: how far the mouse moved, which buttons the reporting hand
+// has down (Circle's MOUSE_BUTTON_* mask), and how far the wheel turned. Both
+// forms queue onto the same path and are safe to call from interrupt context.
+// The physical mouse and the robot-hands macro channel each have their own,
+// so that neither one's buttons can release the other's.
+void SDL2Circle_MouseReport(int dx, int dy, unsigned buttons, int wheel);
+void SDL2Circle_MouseInject(int dx, int dy, unsigned buttons, int wheel);
+
+// ---- video.cpp -------------------------------------------------------------
+
+// The rectangle the pointer lives in: the application's window while one
+// exists, and the declared canvas before that. A mouse reports how far it
+// moved and never where it is, so an absolute position exists only because
+// this is what the movement is clamped to.
+void SDL2Circle_PointerBounds(int *w, int *h);
+
 // ---- gamecontroller.cpp ----------------------------------------------------
 
 // The joystick producer calls these straight after pushing each joystick

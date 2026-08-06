@@ -15,6 +15,7 @@
 #include <circle/devicenameservice.h>
 #include <circle/usb/usbhcidevice.h>
 #include <circle/usb/usbkeyboard.h>
+#include <circle/input/mouse.h>
 #include <circle/serial.h>
 #include <circle/atomic.h>
 #include <cstring>
@@ -132,15 +133,21 @@ bool InReport(const RawReport &r, unsigned char key)
 //   <domain> <command...>
 //
 // The first token routes to a subsystem, so this is the shim's general
-// robot-hands channel over SDL's input surface, not a keyboard hack — mouse,
+// robot-hands channel over SDL's input surface, not a keyboard hack —
 // gamepad/joystick and whatever input device comes next each register a new
-// domain (s_injectDomains, below) without touching the transport. Today one
-// domain exists:
+// domain (s_injectDomains, below) without touching the transport. Today there
+// are two:
 //
 //   key down <key>     press and HOLD <key> (stays down; combine for chords)
 //   key up   <key>     release <key>
 //   key tap  <key>     self-timed press+release of one <key>
 //   key type <text>    self-timed taps for each character of <text>
+//   mouse move <dx> <dy>   move the pointer by a displacement
+//   mouse to   <x> <y>     move the pointer TO a screen coordinate
+//   mouse down <button>    press and HOLD <button> (left right middle x1 x2)
+//   mouse up   <button>    release <button>
+//   mouse tap  <button>    self-timed press+release of one <button>
+//   mouse wheel <n>        turn the wheel; positive is away from the user
 //   # ...              comment; blank lines ignored
 //
 // Explicit down/up exist because real machines need CHORDS — keys held down
@@ -155,10 +162,24 @@ bool InReport(const RawReport &r, unsigned char key)
 // shift) — a chord names its own modifiers. tap/type feed a self-timed hold
 // queue (below) because MAME scans the keyboard per emulated frame; down/up
 // post immediately and the SCRIPT owns the timing between them.
+//
+// <button> is left, right, middle, x1 or x2. The mouse verbs mirror the
+// keyboard's for the same reason: a click that a per-frame scan can miss is
+// worse than no click at all, so tap goes through the hold queue while
+// down/up post immediately.
 CSerialDevice *s_injectSerial = nullptr;
 
-struct InjKey { SDL_Scancode sc; bool shift; };
-InjKey s_injQueue[64];
+// One self-timed press-and-release, of either kind. Keys and mouse buttons
+// share the hold state machine below because they need the identical timing —
+// what differs is only which device the press is posted to.
+struct InjTap
+{
+    bool         button;       // true: `mask` is a Circle MOUSE_BUTTON_*
+    SDL_Scancode sc;
+    unsigned     mask;
+    bool         shift;
+};
+InjTap s_injQueue[64];
 unsigned s_injHead = 0;
 unsigned s_injCount = 0;
 
@@ -167,8 +188,15 @@ int s_injLineLen = 0;
 
 SDL_Scancode s_injHeldSc = SDL_SCANCODE_UNKNOWN;
 bool s_injHeldShift = false;
+unsigned s_injHeldButton = 0;  // Circle mask being held by a tap; 0 for a key
 int s_injPhase = 0;            // 0 idle, 1 holding a key, 2 inter-key gap
 u64 s_injUntil = 0;           // wall-clock (us) the current phase ends at
+
+// The buttons the robot's own hand is holding. The mouse driver keeps this
+// hand's buttons apart from the physical mouse's and reports the union, so a
+// script pressing a button never releases one the operator has down on the
+// real mouse.
+unsigned s_injMouseButtons = 0;
 
 // Timing is WALL-CLOCK, not pump calls: SDL_PumpEvents runs many times per
 // emulated frame (MAME drains the event queue in a loop), so a frame counter
@@ -306,9 +334,97 @@ void InjectEnqueue(SDL_Scancode sc, bool shift)
 {
     if (s_injCount < 64)
     {
-        s_injQueue[(s_injHead + s_injCount) % 64] = InjKey{sc, shift};
+        s_injQueue[(s_injHead + s_injCount) % 64] = InjTap{false, sc, 0, shift};
         s_injCount++;
     }
+}
+
+void InjectEnqueueButton(unsigned mask)
+{
+    if (s_injCount < 64)
+    {
+        s_injQueue[(s_injHead + s_injCount) % 64] =
+            InjTap{true, SDL_SCANCODE_UNKNOWN, mask, false};
+        s_injCount++;
+    }
+}
+
+// One displacement, delivered as however many reports it takes: a real mouse
+// carries at most 127 per axis in a report, so a long move arrives as a burst
+// of full-scale reports exactly as a fast hand's would. A zero displacement
+// still sends one report — that is how a button-only change is delivered.
+const int INJ_MOUSE_STEP_MAX = 127;
+
+void InjectMouseSend(int dx, int dy)
+{
+    do
+    {
+        int stepx = dx;
+        if (stepx >  INJ_MOUSE_STEP_MAX) stepx =  INJ_MOUSE_STEP_MAX;
+        if (stepx < -INJ_MOUSE_STEP_MAX) stepx = -INJ_MOUSE_STEP_MAX;
+
+        int stepy = dy;
+        if (stepy >  INJ_MOUSE_STEP_MAX) stepy =  INJ_MOUSE_STEP_MAX;
+        if (stepy < -INJ_MOUSE_STEP_MAX) stepy = -INJ_MOUSE_STEP_MAX;
+
+        dx -= stepx;
+        dy -= stepy;
+
+        SDL2Circle_MouseInject(stepx, stepy, s_injMouseButtons, 0);
+    }
+    while (dx != 0 || dy != 0);
+}
+
+// Press or release one button in the robot's own hand and report it. A button
+// already in the requested state changes nothing and sends nothing — a real
+// mouse does not report what did not happen.
+void InjectButton(unsigned mask, bool down)
+{
+    unsigned wanted = down ? (s_injMouseButtons | mask)
+                           : (s_injMouseButtons & ~mask);
+    if (wanted == s_injMouseButtons)
+        return;
+    s_injMouseButtons = wanted;
+    InjectMouseSend(0, 0);
+}
+
+struct ButtonName { const char *name; unsigned mask; };
+const ButtonName s_buttonNames[] = {
+    {"left",   MOUSE_BUTTON_LEFT},
+    {"right",  MOUSE_BUTTON_RIGHT},
+    {"middle", MOUSE_BUTTON_MIDDLE},
+    {"x1",     MOUSE_BUTTON_SIDE1},
+    {"x2",     MOUSE_BUTTON_SIDE2},
+};
+
+bool ButtonByName(const char *name, unsigned &mask)
+{
+    for (const ButtonName &b : s_buttonNames)
+        if (!strcmp(name, b.name)) { mask = b.mask; return true; }
+    return false;
+}
+
+// Base-ten integer with an optional sign. Rejects anything else outright:
+// a mistyped coordinate must not silently become a move to zero.
+bool InjectParseInt(const char *tok, int &out)
+{
+    if (!*tok)
+        return false;
+
+    bool neg = false;
+    if (*tok == '-' || *tok == '+') { neg = (*tok == '-'); tok++; }
+    if (!*tok)
+        return false;
+
+    int value = 0;
+    for (; *tok; tok++)
+    {
+        if (*tok < '0' || *tok > '9')
+            return false;
+        value = value * 10 + (*tok - '0');
+    }
+    out = neg ? -value : value;
+    return true;
 }
 
 // Split off the first whitespace-delimited token of `s`, NUL-terminate it, and
@@ -350,11 +466,66 @@ void InjectKeyCmd(char *args)
     else if (!strcmp(verb, "tap")) InjectEnqueue(sc, shift);
 }
 
-// The robot-hands domain table. New subsystems (mouse, pad, grab, ...) register
-// here; the transport and line parser never change.
+// Domain: mouse. `args` is everything after "mouse".
+void InjectMouseCmd(char *args)
+{
+    char *verb = InjectNextToken(&args);
+
+    if (!strcmp(verb, "move"))
+    {
+        int dx, dy;
+        if (InjectParseInt(InjectNextToken(&args), dx)
+            && InjectParseInt(InjectNextToken(&args), dy))
+            InjectMouseSend(dx, dy);
+        return;
+    }
+
+    // "mouse to X Y" — an absolute position out of a device that only speaks
+    // displacements. A mouse reports how far it moved, never where it is, so
+    // there is no coordinate to send; but the pointer is CLAMPED to the
+    // surface, so a displacement at least as large as the surface parks it in
+    // the top-left corner no matter where it started. From a known corner a
+    // relative move is an absolute one.
+    //
+    // It lives here so that driving a pointer from the bench is a coordinate,
+    // not a technique to be rediscovered at each session.
+    if (!strcmp(verb, "to"))
+    {
+        int x, y;
+        if (InjectParseInt(InjectNextToken(&args), x)
+            && InjectParseInt(InjectNextToken(&args), y))
+        {
+            int w = 0, h = 0;
+            SDL2Circle_PointerBounds(&w, &h);
+            InjectMouseSend(-w, -h);     // to the corner; InjectMouseSend steps it
+            InjectMouseSend(x, y);
+        }
+        return;
+    }
+
+    if (!strcmp(verb, "wheel"))
+    {
+        int n;
+        if (InjectParseInt(InjectNextToken(&args), n))
+            SDL2Circle_MouseInject(0, 0, s_injMouseButtons, n);
+        return;
+    }
+
+    unsigned mask;
+    if (!ButtonByName(InjectNextToken(&args), mask))
+        return;
+
+    if (!strcmp(verb, "down"))      InjectButton(mask, true);
+    else if (!strcmp(verb, "up"))   InjectButton(mask, false);
+    else if (!strcmp(verb, "tap"))  InjectEnqueueButton(mask);
+}
+
+// The robot-hands domain table. New subsystems (pad, grab, ...) register here;
+// the transport and the line parser never change.
 struct InjectDomain { const char *name; void (*fn)(char *args); };
 const InjectDomain s_injectDomains[] = {
-    {"key", InjectKeyCmd},
+    {"key",   InjectKeyCmd},
+    {"mouse", InjectMouseCmd},
 };
 
 // Route one command line (already NUL-terminated, no '\n') to its domain.
@@ -393,10 +564,11 @@ void SDL2Circle_InputPump(void)
 
     boolean bChanged = s_usb->UpdatePlugAndPlay();
 
-    // Gamepads first, and unconditionally: the keyboard path below returns
-    // early when no new key report has arrived, and a pad's own attach,
-    // detach and report traffic has nothing to do with that.
+    // Gamepads and the mouse first, and unconditionally: the keyboard path
+    // below returns early when no new key report has arrived, and another
+    // device's attach, detach and report traffic has nothing to do with that.
     SDL2Circle_JoystickPump(bChanged != FALSE);
+    SDL2Circle_MousePump(bChanged != FALSE);
 
     if (!s_keyboard && bChanged)
     {
@@ -480,14 +652,22 @@ void SDL2Circle_InjectPump(void)
 
     // Hold the current key until its wall-clock deadline, then release into a
     // gap; only start the next key once the gap has elapsed.
-    if (s_injPhase == 1)                     // holding a key down
+    if (s_injPhase == 1)                     // holding a key or button down
     {
         if (now < s_injUntil)
             return;
-        PushKeyEvent(s_injHeldSc, false);
-        if (s_injHeldShift)
-            InjectShift(false);
-        s_injHeldSc = SDL_SCANCODE_UNKNOWN;
+        if (s_injHeldButton)
+        {
+            InjectButton(s_injHeldButton, false);
+            s_injHeldButton = 0;
+        }
+        else
+        {
+            PushKeyEvent(s_injHeldSc, false);
+            if (s_injHeldShift)
+                InjectShift(false);
+            s_injHeldSc = SDL_SCANCODE_UNKNOWN;
+        }
         s_injPhase = 2;
         s_injUntil = now + INJ_GAP_US;
         return;
@@ -502,14 +682,22 @@ void SDL2Circle_InjectPump(void)
     // Idle: start the next queued keystroke.
     if (s_injCount > 0)
     {
-        InjKey k = s_injQueue[s_injHead];
+        InjTap k = s_injQueue[s_injHead];
         s_injHead = (s_injHead + 1) % 64;
         s_injCount--;
-        if (k.shift)
-            InjectShift(true);
-        PushKeyEvent(k.sc, true);
-        s_injHeldSc = k.sc;
-        s_injHeldShift = k.shift;
+        if (k.button)
+        {
+            InjectButton(k.mask, true);
+            s_injHeldButton = k.mask;
+        }
+        else
+        {
+            if (k.shift)
+                InjectShift(true);
+            PushKeyEvent(k.sc, true);
+            s_injHeldSc = k.sc;
+            s_injHeldShift = k.shift;
+        }
         s_injPhase = 1;
         s_injUntil = now + INJ_HOLD_US;
     }
