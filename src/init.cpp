@@ -116,6 +116,12 @@ static void init_hardware_on0(void *)
 
 extern "C" int SDL_InitSubSystem(Uint32 flags)
 {
+    // The library's own boot switches, found by the library rather than
+    // forwarded to it, so an application that has never heard of one still
+    // gets it. Idempotent, and done before anything is brought up: a switch
+    // that changes how a subsystem starts has to be known first.
+    SDL2Circle_ReadBootArgs();
+
     // The virtual display device is what this library is built around, and
     // it has no fallback of any kind — not the boot command line, not the
     // physical display, nothing. A consumer that has not declared one has

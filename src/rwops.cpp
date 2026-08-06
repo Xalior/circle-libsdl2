@@ -432,3 +432,66 @@ extern "C" size_t SDL_WriteBE64(SDL_RWops *dst, Uint64 value)
     const Uint64 swapped = SDL_SwapBE64(value);
     return SDL_RWwrite(dst, &swapped, sizeof(swapped), 1);
 }
+
+// A whole file in memory, terminated with a zero byte that is not counted in
+// the size — SDL's contract, and what lets the result be used directly as a
+// string when the file is text. The caller releases it with SDL_free.
+extern "C" void *SDL_LoadFile_RW(SDL_RWops *src, size_t *datasize, int freesrc)
+{
+    void *result = nullptr;
+
+    if (!src)
+    {
+        SDL_InvalidParamError("src");
+        goto done;
+    }
+
+    {
+        const Sint64 here = SDL_RWtell(src);
+        const Sint64 end = SDL_RWseek(src, 0, RW_SEEK_END);
+        if (here < 0 || end < 0 || end < here)
+        {
+            SDL_SetError("SDL_LoadFile_RW: cannot measure the stream");
+            goto done;
+        }
+        SDL_RWseek(src, here, RW_SEEK_SET);
+
+        const size_t len = (size_t)(end - here);
+        Uint8 *buf = (Uint8 *)SDL_malloc(len + 1);
+        if (!buf)
+        {
+            SDL_OutOfMemory();
+            goto done;
+        }
+        if (len && SDL_RWread(src, buf, 1, len) != len)
+        {
+            SDL_free(buf);
+            SDL_SetError("SDL_LoadFile_RW: the stream ended early");
+            goto done;
+        }
+        buf[len] = '\0';
+
+        if (datasize)
+            *datasize = len;
+        result = buf;
+    }
+
+done:
+    if (src && freesrc)
+        SDL_RWclose(src);
+    if (!result && datasize)
+        *datasize = 0;
+    return result;
+}
+
+extern "C" void *SDL_LoadFile(const char *file, size_t *datasize)
+{
+    SDL_RWops *src = SDL_RWFromFile(file, "rb");
+    if (!src)
+    {
+        if (datasize)
+            *datasize = 0;
+        return nullptr;
+    }
+    return SDL_LoadFile_RW(src, datasize, 1);
+}

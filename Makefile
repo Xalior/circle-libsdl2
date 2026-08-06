@@ -294,6 +294,44 @@ rebuild-all:
 	+@$(NOT_DRY_RUN)
 	@for b in $(BOARDS); do $(MAKE) rebuild BOARD=$$b || exit 1; done
 
+# THE TWO WAYS A SYMBOL CAN BE MISSING, and only one of them shows up in an
+# ordinary build.
+#
+#   undefined  the archive REFERENCES a symbol it does not define. A
+#              selective link may never pull the member that needs it, so
+#              this hides until someone links the archive whole.
+#
+#   declared   a public header PROMISES a function that src/ never defines.
+#              Nothing inside the archive refers to it, so the undefined
+#              check above cannot see it: only a consumer calling it finds
+#              out, one consumer at a time, at the very end of its build.
+#
+# The second is the one that kept costing. It is a promise this library makes
+# in its own headers, so it is this library's business to know which promises
+# it is not keeping — rather than learning it from whoever tried to call one.
+#
+#   make audit BOARD=rpi5
+#
+# Neither list is required to be empty. Plenty of SDL2 belongs to hardware
+# that is not here, and is honestly absent. The point is that the list is
+# KNOWN and deliberate, not discovered by accident.
+.PHONY: audit
+audit: rebuild
+	@echo "== referenced by the archive, defined nowhere in it =="
+	@$(PREFIX)nm --defined-only libSDL2-$(BOARD).a | awk '{print $$3}' | sort -u > .audit-def
+	@$(PREFIX)nm -u libSDL2-$(BOARD).a | awk '$$1=="U"{print $$2}' | sort -u > .audit-und
+	@comm -23 .audit-und .audit-def | grep -E '^(SDL_|IMG_|Mix_)' || echo "  (none)"
+	@echo
+	@echo "== declared by include/SDL2, defined nowhere in src =="
+	@grep -hoE 'extern[[:space:]]+DECLSPEC[[:space:]]+[^;]*SDLCALL[[:space:]]+[A-Za-z_][A-Za-z0-9_]*[[:space:]]*\(' \
+		include/SDL2/*.h \
+		| grep -oE 'SDLCALL[[:space:]]+[A-Za-z_][A-Za-z0-9_]*' | awk '{print $$2}' \
+		| sort -u > .audit-decl
+	@comm -23 .audit-decl .audit-def | sed 's/^/  /' || true
+	@echo
+	@echo "declared $$(wc -l < .audit-decl), defined $$(grep -cE '^(SDL_|IMG_|Mix_)' .audit-def), not defined $$(comm -23 .audit-decl .audit-def | wc -l)"
+	@rm -f .audit-def .audit-und .audit-decl
+
 # The shim targets need the selected board's Config.mk + Rules.mk; guard them so
 # `make deps` can parse and run before that world has been configured.
 ifneq ($(wildcard $(CIRCLESTDLIBHOME)/Config.mk),)
@@ -306,7 +344,7 @@ SRCS = src/init.cpp src/error.cpp src/timer.cpp src/hints.cpp src/events.cpp \
        src/split.cpp src/log.cpp src/coreruntime.cpp src/hardware.cpp \
        src/mouse.cpp src/pixels.cpp src/blit.cpp src/bmp.cpp src/rect.cpp \
        src/threads.cpp src/stdinc.cpp src/filesystem.cpp src/clipboard.cpp \
-       src/messagebox.cpp src/keyname.cpp src/platform.cpp src/image.cpp src/audiocvt.cpp src/mixer.cpp
+       src/messagebox.cpp src/keyname.cpp src/platform.cpp src/image.cpp src/audiocvt.cpp src/mixer.cpp src/gl.cpp src/bootargs.cpp
 OBJS = $(SRCS:src/%.cpp=$(OBJDIR)/%.o)
 DEPS = $(OBJS:.o=.d)
 

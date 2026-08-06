@@ -163,6 +163,14 @@ struct SDL_Texture
 
     SDL_BlendMode blend;
     Uint8 alphamod;
+
+    // Held so that each setter's getter answers with what was set. The
+    // colour modulation is not applied when drawing — see
+    // SDL_SetTextureColorMod — and the scale mode has no effect because the
+    // blitters are nearest-neighbour throughout.
+    Uint8 colormod_r, colormod_g, colormod_b;
+    SDL_ScaleMode scale_mode;
+    void *userdata;
 };
 
 // The one fullscreen window (ID 1). Display-mode queries answer with its
@@ -1379,6 +1387,21 @@ extern "C" SDL_Window *SDL_GetWindowFromID(Uint32 id)
     return (id == 1) ? s_window : nullptr;
 }
 
+// The renderer belonging to a window. There is one of each, so the answer is
+// whichever renderer was made — tracked here rather than on the window,
+// which does not otherwise know it has one.
+static SDL_Renderer *s_renderer = nullptr;
+
+extern "C" SDL_Renderer *SDL_GetRenderer(SDL_Window *win)
+{
+    if (!win || win != s_window || !s_renderer)
+    {
+        SDL_SetError("SDL_GetRenderer: this window has no renderer");
+        return nullptr;
+    }
+    return s_renderer;
+}
+
 extern "C" int SDL_GetWindowDisplayIndex(SDL_Window *) { return 0; }
 
 extern "C" void SDL_DestroyWindow(SDL_Window *win)
@@ -1657,6 +1680,13 @@ extern "C" void SDL_GL_GetDrawableSize(SDL_Window *win, int *w, int *h)
     SDL_GetWindowSize(win, w, h);
 }
 
+// Same reason: a window pixel IS a canvas pixel, with no scaling factor of
+// the kind a desktop applies on a high-density display.
+extern "C" void SDL_GetWindowSizeInPixels(SDL_Window *win, int *w, int *h)
+{
+    SDL_GetWindowSize(win, w, h);
+}
+
 extern "C" void SDL_Vulkan_GetDrawableSize(SDL_Window *win, int *w, int *h)
 {
     SDL_GetWindowSize(win, w, h);
@@ -1795,6 +1825,7 @@ extern "C" SDL_Renderer *SDL_CreateRenderer(SDL_Window *win, int, Uint32 flags)
     ren->scratch_bytes[0] = ren->scratch_bytes[1] = 0;
     ren->scratch_used = 0;
     ren->scratch_idx = 0;
+    s_renderer = ren;
     return ren;
 }
 
@@ -1961,9 +1992,42 @@ extern "C" void SDL_DestroyRenderer(SDL_Renderer *ren)
     // A posted frame may still be referencing an arena, so nothing here can
     // go back until the presentation worker is out of the frame.
     SDL2Circle_PresentQuiesce();
+    if (s_renderer == ren)
+        s_renderer = nullptr;
     free(ren->scratch[0]);
     free(ren->scratch[1]);
     delete ren;
+}
+
+// The pair in one call, which is how a great many SDL2 programs start. The
+// window is the canvas whatever size is asked for, as SDL_CreateWindow
+// explains.
+extern "C" int SDL_CreateWindowAndRenderer(int width, int height,
+                                           Uint32 window_flags,
+                                           SDL_Window **window,
+                                           SDL_Renderer **renderer)
+{
+    if (!window || !renderer)
+        return SDL_SetError("SDL_CreateWindowAndRenderer: nowhere to put the "
+                            "window or the renderer");
+
+    *window = SDL_CreateWindow("", SDL_WINDOWPOS_UNDEFINED,
+                               SDL_WINDOWPOS_UNDEFINED, width, height,
+                               window_flags);
+    if (!*window)
+    {
+        *renderer = nullptr;
+        return -1;
+    }
+
+    *renderer = SDL_CreateRenderer(*window, -1, 0);
+    if (!*renderer)
+    {
+        SDL_DestroyWindow(*window);
+        *window = nullptr;
+        return -1;
+    }
+    return 0;
 }
 
 extern "C" int SDL_GetRendererOutputSize(SDL_Renderer *ren, int *w, int *h)
@@ -2049,6 +2113,9 @@ extern "C" SDL_Texture *SDL_CreateTexture(SDL_Renderer *, Uint32 format,
     tex->locked = false;
     tex->blend = SDL_BLENDMODE_NONE;
     tex->alphamod = 255;
+    tex->colormod_r = tex->colormod_g = tex->colormod_b = 255;
+    tex->scale_mode = SDL_ScaleModeNearest;
+    tex->userdata = nullptr;
 
     if (tex->pixels[0] == nullptr)
     {
@@ -2166,9 +2233,74 @@ extern "C" int SDL_SetTextureAlphaMod(SDL_Texture *tex, Uint8 alpha)
     return 0;
 }
 
-extern "C" int SDL_SetTextureColorMod(SDL_Texture *, Uint8, Uint8, Uint8)
+// Recorded but not applied when drawing. It is kept so that the getter
+// answers with what was set, which is what an application that saves and
+// restores the modulation around a draw depends on.
+extern "C" int SDL_SetTextureColorMod(SDL_Texture *tex, Uint8 r, Uint8 g,
+                                      Uint8 b)
 {
-    return 0;   // tinting is not applied; MAME uses it only for effects
+    if (!tex)
+        return SDL_SetError("SDL_SetTextureColorMod: no texture");
+    tex->colormod_r = r;
+    tex->colormod_g = g;
+    tex->colormod_b = b;
+    return 0;
+}
+
+extern "C" int SDL_GetTextureColorMod(SDL_Texture *tex, Uint8 *r, Uint8 *g,
+                                      Uint8 *b)
+{
+    if (!tex)
+        return SDL_SetError("SDL_GetTextureColorMod: no texture");
+    if (r) *r = tex->colormod_r;
+    if (g) *g = tex->colormod_g;
+    if (b) *b = tex->colormod_b;
+    return 0;
+}
+
+extern "C" int SDL_GetTextureAlphaMod(SDL_Texture *tex, Uint8 *alpha)
+{
+    if (!tex)
+        return SDL_SetError("SDL_GetTextureAlphaMod: no texture");
+    if (alpha)
+        *alpha = tex->alphamod;
+    return 0;
+}
+
+// The blitters are nearest-neighbour throughout, so the scale mode is
+// recorded and changes nothing. Recorded rather than refused because an
+// application asking for linear scaling on a machine that cannot do it
+// should still get a picture.
+extern "C" int SDL_SetTextureScaleMode(SDL_Texture *tex, SDL_ScaleMode mode)
+{
+    if (!tex)
+        return SDL_SetError("SDL_SetTextureScaleMode: no texture");
+    tex->scale_mode = mode;
+    return 0;
+}
+
+extern "C" int SDL_GetTextureScaleMode(SDL_Texture *tex, SDL_ScaleMode *mode)
+{
+    if (!tex)
+        return SDL_SetError("SDL_GetTextureScaleMode: no texture");
+    if (mode)
+        *mode = tex->scale_mode;
+    return 0;
+}
+
+// A pointer the application hangs on the texture for its own purposes. The
+// library never looks at it.
+extern "C" int SDL_SetTextureUserData(SDL_Texture *tex, void *userdata)
+{
+    if (!tex)
+        return SDL_SetError("SDL_SetTextureUserData: no texture");
+    tex->userdata = userdata;
+    return 0;
+}
+
+extern "C" void *SDL_GetTextureUserData(SDL_Texture *tex)
+{
+    return tex ? tex->userdata : nullptr;
 }
 
 extern "C" void SDL_DestroyTexture(SDL_Texture *tex)
@@ -2675,6 +2807,210 @@ extern "C" SDL_Texture *SDL_GetRenderTarget(SDL_Renderer *)
 extern "C" SDL_bool SDL_RenderTargetSupported(SDL_Renderer *)
 {
     return SDL_FALSE;
+}
+
+extern "C" int SDL_GetRenderDrawColor(SDL_Renderer *ren, Uint8 *r, Uint8 *g,
+                                      Uint8 *b, Uint8 *a)
+{
+    if (!ren)
+        return SDL_SetError("SDL_GetRenderDrawColor: no renderer");
+    if (r) *r = ren->r;
+    if (g) *g = ren->g;
+    if (b) *b = ren->b;
+    if (a) *a = ren->a;
+    return 0;
+}
+
+extern "C" int SDL_GetRenderDrawBlendMode(SDL_Renderer *ren,
+                                          SDL_BlendMode *blendMode)
+{
+    if (!ren)
+        return SDL_SetError("SDL_GetRenderDrawBlendMode: no renderer");
+    if (blendMode)
+        *blendMode = ren->draw_blend;
+    return 0;
+}
+
+extern "C" SDL_Window *SDL_RenderGetWindow(SDL_Renderer *ren)
+{
+    if (!ren)
+    {
+        SDL_SetError("SDL_RenderGetWindow: no renderer");
+        return nullptr;
+    }
+    return ren->window;
+}
+
+// Drawing is recorded and executed at present, so there is never anything
+// queued in the sense this asks about.
+extern "C" int SDL_RenderFlush(SDL_Renderer *ren)
+{
+    return ren ? 0 : SDL_SetError("SDL_RenderFlush: no renderer");
+}
+
+// ---------------------------------------------------------------------------
+// Between the application's coordinates and the window's
+//
+// The pair an application needs once it has set a logical size: a pointer
+// arrives in window coordinates and has to be tested against things drawn in
+// logical ones. Both go through the same mapping every drawing call uses, so
+// a hit test cannot disagree with what is on screen.
+// ---------------------------------------------------------------------------
+
+extern "C" void SDL_RenderLogicalToWindow(SDL_Renderer *ren, float logicalX,
+                                          float logicalY, int *windowX,
+                                          int *windowY)
+{
+    if (!ren)
+    {
+        if (windowX) *windowX = 0;
+        if (windowY) *windowY = 0;
+        return;
+    }
+    const LogicalMap m = logical_map(ren);
+    if (windowX) *windowX = (int)(m.ox + logicalX * m.sx);
+    if (windowY) *windowY = (int)(m.oy + logicalY * m.sy);
+}
+
+extern "C" void SDL_RenderWindowToLogical(SDL_Renderer *ren, int windowX,
+                                          int windowY, float *logicalX,
+                                          float *logicalY)
+{
+    if (!ren)
+    {
+        if (logicalX) *logicalX = 0.0f;
+        if (logicalY) *logicalY = 0.0f;
+        return;
+    }
+    const LogicalMap m = logical_map(ren);
+    if (logicalX) *logicalX = (m.sx != 0.0f) ? ((float)windowX - m.ox) / m.sx : 0.0f;
+    if (logicalY) *logicalY = (m.sy != 0.0f) ? ((float)windowY - m.oy) / m.sy : 0.0f;
+}
+
+// ---------------------------------------------------------------------------
+// The float-rectangle spellings
+//
+// SDL2 offers every drawing call a second time taking floats, for
+// applications that keep their geometry in them. The canvas is whole pixels,
+// so each rounds to the integer call it already has rather than being a
+// second implementation that could drift from it.
+// ---------------------------------------------------------------------------
+
+namespace
+{
+SDL_Rect ToRect(const SDL_FRect *r)
+{
+    SDL_Rect out = { (int)r->x, (int)r->y, (int)r->w, (int)r->h };
+    return out;
+}
+} // namespace
+
+extern "C" int SDL_RenderCopyF(SDL_Renderer *ren, SDL_Texture *tex,
+                               const SDL_Rect *srcrect, const SDL_FRect *dstrect)
+{
+    if (!dstrect)
+        return SDL_RenderCopy(ren, tex, srcrect, nullptr);
+    const SDL_Rect d = ToRect(dstrect);
+    return SDL_RenderCopy(ren, tex, srcrect, &d);
+}
+
+extern "C" int SDL_RenderCopyExF(SDL_Renderer *ren, SDL_Texture *tex,
+                                 const SDL_Rect *srcrect, const SDL_FRect *dstrect,
+                                 const double angle, const SDL_FPoint *center,
+                                 const SDL_RendererFlip flip)
+{
+    SDL_Point c;
+    SDL_Point *cp = nullptr;
+    if (center)
+    {
+        c.x = (int)center->x;
+        c.y = (int)center->y;
+        cp = &c;
+    }
+    if (!dstrect)
+        return SDL_RenderCopyEx(ren, tex, srcrect, nullptr, angle, cp, flip);
+    const SDL_Rect d = ToRect(dstrect);
+    return SDL_RenderCopyEx(ren, tex, srcrect, &d, angle, cp, flip);
+}
+
+extern "C" int SDL_RenderDrawPointF(SDL_Renderer *ren, float x, float y)
+{
+    return SDL_RenderDrawPoint(ren, (int)x, (int)y);
+}
+
+extern "C" int SDL_RenderDrawPointsF(SDL_Renderer *ren, const SDL_FPoint *points,
+                                     int count)
+{
+    if (!ren)
+        return SDL_SetError("SDL_RenderDrawPointsF: no renderer");
+    if (!points && count > 0)
+        return SDL_SetError("SDL_RenderDrawPointsF: no points");
+    for (int i = 0; i < count; ++i)
+        if (SDL_RenderDrawPoint(ren, (int)points[i].x, (int)points[i].y) < 0)
+            return -1;
+    return 0;
+}
+
+extern "C" int SDL_RenderDrawLineF(SDL_Renderer *ren, float x1, float y1,
+                                   float x2, float y2)
+{
+    return SDL_RenderDrawLine(ren, (int)x1, (int)y1, (int)x2, (int)y2);
+}
+
+extern "C" int SDL_RenderDrawLinesF(SDL_Renderer *ren, const SDL_FPoint *points,
+                                    int count)
+{
+    if (!ren)
+        return SDL_SetError("SDL_RenderDrawLinesF: no renderer");
+    if (!points && count > 0)
+        return SDL_SetError("SDL_RenderDrawLinesF: no points");
+    for (int i = 1; i < count; ++i)
+        if (SDL_RenderDrawLine(ren, (int)points[i - 1].x, (int)points[i - 1].y,
+                               (int)points[i].x, (int)points[i].y) < 0)
+            return -1;
+    return 0;
+}
+
+extern "C" int SDL_RenderDrawRectF(SDL_Renderer *ren, const SDL_FRect *rect)
+{
+    if (!rect)
+        return SDL_RenderDrawRect(ren, nullptr);
+    const SDL_Rect r = ToRect(rect);
+    return SDL_RenderDrawRect(ren, &r);
+}
+
+extern "C" int SDL_RenderDrawRectsF(SDL_Renderer *ren, const SDL_FRect *rects,
+                                    int count)
+{
+    if (!ren)
+        return SDL_SetError("SDL_RenderDrawRectsF: no renderer");
+    if (!rects && count > 0)
+        return SDL_SetError("SDL_RenderDrawRectsF: no rectangles");
+    for (int i = 0; i < count; ++i)
+        if (SDL_RenderDrawRectF(ren, &rects[i]) < 0)
+            return -1;
+    return 0;
+}
+
+extern "C" int SDL_RenderFillRectF(SDL_Renderer *ren, const SDL_FRect *rect)
+{
+    if (!rect)
+        return SDL_RenderFillRect(ren, nullptr);
+    const SDL_Rect r = ToRect(rect);
+    return SDL_RenderFillRect(ren, &r);
+}
+
+extern "C" int SDL_RenderFillRectsF(SDL_Renderer *ren, const SDL_FRect *rects,
+                                    int count)
+{
+    if (!ren)
+        return SDL_SetError("SDL_RenderFillRectsF: no renderer");
+    if (!rects && count > 0)
+        return SDL_SetError("SDL_RenderFillRectsF: no rectangles");
+    for (int i = 0; i < count; ++i)
+        if (SDL_RenderFillRectF(ren, &rects[i]) < 0)
+            return -1;
+    return 0;
 }
 
 // Vsync is a property of how a finished frame reaches the panel, which is

@@ -94,6 +94,102 @@ const SDL_Scancode ModScancode[8] = {
     SDL_SCANCODE_LCTRL, SDL_SCANCODE_LSHIFT, SDL_SCANCODE_LALT, SDL_SCANCODE_LGUI,
     SDL_SCANCODE_RCTRL, SDL_SCANCODE_RSHIFT, SDL_SCANCODE_RALT, SDL_SCANCODE_RGUI};
 
+// Whether an application is collecting typed text. SDL starts with it ON,
+// and an application that never calls SDL_StartTextInput still receives
+// SDL_TEXTINPUT — which is what makes a program with a text field work
+// without having asked for anything.
+bool s_textInputActive = true;
+
+// The character a printable key produces under the modifiers in force, on a
+// US layout. Returns 0 for a key that types nothing.
+//
+// This is the forward direction of AsciiToKey below, and the two describe
+// the same keyboard: that one turns a byte into the key that would produce
+// it, this one turns a key press back into the byte a person would see.
+char TypedCharacter(SDL_Scancode sc, Uint16 mod)
+{
+    // A key held with control or a GUI key is a command, not text, and SDL
+    // sends no SDL_TEXTINPUT for one. Alt is left out for the same reason.
+    if (mod & (KMOD_CTRL | KMOD_ALT | KMOD_GUI))
+        return 0;
+
+    const bool shift = (mod & KMOD_SHIFT) != 0;
+    const bool caps = (mod & KMOD_CAPS) != 0;
+
+    if (sc >= SDL_SCANCODE_A && sc <= SDL_SCANCODE_Z)
+    {
+        const char base = (char)('a' + (sc - SDL_SCANCODE_A));
+        // Caps lock and shift each invert the case, so both together give
+        // lower case again — which is what a keyboard does.
+        return (shift != caps) ? (char)(base - 32) : base;
+    }
+
+    if (sc >= SDL_SCANCODE_1 && sc <= SDL_SCANCODE_9)
+    {
+        const char digit = (char)('1' + (sc - SDL_SCANCODE_1));
+        if (!shift)
+            return digit;
+        static const char shifted[9] = { '!', '@', '#', '$', '%', '^', '&', '*', '(' };
+        return shifted[sc - SDL_SCANCODE_1];
+    }
+
+    switch (sc)
+    {
+    case SDL_SCANCODE_0:            return shift ? ')' : '0';
+    case SDL_SCANCODE_SPACE:        return ' ';
+    case SDL_SCANCODE_MINUS:        return shift ? '_' : '-';
+    case SDL_SCANCODE_EQUALS:       return shift ? '+' : '=';
+    case SDL_SCANCODE_LEFTBRACKET:  return shift ? '{' : '[';
+    case SDL_SCANCODE_RIGHTBRACKET: return shift ? '}' : ']';
+    case SDL_SCANCODE_BACKSLASH:    return shift ? '|' : '\\';
+    case SDL_SCANCODE_SEMICOLON:    return shift ? ':' : ';';
+    case SDL_SCANCODE_APOSTROPHE:   return shift ? '"' : '\'';
+    case SDL_SCANCODE_GRAVE:        return shift ? '~' : '`';
+    case SDL_SCANCODE_COMMA:        return shift ? '<' : ',';
+    case SDL_SCANCODE_PERIOD:       return shift ? '>' : '.';
+    case SDL_SCANCODE_SLASH:        return shift ? '?' : '/';
+
+    // The keypad types its digits and operators regardless of shift; num
+    // lock is not tracked, and a keypad that navigates instead would send
+    // its own scancodes.
+    case SDL_SCANCODE_KP_DIVIDE:   return '/';
+    case SDL_SCANCODE_KP_MULTIPLY: return '*';
+    case SDL_SCANCODE_KP_MINUS:    return '-';
+    case SDL_SCANCODE_KP_PLUS:     return '+';
+    case SDL_SCANCODE_KP_PERIOD:   return '.';
+    case SDL_SCANCODE_KP_0:        return '0';
+    case SDL_SCANCODE_KP_1: case SDL_SCANCODE_KP_2: case SDL_SCANCODE_KP_3:
+    case SDL_SCANCODE_KP_4: case SDL_SCANCODE_KP_5: case SDL_SCANCODE_KP_6:
+    case SDL_SCANCODE_KP_7: case SDL_SCANCODE_KP_8: case SDL_SCANCODE_KP_9:
+        return (char)('1' + (sc - SDL_SCANCODE_KP_1));
+
+    default:
+        return 0;
+    }
+}
+
+// Return, tab, backspace and escape have ASCII codes but are NOT text: SDL
+// delivers them as key events only, and an application that inserted them as
+// characters would put a control byte in its text field.
+void PushTextInputEvent(SDL_Scancode sc, Uint16 mod)
+{
+    if (!s_textInputActive)
+        return;
+
+    const char c = TypedCharacter(sc, mod);
+    if (c == 0)
+        return;
+
+    SDL_Event ev;
+    memset(&ev, 0, sizeof(ev));
+    ev.type = SDL_TEXTINPUT;
+    ev.text.timestamp = SDL_GetTicks();
+    ev.text.windowID = 1;
+    ev.text.text[0] = c;
+    ev.text.text[1] = '\0';
+    SDL_PushEvent(&ev);
+}
+
 void PushKeyEvent(SDL_Scancode sc, bool down)
 {
     if (sc <= SDL_SCANCODE_UNKNOWN || sc >= SDL_NUM_SCANCODES)
@@ -112,6 +208,12 @@ void PushKeyEvent(SDL_Scancode sc, bool down)
     ev.key.keysym.sym = KeycodeFor(sc);
     ev.key.keysym.mod = s_modState;
     SDL_PushEvent(&ev);
+
+    // SDL sends the key event first and the text second, and applications
+    // rely on that order — one that reads text usually checks the key event
+    // for editing keys in the same pass.
+    if (down)
+        PushTextInputEvent(sc, s_modState);
 }
 
 bool InReport(const RawReport &r, unsigned char key)
@@ -616,14 +718,22 @@ void SDL2Circle_InputPump(void)
     s_prev = now;
 }
 
+// The kernel lends its serial device unconditionally. Whether anything is
+// injected through it is decided by --rapi-debug-uart, which the library
+// reads for itself — so a kernel that knows nothing about the switch still
+// gets injection when it is stamped, and never gets it when it is not.
 void SDL2Circle_SetInjectSerial(CSerialDevice *pSerial)
 {
     s_injectSerial = pSerial;
+    if (pSerial && !SDL2Circle_DebugUartArmed())
+        SDL2Circle_Log("input", SDL2CIRCLE_LOG_DEBUG,
+                       "serial available for key injection; "
+                       "stamp --rapi-debug-uart to arm it");
 }
 
 void SDL2Circle_InjectPump(void)
 {
-    if (!s_injectSerial)
+    if (!s_injectSerial || !SDL2Circle_DebugUartArmed())
         return;
 
     // Drain serial RX, accumulating command lines; dispatch on each newline.
@@ -745,9 +855,24 @@ extern "C" SDL_Keycode SDL_GetKeyFromScancode(SDL_Scancode scancode)
     return KeycodeFor(scancode);
 }
 
-extern "C" void SDL_StartTextInput(void) {}
-extern "C" void SDL_StopTextInput(void) {}
-extern "C" SDL_bool SDL_IsTextInputActive(void) { return SDL_FALSE; }
+// An application turns text collection on before showing a text field and
+// off afterwards, and asks whether it is on before drawing a caret. SDL
+// starts with it on.
+extern "C" void SDL_StartTextInput(void) { s_textInputActive = true; }
+extern "C" void SDL_StopTextInput(void)  { s_textInputActive = false; }
+
+extern "C" SDL_bool SDL_IsTextInputActive(void)
+{
+    return s_textInputActive ? SDL_TRUE : SDL_FALSE;
+}
+
+extern "C" SDL_bool SDL_IsTextInputShown(void)
+{
+    // There is no on-screen keyboard to be shown.
+    return SDL_FALSE;
+}
+
+extern "C" void SDL_ClearComposition(void) {}   // there is no IME to clear
 
 // The one window always has the keyboard: there is nothing else on screen
 // for focus to be anywhere else.

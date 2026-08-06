@@ -47,6 +47,7 @@ core that never touches a device.
 | Audio conversion: `SDL_BuildAudioCVT`, `SDL_ConvertAudio`, `SDL_LoadWAV_RW`, `SDL_MixAudioFormat` | in memory, through float — every width, either byte order, one or two channels, any rate ratio |
 | `SDL_Log` and its family, message boxes | the same ring every other line takes, so an application's own diagnostics are safe to write from its own core |
 | `SDL_GetBasePath` / `SDL_GetPrefPath`, clipboard, key names, `SDL_stdinc` strings and maths | in memory, and the card. See "Declaring the base path" |
+| Typed text: `SDL_TEXTINPUT` events, `SDL_StartTextInput`/`SDL_StopTextInput`/`SDL_IsTextInputActive` | the same USB keyboard, mapped through the modifier state to the character a US layout would produce. A key press sends the key event first and the text second, as SDL does |
 | Init/error/version/hints | — |
 
 **The framebuffer is 32-bit; the formats an application works in are its
@@ -82,8 +83,13 @@ quietly doing something else:
 - **No force-feedback device.** The `SDL_Haptic` calls exist and report that
   there is none, so an application's "rumble if it can" path takes its other
   branch.
-- **No OpenGL.** The Pi has no bare-metal GPU driver; software rendering is
-  the design, not a temporary measure.
+- **No OpenGL, Vulkan or Metal.** The Pi has no bare-metal GPU driver;
+  software rendering is the design, not a temporary measure. The entry
+  points all exist: `SDL_GL_CreateContext` returns null with an error, so a
+  program with an optional accelerated renderer takes its software path, and
+  `SDL_GL_DeleteContext` is a no-op so its shutdown path still runs. They
+  are here because that shutdown path is usually written as
+  `if (ctx) SDL_GL_DeleteContext(ctx)` — dead code that must still LINK.
 - Controller motion sensors and touchpads, virtual joysticks.
 
 ## Presentation geometry
@@ -315,6 +321,46 @@ can read and write. SDL returns a non-null path on every desktop platform,
 so a great many applications dereference the answer without looking —
 refusing would turn a missing declaration into a crash inside the
 application rather than a message from here.
+
+### The library's own boot switches
+
+A boot argument block sits at a fixed offset inside the kernel image, and a
+loader writes a plain argument string into it before pushing the image — so a
+setting can ride a boot without anything being rebuilt.
+
+**This library reads that block itself**, and acts on the switches that
+describe what IT does. An application does not forward them, is never asked
+for them, and cannot fail to pass them on. That last point is the whole
+reason: while each application interpreted these in turn, one that had never
+heard of a switch silently lost the capability — the switch was stamped, the
+loader confirmed it, and nothing happened, with nothing anywhere to say why.
+
+| switch | effect |
+|---|---|
+| `--rapi-debug-uart` | types bytes arriving on the serial console into the machine as SDL key events. Takes **no value** |
+| `--rapi-perf=N` | a performance report every N seconds |
+
+An application still reads the same block for its own arguments, and still
+strips every `--rapi-` switch before its program sees them. Those are its
+arguments; reading the block twice is harmless, because nothing here writes
+to it.
+
+Serial key injection needs two things, and neither turns it on alone: the
+switch, and a serial device. **A kernel lends its own device unconditionally**
+— it must not construct one, because a second device on the same slot halts
+the board inside its constructor:
+
+```c
+SDL2Circle_SetInjectSerial (&m_Serial);   // no condition around it
+```
+
+Whether anything is injected through it is then the library's decision, taken
+from the switch it found for itself.
+
+Anything that decides how the KERNEL starts stays with the kernel, and
+`rapi-split` is the example: it chooses whether the core split is set up at
+all, which means choosing which cores are started. That happens before this
+library exists, and it is read from `cmdline.txt` rather than from the block.
 
 ## Joysticks and game controllers
 
