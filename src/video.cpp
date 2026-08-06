@@ -1793,6 +1793,11 @@ extern "C" SDL_Surface *SDL_GetWindowSurface(SDL_Window *win)
     return s_window_surface;
 }
 
+static void flip_on0(void *)
+{
+    SDL2Circle_VideoFlip(0);
+}
+
 extern "C" int SDL_UpdateWindowSurfaceRects(SDL_Window *win,
                                             const SDL_Rect *rects, int numrects)
 {
@@ -1825,7 +1830,13 @@ extern "C" int SDL_UpdateWindowSurfaceRects(SDL_Window *win,
         cmd.alphamod = 255;
         SDL2Circle_VideoExecCmd(&cmd, 0);
     }
-    SDL2Circle_VideoFlip(0);
+
+    // The flip asks the firmware, through the VideoCore mailbox, and this
+    // function runs on whichever core the application is on. The mailbox is
+    // guarded by one spin lock shared by every core and the wait inside it
+    // has no timeout, so the fewer cores that ever reach it the fewer there
+    // are to collide. Marshalled to core 0, like every other firmware call.
+    SDL2Circle_CallOn0(flip_on0, nullptr);
     return 0;
 }
 

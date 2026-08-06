@@ -71,12 +71,43 @@ void SDL2Circle_HardwareTick(void)
     s_pThrottle->Update();
 }
 
+// Both of these ask the FIRMWARE, through the VideoCore mailbox, and both
+// are public: a game calls them from the application core by construction.
+//
+// The mailbox is guarded by one spin lock shared by every core, and the wait
+// inside it has no timeout — so a core that enters it and is not answered
+// spins for ever holding that lock, and the next core to ask is stuck behind
+// it. Two frozen cores, no fault, and no watchdog, because the watchdog is a
+// task on the core that stopped.
+//
+// Contention is only possible if more than one core ever takes the lock.
+// Which cores take it is entirely this library's business, so these are
+// marshalled to core 0 like every other firmware call — the answer comes
+// back the same, and one fewer core is in the running to collide.
+static void read_temperature_on0(void *p)
+{
+    *(unsigned *)p = s_pThrottle->GetTemperature();
+}
+
+static void read_clock_rate_on0(void *p)
+{
+    *(unsigned *)p = s_pThrottle->GetClockRate();
+}
+
 extern "C" unsigned SDL2Circle_SoCTemperature(void)
 {
-    return s_bUp ? s_pThrottle->GetTemperature() : 0;
+    if (!s_bUp)
+        return 0;
+    unsigned value = 0;
+    SDL2Circle_CallOn0(read_temperature_on0, &value);
+    return value;
 }
 
 extern "C" unsigned SDL2Circle_CPUClockRate(void)
 {
-    return s_bUp ? s_pThrottle->GetClockRate() : 0;
+    if (!s_bUp)
+        return 0;
+    unsigned value = 0;
+    SDL2Circle_CallOn0(read_clock_rate_on0, &value);
+    return value;
 }
