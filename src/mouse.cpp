@@ -86,8 +86,12 @@ SDL_Cursor *const s_cursor = reinterpret_cast<SDL_Cursor *>(-1);
 // never has a second to give focus to.
 const Uint32 WINDOW_ID = 1;
 
-// SDL's mouse instance ID. Circle publishes one merged mouse device however
-// many are plugged in, so there is one instance and it is 0.
+// SDL's mouse instance ID. SDL2 has one pointer whatever is plugged in, so
+// there is one instance and it is 0.
+//
+// Circle does NOT merge mice: each one it binds gets its own device number,
+// so a second mouse becomes "mouse2" and this file never looks at it. One
+// pointer, driven by the first mouse to arrive.
 const Uint32 MOUSE_ID = 0;
 
 // ---------------------------------------------------------------------------
