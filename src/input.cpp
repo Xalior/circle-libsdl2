@@ -748,3 +748,14 @@ extern "C" SDL_Keycode SDL_GetKeyFromScancode(SDL_Scancode scancode)
 extern "C" void SDL_StartTextInput(void) {}
 extern "C" void SDL_StopTextInput(void) {}
 extern "C" SDL_bool SDL_IsTextInputActive(void) { return SDL_FALSE; }
+
+// The one window always has the keyboard: there is nothing else on screen
+// for focus to be anywhere else.
+extern "C" SDL_Window *SDL_GetKeyboardFocus(void)
+{
+    return SDL_GetWindowFromID(1);
+}
+
+// Where an input method should put its candidate window. There is no input
+// method, so the rectangle is noted and nothing is drawn from it.
+extern "C" void SDL_SetTextInputRect(const SDL_Rect *) {}

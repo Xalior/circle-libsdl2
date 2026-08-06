@@ -39,18 +39,52 @@ core that never touches a device.
 | Events: queue, `SDL_PumpEvents`, window focus | the per-frame service point: USB pump and scheduler yield on core 0, ring drain and liveness signal off it |
 | Timers: `SDL_GetTicks64`, performance counter, `SDL_Delay` | Circle system timer (µs). `SDL_Delay` yields to the scheduler on core 0; off it, spins to a µs-exact deadline — deterministic, but it occupies the core for the duration |
 | Files: an I/O service callable from any core | FatFs on core 0, marshalled (`SDL2Circle_IO*`) — for applications whose own file layer must not touch the SD card directly |
+| Surfaces and pixel formats: `SDL_CreateRGBSurface*`, `SDL_ConvertSurface`, `SDL_ConvertSurfaceFormat`, `SDL_MapRGB`/`SDL_MapRGBA`, `SDL_GetRGB`/`SDL_GetRGBA`, palettes and `SDL_SetPaletteColors`, `SDL_FillRect`, blitting, `SDL_SetColorKey`, lock/unlock, `SDL_ConvertPixels` | in memory. 8-bit paletted surfaces are first-class: a game that renders through a palette does so here without converting anything itself |
+| Threads and synchronisation: `SDL_CreateThread`, mutexes, condition variables, semaphores, atomics, thread-local storage | Circle's scheduler and the AArch64 atomics |
+| Timers: `SDL_AddTimer`/`SDL_RemoveTimer` | the system timer, serviced from the frame's service point |
+| `SDL_image`: `IMG_Load` and its family | PNG decoded here — a DEFLATE decompressor and a PNG reader, because there is no libpng and no zlib. BMP goes to `SDL_LoadBMP_RW` |
+| `SDL_mixer`: several sounds at once, channels, volumes, panning, music | above the audio device, mixing into it. Chunks are converted at load, never in the callback |
+| Audio conversion: `SDL_BuildAudioCVT`, `SDL_ConvertAudio`, `SDL_LoadWAV_RW`, `SDL_MixAudioFormat` | in memory, through float — every width, either byte order, one or two channels, any rate ratio |
+| `SDL_Log` and its family, message boxes | the same ring every other line takes, so an application's own diagnostics are safe to write from its own core |
+| `SDL_GetBasePath` / `SDL_GetPrefPath`, clipboard, key names, `SDL_stdinc` strings and maths | in memory, and the card. See "Declaring the base path" |
 | Init/error/version/hints | — |
 
-**All rendering is 32-bit, and only 32-bit is proven.** The framebuffer is
-always allocated at 32 bits per pixel, and the only texture format is
-streaming ARGB8888 — a request for any other depth or format fails with an
-error rather than falling back. Every consumer proven so far (the examples,
-pi-mame) renders 32-bit ARGB8888 end to end; no other pixel depth has been
-exercised on real hardware.
+**The framebuffer is 32-bit; the formats an application works in are its
+own.** The panel is always allocated at 32 bits per pixel and a texture is
+always STORED as ARGB8888, because the presentation path reads a texture's
+pixels directly and converting during presentation would put that work on
+the core that must not be delayed.
 
-Not yet: `SDL_Haptic` force feedback, controller motion sensors and
-touchpads, virtual joysticks, OpenGL (the Pi 4 has no bare-metal GPU driver —
-software rendering is the design, not a temporary measure).
+The application's format is honoured at the EDGE instead. `SDL_CreateTexture`
+accepts any format SDL names; `SDL_QueryTexture` answers with the one that
+was asked for; pixels handed in through `SDL_UpdateTexture` are converted on
+the way in, and `SDL_LockTexture` hands back a staging buffer in the
+application's own format which `SDL_UnlockTexture` converts. So an
+application writes the pixels it believes it is writing, and the cost falls
+on its own core. Where the format IS ARGB8888 there is no staging buffer and
+no conversion at all.
+
+Surfaces carry no such restriction: any depth, any masks, and 8-bit paletted
+throughout.
+
+Not yet, and each of these fails with a message saying so rather than
+quietly doing something else:
+
+- **No MIDI synthesiser.** `Mix_LoadMUS` reads WAV. A MIDI file is a score
+  rather than a recording, and performing one is a sound engine in its own
+  right.
+- **No fades in the mixer.** `Mix_FadeInMusic` and its relatives start and
+  stop at volume.
+- **No rotation in `SDL_RenderCopyEx`.** Mirroring works, in all three
+  combinations; an angle is refused.
+- **No render-to-texture.** `SDL_SetRenderTarget` accepts the default target
+  and refuses a texture.
+- **No force-feedback device.** The `SDL_Haptic` calls exist and report that
+  there is none, so an application's "rumble if it can" path takes its other
+  branch.
+- **No OpenGL.** The Pi has no bare-metal GPU driver; software rendering is
+  the design, not a temporary measure.
+- Controller motion sensors and touchpads, virtual joysticks.
 
 ## Presentation geometry
 
@@ -244,6 +278,43 @@ application says it is and need not resemble the hardware.
 
 `examples/virtdev` is a bootable example of all of this — see
 [Examples](#examples).
+
+### Declaring the base path
+
+SDL gives an application two directories: the one it was installed in
+(`SDL_GetBasePath`) and one it may write settings and saved games into
+(`SDL_GetPrefPath`). On a desktop SDL works both out for itself, from where
+the running program came from and from the user's home directory.
+
+Neither question has an answer here. The payload was chain-loaded over a
+wire or started from a card; there is no program image to locate, no user
+and no home directory. Where an application's files were put is a decision
+somebody made when they built the card, and the only party that knows it is
+the one embedding this library. So it states it, once, before `SDL_Init`:
+
+```c
+SDL2Circle_DeclareBasePath("/games/example");
+```
+
+**The library learns nothing else from this.** It stores the string, hands
+it back from `SDL_GetBasePath`, and composes `SDL_GetPrefPath` below it. It
+does not read the path, does not check that it exists, and carries no
+default for any particular application — it cannot know one is there.
+
+The declaration is fixed, on the same terms as the virtual display: accepted
+once, before anything has asked for a path, and refused afterwards. Both
+functions return a string the caller releases with `SDL_free`, and both end
+in a separator, because that is SDL's contract and applications append to
+the result without checking.
+
+**Not declaring one is not an error.** It answers `/`, with one warning on
+the log. This differs deliberately from the virtual display, which stops
+`SDL_Init` when it is missing: there is no sane default display size, but a
+board has exactly one filesystem and `/` is a real directory an application
+can read and write. SDL returns a non-null path on every desktop platform,
+so a great many applications dereference the answer without looking —
+refusing would turn a missing declaration into a crash inside the
+application rather than a message from here.
 
 ## Joysticks and game controllers
 
@@ -922,6 +993,32 @@ already uses most of this library gains nothing in size from the change.
 This is a setting for development rather than for a shipped build. An
 application that deliberately uses a small part of the library will carry
 the rest of it. Nothing here requires the setting, and no example sets it.
+
+**It is also the only test that proves an application carries no SDL of its
+own.** Reading through an application's source for leftover SDL functions
+proves nothing — the one that matters is the one nobody thought to look at.
+A whole-archive link decides it mechanically: every archive member is pulled
+in, so any function the application still defines for itself collides with
+this library's and is named in the error.
+
+So a whole-archive link that produces **no duplicate symbols** is positive
+proof, rather than an absence of evidence. It is worth running once after
+removing an application's private SDL, and it is the check to apply before
+declaring that removal finished.
+
+The library holds itself to the same standard: every SDL, `IMG_` and `Mix_`
+symbol the archive references, the archive defines. A symbol that is
+declared in a header and defined nowhere is invisible to a selective link
+and fails only under whole-archive — which would make this check
+unsatisfiable for everyone. The sweep that shows it:
+
+```sh
+nm --defined-only libSDL2-<board>.a | awk '{print $3}'         | sort -u > defined
+nm -u             libSDL2-<board>.a | awk '$1=="U"{print $2}'  | sort -u > undefined
+comm -23 undefined defined | grep -E '^(SDL_|IMG_|Mix_)'
+```
+
+Run it against a full `make rebuild`, never an incremental build.
 
 ## Examples
 

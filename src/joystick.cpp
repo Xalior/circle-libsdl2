@@ -1171,3 +1171,58 @@ extern "C" int SDL_JoystickSetVirtualHat(SDL_Joystick *joystick, int hat, Uint8 
     (void) joystick; (void) hat; (void) value;
     return SDL_SetError("virtual joysticks are not supported");
 }
+
+// ---------------------------------------------------------------------------
+// Haptic
+//
+// No force-feedback device is driven here. Every query says so plainly and
+// every action fails, so an application's "rumble if it can" path takes its
+// other branch instead of believing a rumble happened.
+// ---------------------------------------------------------------------------
+
+extern "C" int SDL_NumHaptics(void) { return 0; }
+
+extern "C" const char *SDL_HapticName(int) { return nullptr; }
+
+extern "C" SDL_Haptic *SDL_HapticOpen(int index)
+{
+    SDL_SetError("SDL_HapticOpen: there is no haptic device %d", index);
+    return nullptr;
+}
+
+extern "C" SDL_Haptic *SDL_HapticOpenFromJoystick(SDL_Joystick *)
+{
+    SDL_SetError("SDL_HapticOpenFromJoystick: this joystick has no haptic "
+                 "device");
+    return nullptr;
+}
+
+extern "C" SDL_Haptic *SDL_HapticOpenFromMouse(void)
+{
+    SDL_SetError("SDL_HapticOpenFromMouse: the mouse has no haptic device");
+    return nullptr;
+}
+
+extern "C" void SDL_HapticClose(SDL_Haptic *) {}
+
+extern "C" int SDL_HapticOpened(int) { return 0; }
+
+extern "C" int SDL_JoystickIsHaptic(SDL_Joystick *) { return 0; }
+extern "C" int SDL_MouseIsHaptic(void) { return 0; }
+
+extern "C" int SDL_HapticRumbleSupported(SDL_Haptic *) { return 0; }
+
+extern "C" int SDL_HapticRumbleInit(SDL_Haptic *)
+{
+    return SDL_SetError("SDL_HapticRumbleInit: there is no haptic device");
+}
+
+extern "C" int SDL_HapticRumblePlay(SDL_Haptic *, float, Uint32)
+{
+    return SDL_SetError("SDL_HapticRumblePlay: there is no haptic device");
+}
+
+extern "C" int SDL_HapticRumbleStop(SDL_Haptic *)
+{
+    return SDL_SetError("SDL_HapticRumbleStop: there is no haptic device");
+}

@@ -94,6 +94,23 @@ struct SDL_Renderer
     u32 border_color;
     int frame_x, frame_y, frame_w, frame_h;
     unsigned border_repaint;   // frames still owing a repaint
+
+    // Pixels a command needs that exist nowhere else — a mirrored copy for
+    // SDL_RenderCopyEx, which the texture itself does not hold. A recorded
+    // command is not executed until present, so those pixels have to outlive
+    // the call that made them: they are bump-allocated here and the arena is
+    // emptied when the next frame starts.
+    //
+    // TWO of them, alternating, for the same reason the textures come in
+    // pairs. Under the core split a posted frame is still being read by the
+    // presentation worker after RenderPresent returns, so emptying the arena
+    // the application just drew into would pull those pixels out from under
+    // it. The frame in flight keeps the one it was posted with while the
+    // application fills the other.
+    u8    *scratch[2];
+    size_t scratch_bytes[2];
+    size_t scratch_used;
+    u8     scratch_idx;
 };
 
 // The canvas-resolution surface a frame is rasterized into when it is not
@@ -1587,6 +1604,160 @@ extern "C" void SDL_DisableScreenSaver(void) {}
 extern "C" void SDL_EnableScreenSaver(void) {}
 extern "C" SDL_bool SDL_IsScreenSaverEnabled(void) { return SDL_FALSE; }
 
+// ---------------------------------------------------------------------------
+// The window's display mode
+//
+// There is one mode, it is the one the panel is in, and it cannot be
+// changed from here. A request for a different one is accepted and changes
+// nothing, and every query answers with the mode actually in force — which
+// is what an application checks before deciding how much it can draw.
+// ---------------------------------------------------------------------------
+
+extern "C" int SDL_GetWindowDisplayMode(SDL_Window *win, SDL_DisplayMode *mode)
+{
+    if (!win || !mode)
+        return SDL_SetError("SDL_GetWindowDisplayMode: no window or mode");
+    return SDL_GetCurrentDisplayMode(0, mode);
+}
+
+extern "C" int SDL_SetWindowDisplayMode(SDL_Window *win, const SDL_DisplayMode *)
+{
+    if (!win)
+        return SDL_SetError("SDL_SetWindowDisplayMode: no window");
+    return 0;
+}
+
+// SDL's contract is to return the closest mode it has, and there is exactly
+// one to be closest.
+extern "C" SDL_DisplayMode *SDL_GetClosestDisplayMode(int displayIndex,
+                                                      const SDL_DisplayMode *,
+                                                      SDL_DisplayMode *closest)
+{
+    if (!closest || SDL_GetCurrentDisplayMode(displayIndex, closest) < 0)
+        return nullptr;
+    return closest;
+}
+
+// No panel reports its physical size here, and SDL's contract is to fail
+// rather than invent one — an application that scales its text by the answer
+// would lay itself out to a number that means nothing.
+extern "C" int SDL_GetDisplayDPI(int, float *ddpi, float *hdpi, float *vdpi)
+{
+    if (ddpi) *ddpi = 0.0f;
+    if (hdpi) *hdpi = 0.0f;
+    if (vdpi) *vdpi = 0.0f;
+    return SDL_SetError("SDL_GetDisplayDPI: the display does not report its "
+                        "physical size");
+}
+
+// There is no compositor between the window and the panel, so a drawable
+// pixel is a window pixel.
+extern "C" void SDL_GL_GetDrawableSize(SDL_Window *win, int *w, int *h)
+{
+    SDL_GetWindowSize(win, w, h);
+}
+
+extern "C" void SDL_Vulkan_GetDrawableSize(SDL_Window *win, int *w, int *h)
+{
+    SDL_GetWindowSize(win, w, h);
+}
+
+// Gamma is applied by hardware this shim does not drive. Refused rather than
+// accepted silently: an application correcting its own output would believe
+// a correction had been made that had not.
+extern "C" int SDL_SetWindowGammaRamp(SDL_Window *, const Uint16 *,
+                                      const Uint16 *, const Uint16 *)
+{
+    return SDL_SetError("SDL_SetWindowGammaRamp: this display has no gamma "
+                        "ramp");
+}
+
+extern "C" int SDL_GetWindowGammaRamp(SDL_Window *, Uint16 *, Uint16 *, Uint16 *)
+{
+    return SDL_SetError("SDL_GetWindowGammaRamp: this display has no gamma "
+                        "ramp");
+}
+
+// There is no window system to describe, and SDL_syswm.h's structure is
+// entirely made of window-system handles. Declared with the structure left
+// opaque: naming it would mean including SDL_syswm.h here, whose contents
+// are decided by which window system the configuration names — and this
+// configuration names none.
+struct SDL_SysWMinfo;
+extern "C" SDL_bool SDL_GetWindowWMInfo(SDL_Window *, SDL_SysWMinfo *)
+{
+    SDL_SetError("SDL_GetWindowWMInfo: there is no window system");
+    return SDL_FALSE;
+}
+
+// ---------------------------------------------------------------------------
+// Drawing to the window without a renderer
+//
+// SDL's older path: ask the window for a surface, draw into it, and say when
+// to put it on screen. It is kept as one surface for the window's lifetime,
+// because that is the pointer applications hold on to across frames.
+// ---------------------------------------------------------------------------
+
+static SDL_Surface *s_window_surface = nullptr;
+
+extern "C" SDL_Surface *SDL_GetWindowSurface(SDL_Window *win)
+{
+    if (!win)
+    {
+        SDL_SetError("SDL_GetWindowSurface: no window");
+        return nullptr;
+    }
+    if (s_window_surface
+        && s_window_surface->w == win->w && s_window_surface->h == win->h)
+        return s_window_surface;
+
+    SDL_FreeSurface(s_window_surface);
+    s_window_surface = SDL_CreateRGBSurfaceWithFormat(0, win->w, win->h, 32,
+                                                      SDL_PIXELFORMAT_ARGB8888);
+    return s_window_surface;
+}
+
+extern "C" int SDL_UpdateWindowSurfaceRects(SDL_Window *win,
+                                            const SDL_Rect *rects, int numrects)
+{
+    if (!win || !s_window_surface)
+        return SDL_SetError("SDL_UpdateWindowSurfaceRects: no window surface");
+
+    // The window surface is put on screen through the same present path
+    // everything else uses, so one route reaches the panel and the core
+    // split holds for this path too.
+    const SDL_Rect whole = { 0, 0, win->w, win->h };
+    for (int i = 0; i < (rects ? numrects : 1); i++)
+    {
+        SDL_Rect r = rects ? rects[i] : whole;
+        if (!SDL_IntersectRect(&r, &whole, &r))
+            continue;
+
+        SDL2CirclePresentCmd cmd;
+        cmd.op = SDL2CirclePresentCmd::COPY;
+        cmd.dx = r.x;
+        cmd.dy = r.y;
+        cmd.w = r.w;
+        cmd.h = r.h;
+        cmd.color = 0;
+        cmd.src = (u8 *)s_window_surface->pixels
+                + (size_t)r.y * s_window_surface->pitch + (size_t)r.x * 4;
+        cmd.srcpitch = s_window_surface->pitch;
+        cmd.sw = r.w;
+        cmd.sh = r.h;
+        cmd.blend = 0;
+        cmd.alphamod = 255;
+        SDL2Circle_VideoExecCmd(&cmd, 0);
+    }
+    SDL2Circle_VideoFlip(0);
+    return 0;
+}
+
+extern "C" int SDL_UpdateWindowSurface(SDL_Window *win)
+{
+    return SDL_UpdateWindowSurfaceRects(win, nullptr, 1);
+}
+
 extern "C" SDL_Renderer *SDL_CreateRenderer(SDL_Window *win, int, Uint32 flags)
 {
     if (!win)
@@ -1620,7 +1791,39 @@ extern "C" SDL_Renderer *SDL_CreateRenderer(SDL_Window *win, int, Uint32 flags)
     ren->viewport_set = false;
     ren->clip = { 0, 0, 0, 0 };
     ren->clip_enabled = false;
+    ren->scratch[0] = ren->scratch[1] = nullptr;
+    ren->scratch_bytes[0] = ren->scratch_bytes[1] = 0;
+    ren->scratch_used = 0;
+    ren->scratch_idx = 0;
     return ren;
+}
+
+// Room inside this frame's scratch arena, or null when it cannot be had. The
+// arena keeps whatever it grew to, so a game that flips the same sprites
+// every frame allocates once and never again.
+static void *frame_scratch(SDL_Renderer *ren, size_t bytes)
+{
+    const u8 i = ren->scratch_idx;
+    if (ren->scratch_used + bytes > ren->scratch_bytes[i])
+    {
+        const size_t want = ren->scratch_used + bytes;
+        u8 *grown = (u8 *)realloc(ren->scratch[i], want);
+        if (!grown)
+            return nullptr;
+        ren->scratch[i] = grown;
+        ren->scratch_bytes[i] = want;
+    }
+    void *p = ren->scratch[i] + ren->scratch_used;
+    ren->scratch_used += bytes;
+    return p;
+}
+
+// Start the next frame's arena. The one just posted stays intact for as long
+// as the frame referencing it is in flight.
+static void frame_scratch_next(SDL_Renderer *ren)
+{
+    ren->scratch_idx ^= 1;
+    ren->scratch_used = 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -1752,6 +1955,14 @@ bool map_dst(const SDL_Renderer *ren, int &x, int &y, int &w, int &h)
 
 extern "C" void SDL_DestroyRenderer(SDL_Renderer *ren)
 {
+    if (!ren)
+        return;
+
+    // A posted frame may still be referencing an arena, so nothing here can
+    // go back until the presentation worker is out of the frame.
+    SDL2Circle_PresentQuiesce();
+    free(ren->scratch[0]);
+    free(ren->scratch[1]);
     delete ren;
 }
 
@@ -2148,6 +2359,139 @@ extern "C" int SDL_RenderCopy(SDL_Renderer *ren, SDL_Texture *tex,
     // This buffer now belongs to the frame being assembled; the next write
     // to the texture switches buffers while it is (or may be) in flight.
     tex->posted = tex->widx;
+    return 0;
+}
+
+// A copy that may be mirrored. The texture holds one set of pixels and has
+// no mirrored copy of its own, so the mirrored region is written into the
+// frame's scratch arena and copied from there — which is why the arena
+// exists, and why it lasts exactly as long as a recorded command does.
+//
+// ROTATION IS REFUSED. Turning a picture by an arbitrary angle means
+// resampling every destination pixel from a source position between four
+// others, which is a different piece of work from a blit and is not here.
+// Refusing says so; drawing it unrotated would be a picture that is wrong in
+// a way nothing on screen would explain.
+extern "C" int SDL_RenderCopyEx(SDL_Renderer *ren, SDL_Texture *tex,
+                                const SDL_Rect *srcrect, const SDL_Rect *dstrect,
+                                const double angle, const SDL_Point *center,
+                                const SDL_RendererFlip flip)
+{
+    if (!ren || !tex)
+        return SDL_SetError("SDL_RenderCopyEx: no renderer or texture");
+
+    if (angle != 0.0)
+        return SDL_SetError("SDL_RenderCopyEx: rotation by %g degrees is not "
+                            "implemented", angle);
+    (void)center;   // only meaningful with a rotation
+
+    if (flip == SDL_FLIP_NONE)
+        return SDL_RenderCopy(ren, tex, srcrect, dstrect);
+
+    const int sx = srcrect ? srcrect->x : 0;
+    const int sy = srcrect ? srcrect->y : 0;
+    const int sw = srcrect ? srcrect->w : tex->w;
+    const int sh = srcrect ? srcrect->h : tex->h;
+    if (sw <= 0 || sh <= 0)
+        return 0;
+    if (sx < 0 || sy < 0 || sx + sw > tex->w || sy + sh > tex->h)
+        return SDL_SetError("SDL_RenderCopyEx: source rectangle is outside "
+                            "the texture");
+
+    // The mirrored region, in the stored format, in this frame's arena.
+    const size_t pitch = (size_t)sw * 4;
+    u8 *mirror = (u8 *)frame_scratch(ren, pitch * (size_t)sh);
+    if (!mirror)
+        return SDL_SetError("SDL_RenderCopyEx: no room to mirror a %dx%d "
+                            "region", sw, sh);
+
+    const u8 *base = tex->pixels[tex->widx];
+    const bool flip_h = (flip & SDL_FLIP_HORIZONTAL) != 0;
+    const bool flip_v = (flip & SDL_FLIP_VERTICAL) != 0;
+
+    for (int y = 0; y < sh; y++)
+    {
+        const int src_y = flip_v ? (sy + sh - 1 - y) : (sy + y);
+        const Uint32 *s = (const Uint32 *)(base + (size_t)src_y * tex->pitch)
+                        + sx;
+        Uint32 *d = (Uint32 *)(mirror + (size_t)y * pitch);
+        if (flip_h)
+            for (int x = 0; x < sw; x++)
+                d[x] = s[sw - 1 - x];
+        else
+            memcpy(d, s, pitch);
+    }
+
+    // From here it is an ordinary copy of a whole image that happens to live
+    // in the arena, so the destination mapping and clipping are the same.
+    int dx = dstrect ? dstrect->x : 0;
+    int dy = dstrect ? dstrect->y : 0;
+    int dw = dstrect ? dstrect->w : ren->window->w;
+    int dh = dstrect ? dstrect->h : ren->window->h;
+    if (!dstrect && ren->logical_w > 0 && ren->logical_h > 0)
+    {
+        dw = ren->logical_w;
+        dh = ren->logical_h;
+    }
+    if (dw <= 0 || dh <= 0)
+        return 0;
+    if (!map_dst(ren, dx, dy, dw, dh))
+        return 0;
+
+    int msx = 0, msy = 0, msw = sw, msh = sh;
+    const SDL_Rect confine = confine_rect(ren);
+    clip_axis_range(dx, dw, msx, msw, confine.x, confine.x + confine.w);
+    clip_axis_range(dy, dh, msy, msh, confine.y, confine.y + confine.h);
+    if (msw <= 0 || msh <= 0 || dw <= 0 || dh <= 0)
+        return 0;
+
+    SDL2CirclePresentCmd cmd;
+    cmd.op = SDL2CirclePresentCmd::COPY;
+    cmd.dx = dx;
+    cmd.dy = dy;
+    cmd.w = dw;
+    cmd.h = dh;
+    cmd.color = 0;
+    cmd.src = mirror + (size_t)msy * pitch + (size_t)msx * 4;
+    cmd.srcpitch = (int)pitch;
+    cmd.sw = msw;
+    cmd.sh = msh;
+    cmd.blend = (tex->blend == SDL_BLENDMODE_BLEND) ? 1 : 0;
+    cmd.alphamod = tex->alphamod;
+    emit_cmd(ren, cmd);
+    return 0;
+}
+
+// Reads back what has been drawn. The frame being assembled has not been
+// executed yet — commands are recorded and run at present — so this answers
+// with the last frame actually placed on the canvas.
+extern "C" int SDL_RenderReadPixels(SDL_Renderer *ren, const SDL_Rect *rect,
+                                    Uint32 format, void *pixels, int pitch)
+{
+    if (!ren || !pixels)
+        return SDL_SetError("SDL_RenderReadPixels: no renderer or destination");
+
+    SDL_Rect r = rect ? *rect
+                      : SDL_Rect{ 0, 0, ren->window->w, ren->window->h };
+    const SDL_Rect win = { 0, 0, ren->window->w, ren->window->h };
+    if (!SDL_IntersectRect(&r, &win, &r))
+        return 0;
+
+    if (format == 0)
+        format = SDL_PIXELFORMAT_ARGB8888;
+
+    // The visible half is the one NOT being drawn into.
+    const unsigned front = (s_fb_halves == 2) ? (ren->back ^ 1) : 0;
+    const u8 *base = ren->base + (size_t)front * ren->pitch * (unsigned)ren->window->h;
+
+    for (int y = 0; y < r.h; y++)
+    {
+        const u8 *src = base + (size_t)(r.y + y) * ren->pitch + (size_t)r.x * 4;
+        u8 *dst = (u8 *)pixels + (size_t)y * pitch;
+        if (SDL_ConvertPixels(r.w, 1, SDL_PIXELFORMAT_ARGB8888, src, ren->pitch,
+                              format, dst, pitch) < 0)
+            return -1;
+    }
     return 0;
 }
 
@@ -2718,6 +3062,7 @@ extern "C" void SDL_RenderPresent(SDL_Renderer *ren)
             ren->ncmds = 0;
             ren->have_copy = false;
             ren->rasterizing = false;
+            frame_scratch_next(ren);
             if (s_fb_halves == 2)
                 ren->back ^= 1;
             return;
@@ -2727,6 +3072,7 @@ extern "C" void SDL_RenderPresent(SDL_Renderer *ren)
         ren->ncmds = 0;
         ren->have_copy = false;
         ren->rasterizing = false;
+        frame_scratch_next(ren);
         SDL2Circle_VideoFlip(ren->back);
         if (ren->vsync)
         {
