@@ -17,11 +17,39 @@
 #   make                 build the default board's archive (BOARD=rpi4)
 #   make BOARD=rpi3      build one board's archive against its world
 #   make all-boards      (re)build all three archives (worlds already built)
+#   make rebuild         drop one board's objects and archive and build both
+#                        from nothing
+#   make rebuild-all     the same for all three boards
 #
 # The consumer picks a board's archive+world explicitly; nothing here assumes
 # a single board. Override a world's location with
 # `make CIRCLESTDLIBHOME=/path/to/world` if needed.
 #
+
+# GNU make 4.0 or later. macOS ships 3.81 as `make`, and Homebrew installs a
+# current one as `gmake`.
+#
+# 3.81 gets three things wrong that this build cannot survive, and all three
+# were paid for here:
+#
+#   It compares file timestamps to the SECOND. A source rewritten within the
+#   same second its object was compiled in is never seen as newer, so the
+#   object stays in the archive carrying the older text and a symbol audit run
+#   against that archive reports functions as missing that the source plainly
+#   defines. 4.x compares to the nanosecond, which APFS records, and rebuilds.
+#
+#   A dependency file naming a header that has since moved or been deleted
+#   stops it with exit 2 and no output at all — nothing names the file.
+#
+#   A -MG dependency on a header with no rule stops it the same silent way.
+#
+# The last two no longer apply to this makefile (dependencies are written with
+# -MD -MP as a side effect of compiling; see DEPFLAGS below), but the timestamp
+# comparison is make's own and cannot be worked around from here.
+ifeq ($(filter 1.% 2.% 3.%,$(MAKE_VERSION)),$(MAKE_VERSION))
+$(error this build needs GNU make 4.0 or later; this is '$(MAKE)' version '$(MAKE_VERSION)'. Homebrew installs one as gmake.)
+endif
+
 BOARDS      = rpi3 rpi4 rpi5
 BOARD      ?= rpi4
 RASPPI_rpi3 = 3
@@ -248,6 +276,24 @@ all-boards:
 	+@$(NOT_DRY_RUN)
 	@for b in $(BOARDS); do $(MAKE) libSDL2-$$b.a BOARD=$$b || exit 1; done
 
+# One board from nothing: its objects and its archive are removed before the
+# build, so nothing on disk can answer for a source make did not read.
+#
+# An incremental build is a decision made from timestamps, and a timestamp is
+# evidence about when a file was written rather than about what is in it. Any
+# reading taken off an incrementally built archive — a symbol list, a size, a
+# member listing — is a reading of whatever the last build happened to put
+# there. Take a measurement that has to be right off one of these.
+.PHONY: rebuild rebuild-all
+rebuild:
+	+@$(NOT_DRY_RUN)
+	@rm -rf $(OBJDIR) libSDL2-$(BOARD).a
+	@$(MAKE) libSDL2-$(BOARD).a BOARD=$(BOARD) PRESENT_CMDS=$(PRESENT_CMDS)
+
+rebuild-all:
+	+@$(NOT_DRY_RUN)
+	@for b in $(BOARDS); do $(MAKE) rebuild BOARD=$$b || exit 1; done
+
 # The shim targets need the selected board's Config.mk + Rules.mk; guard them so
 # `make deps` can parse and run before that world has been configured.
 ifneq ($(wildcard $(CIRCLESTDLIBHOME)/Config.mk),)
@@ -260,7 +306,7 @@ SRCS = src/init.cpp src/error.cpp src/timer.cpp src/hints.cpp src/events.cpp \
        src/split.cpp src/log.cpp src/coreruntime.cpp src/hardware.cpp \
        src/mouse.cpp src/pixels.cpp src/blit.cpp src/bmp.cpp src/rect.cpp \
        src/threads.cpp src/stdinc.cpp src/filesystem.cpp src/clipboard.cpp \
-       src/messagebox.cpp src/keyname.cpp src/platform.cpp
+       src/messagebox.cpp src/keyname.cpp src/platform.cpp src/image.cpp
 OBJS = $(SRCS:src/%.cpp=$(OBJDIR)/%.o)
 DEPS = $(OBJS:.o=.d)
 
