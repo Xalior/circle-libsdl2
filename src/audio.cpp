@@ -19,14 +19,72 @@ namespace
 {
 
 CHDMISoundBaseDevice *s_device = nullptr;
+
+// TWO SPECS, and the difference between them is the whole of this file's
+// contract with an application.
+//
+// s_spec is what the APPLICATION writes: the format, channel count and rate
+// its callback fills a buffer in. It is what SDL_OpenAudioDevice reports in
+// `obtained`, and it is the application's own spec unless the application
+// gave permission for it to be changed.
+//
+// s_dev is what the DEVICE plays. The HDMI sound device speaks 16-bit signed
+// stereo and nothing else.
+//
+// Where they differ, the library converts between them — see s_cvt. That is
+// the point: an application that asks for mono and does NOT set
+// SDL_AUDIO_ALLOW_CHANNELS_CHANGE has been promised mono, and handing its
+// callback a stereo-sized buffer to fill produces garbled sound with no
+// error anywhere. Either match what was asked, or change it and SAY SO in
+// `obtained`. Ignoring the request is the one answer that is never right.
 SDL_AudioSpec s_spec;
+SDL_AudioSpec s_dev;
+
 bool s_paused = true;
 bool s_started = false;
 int s_lock = 0;
-Uint8 *s_chunk = nullptr;
 unsigned s_queueFrames = 0;
 
+// The callback's buffer. Large enough to hold the conversion's output as
+// well as its input, because SDL_ConvertAudio works in place.
+Uint8 *s_chunk = nullptr;
+
+// Set when the two specs differ in any respect.
+bool s_convert = false;
+SDL_AudioCVT s_cvt;
+
+// One chunk's worth, measured on the DEVICE's side of the conversion. The
+// queue is counted in device frames, so these are what the pump and the
+// drain must use — the application's own figures describe a different
+// number of bytes whenever a conversion is in play.
+unsigned s_dev_bytes = 0;
+unsigned s_dev_frames = 0;
+
 constexpr unsigned QUEUE_MSECS = 100;
+
+// Fill in the derived fields SDL leaves to the implementation.
+void complete_spec(SDL_AudioSpec &spec)
+{
+    spec.silence = SDL_AUDIO_ISSIGNED(spec.format) ? 0 : 0x80;
+    spec.size = (Uint32)spec.samples * spec.channels
+              * (SDL_AUDIO_BITSIZE(spec.format) / 8);
+}
+
+// Run the application's callback and leave one chunk in DEVICE format in
+// s_chunk. Returns the number of bytes to hand the device, or 0 if the
+// conversion failed.
+unsigned fill_chunk(void)
+{
+    s_spec.callback(s_spec.userdata, s_chunk, (int)s_spec.size);
+    if (!s_convert)
+        return s_spec.size;
+
+    s_cvt.buf = s_chunk;
+    s_cvt.len = (int)s_spec.size;
+    if (SDL_ConvertAudio(&s_cvt) < 0)
+        return 0;
+    return (unsigned)s_cvt.len_cvt;
+}
 
 } // namespace
 
@@ -46,10 +104,12 @@ static void open_device_on0(void *p)
     s_queueFrames = s_device->GetQueueSizeFrames();
 }
 
+static void close_device_on0(void *);
+
 extern "C" SDL_AudioDeviceID SDL_OpenAudioDevice(const char *, int iscapture,
                                                  const SDL_AudioSpec *desired,
                                                  SDL_AudioSpec *obtained,
-                                                 int)
+                                                 int allowed_changes)
 {
     if (iscapture || !desired)
     {
@@ -72,17 +132,100 @@ extern "C" SDL_AudioDeviceID SDL_OpenAudioDevice(const char *, int iscapture,
         return 0;
     }
 
+    // What the device plays. The rate is the one it was just constructed
+    // with, so an application's requested rate is met by the hardware rather
+    // than by resampling; the format and the channel count are fixed.
+    s_dev.freq     = freq;
+    s_dev.format   = AUDIO_S16SYS;
+    s_dev.channels = 2;
+    s_dev.samples  = samples;
+    s_dev.callback = nullptr;
+    s_dev.userdata = nullptr;
+    complete_spec(s_dev);
+
+    // What the application writes. Each attribute is the one it asked for,
+    // unless it gave permission for that attribute to change — in which case
+    // it becomes the device's, and `obtained` reports the change so the
+    // application can adapt. An attribute it did not give permission to
+    // change stays as asked and is converted below.
+    const int allowed = allowed_changes;
     s_spec = *desired;
-    s_spec.freq = freq;
-    s_spec.format = AUDIO_S16SYS;   // the only format the device speaks
-    s_spec.channels = 2;
-    s_spec.samples = samples;
-    s_spec.size = (Uint32)samples * 2 * 2;
-    s_spec.silence = 0;
+    if (allowed & SDL_AUDIO_ALLOW_FREQUENCY_CHANGE)
+        s_spec.freq = s_dev.freq;
+    else if (s_spec.freq <= 0)
+        s_spec.freq = s_dev.freq;
+
+    if (allowed & SDL_AUDIO_ALLOW_FORMAT_CHANGE)
+        s_spec.format = s_dev.format;
+    else if (s_spec.format == 0)
+        s_spec.format = s_dev.format;
+
+    if (allowed & SDL_AUDIO_ALLOW_CHANNELS_CHANGE)
+        s_spec.channels = s_dev.channels;
+    else if (s_spec.channels == 0)
+        s_spec.channels = s_dev.channels;
+
+    if (allowed & SDL_AUDIO_ALLOW_SAMPLES_CHANGE)
+        s_spec.samples = s_dev.samples;
+    else if (s_spec.samples == 0)
+        s_spec.samples = s_dev.samples;
+    complete_spec(s_spec);
+
+    // A rate this library cannot deliver by construction: the device was
+    // built at the rate that was asked for, so the only way the two differ
+    // is a caller that asked for one rate and permitted a change to another.
+    s_convert = (s_spec.format   != s_dev.format)
+             || (s_spec.channels != s_dev.channels)
+             || (s_spec.freq     != s_dev.freq);
+
+    size_t chunk_bytes = s_spec.size;
+    if (s_convert)
+    {
+        if (SDL_BuildAudioCVT(&s_cvt, s_spec.format, s_spec.channels,
+                              s_spec.freq, s_dev.format, s_dev.channels,
+                              s_dev.freq) < 0)
+        {
+            // The conversion is not one this build can make, so the promise
+            // in `obtained` could not be kept. Say so rather than open a
+            // device that will be fed the wrong shape.
+            SDL2Circle_CallOn0(close_device_on0, nullptr);
+            return 0;   // SDL_BuildAudioCVT has set the error
+        }
+        chunk_bytes = (size_t)s_spec.size * s_cvt.len_mult + 1;
+        s_dev_bytes = (unsigned)((double)s_spec.size * s_cvt.len_ratio);
+    }
+    else
+    {
+        s_dev_bytes = s_spec.size;
+    }
+
+    // The queue is counted in device frames, so a chunk's length has to be
+    // measured on the device's side of any conversion.
+    const unsigned dev_frame_bytes = s_dev.channels
+                                   * (SDL_AUDIO_BITSIZE(s_dev.format) / 8);
+    s_dev_frames = dev_frame_bytes ? s_dev_bytes / dev_frame_bytes : 0;
+    if (s_dev_frames == 0)
+        s_dev_frames = 1;
+
+    s_chunk = (Uint8 *)malloc(chunk_bytes);
+    if (!s_chunk)
+    {
+        SDL2Circle_CallOn0(close_device_on0, nullptr);
+        SDL_OutOfMemory();
+        return 0;
+    }
+
     if (obtained)
         *obtained = s_spec;
 
-    s_chunk = (Uint8 *)malloc(s_spec.size);
+    if (s_convert)
+        SDL2Circle_Log("sdl2audio", SDL2CIRCLE_LOG_NOTICE,
+                       "application writes %d Hz format 0x%04x %d channel(s); "
+                       "device plays %d Hz format 0x%04x %d channel(s) — "
+                       "converting",
+                       s_spec.freq, (unsigned)s_spec.format, s_spec.channels,
+                       s_dev.freq, (unsigned)s_dev.format, s_dev.channels);
+
     s_paused = true;
     s_started = false;
 
@@ -100,10 +243,12 @@ void SDL2Circle_AudioPump(void)
     // Audio stops being hostage to frame granularity.
     if (SDL2Circle_SplitActive() && SDL2Circle_ThisCore() != 0)
     {
-        while (SDL2Circle_AudioRingSpace() >= s_spec.size)
+        while (SDL2Circle_AudioRingSpace() >= s_dev_bytes)
         {
-            s_spec.callback(s_spec.userdata, s_chunk, (int)s_spec.size);
-            SDL2Circle_AudioRingWrite(s_chunk, s_spec.size);
+            const unsigned n = fill_chunk();
+            if (n == 0)
+                break;
+            SDL2Circle_AudioRingWrite(s_chunk, n);
         }
         return;
     }
@@ -111,12 +256,14 @@ void SDL2Circle_AudioPump(void)
     unsigned queued = s_device->GetQueueFramesAvail();
     unsigned space = s_queueFrames > queued ? s_queueFrames - queued : 0;
 
-    while (space >= s_spec.samples)
+    while (space >= s_dev_frames)
     {
-        s_spec.callback(s_spec.userdata, s_chunk, (int)s_spec.size);
-        if (s_device->Write(s_chunk, s_spec.size) <= 0)
+        const unsigned n = fill_chunk();
+        if (n == 0)
             break;
-        space -= s_spec.samples;
+        if (s_device->Write(s_chunk, n) <= 0)
+            break;
+        space -= s_dev_frames;
     }
 }
 
@@ -126,21 +273,33 @@ void SDL2Circle_AudioDrain(void)
     if (!s_device || s_paused)
         return;
 
+    // The ring carries DEVICE-format bytes: the conversion happens on the
+    // application's own core, before the samples cross.
     static u8 *drainChunk = nullptr;
-    if (!drainChunk)
-        drainChunk = (u8 *)malloc(s_spec.size ? s_spec.size : 4096);
+    static unsigned drainBytes = 0;
+    if (!drainChunk || drainBytes < s_dev_bytes)
+    {
+        free(drainChunk);
+        drainBytes = s_dev_bytes ? s_dev_bytes : 4096;
+        drainChunk = (u8 *)malloc(drainBytes);
+        if (!drainChunk)
+        {
+            drainBytes = 0;
+            return;
+        }
+    }
 
     unsigned queued = s_device->GetQueueFramesAvail();
     unsigned space = s_queueFrames > queued ? s_queueFrames - queued : 0;
 
-    while (space >= s_spec.samples)
+    while (space >= s_dev_frames)
     {
-        unsigned n = SDL2Circle_AudioRingRead(drainChunk, s_spec.size);
+        unsigned n = SDL2Circle_AudioRingRead(drainChunk, s_dev_bytes);
         if (n == 0)
             break;
         if (s_device->Write(drainChunk, n) <= 0)
             break;
-        space -= s_spec.samples;
+        space -= s_dev_frames;
     }
 }
 
@@ -212,35 +371,18 @@ extern "C" int SDL_OpenAudio(SDL_AudioSpec *desired, SDL_AudioSpec *obtained)
     if (!desired)
         return SDL_SetError("SDL_OpenAudio: no desired spec");
 
-    // SDL's contract differs by whether the caller will accept what the
-    // device actually offers. Given somewhere to report it, any difference
-    // is allowed and reported. Given nowhere, SDL undertakes to convert
-    // silently, so a difference has to be refused rather than passed off as
-    // success — an application that was promised its own format and is fed
-    // another produces noise, with nothing to point at.
+    // SDL's contract differs by whether the caller gave somewhere to report a
+    // change. Given nowhere, it undertakes to deliver EXACTLY the spec that
+    // was asked for and to convert on the application's behalf — so no change
+    // is permitted here, and the conversion happens at the device boundary.
+    // Given somewhere, any change is allowed and is reported into it.
     SDL_AudioSpec got;
     if (SDL_OpenAudioDevice(nullptr, 0, desired, &got,
-                            SDL_AUDIO_ALLOW_ANY_CHANGE) == 0)
+                            obtained ? SDL_AUDIO_ALLOW_ANY_CHANGE : 0) == 0)
         return -1;   // SDL_OpenAudioDevice has set the error
 
     if (obtained)
-    {
         *obtained = got;
-        return 0;
-    }
-
-    if (got.freq != desired->freq || got.format != desired->format
-        || got.channels != desired->channels)
-    {
-        SDL_CloseAudioDevice(1);
-        return SDL_SetError("SDL_OpenAudio: the device offers %d Hz format "
-                            "0x%04x %d channels, not %d Hz format 0x%04x %d "
-                            "channels, and conversion was not requested "
-                            "(pass `obtained` to accept the device's own)",
-                            got.freq, (unsigned)got.format, got.channels,
-                            desired->freq, (unsigned)desired->format,
-                            desired->channels);
-    }
     return 0;
 }
 
