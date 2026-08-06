@@ -77,7 +77,12 @@ static void glyph(int digit, int x, int y, int scale, Uint32 c)
 }
 
 CKernel::CKernel(void)
-    : m_Timer(&m_Interrupt),
+    // Serial device 0 is the GPIO14/15 header UART on every board. Named
+    // explicitly because Circle's RASPPI >= 5 default (SERIAL_DEVICE_DEFAULT
+    // = 10) is the Pi 5's dedicated debug connector, so taking the default
+    // sends every log line somewhere nobody is listening.
+    : m_Serial(0, FALSE, 0),
+      m_Timer(&m_Interrupt),
       m_Logger(m_Options.GetLogLevel(), &m_Timer)
 {
     m_ActLED.Blink(3);
