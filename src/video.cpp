@@ -1291,11 +1291,27 @@ static void create_window_on0(void *p)
     // input — a black screen with a clean log, which is the worst shape a
     // failure can take.
     //
-    // The flags the application asked for are carried through, EXCEPT those
-    // that contradict what this window actually is: it cannot be hidden and
-    // cannot be minimised, and claiming SDL_WINDOW_SHOWN alongside
-    // SDL_WINDOW_HIDDEN would leave a game to pick whichever it tested for.
-    win->flags = a->flags & ~(Uint32)(SDL_WINDOW_HIDDEN | SDL_WINDOW_MINIMIZED);
+    // THE FLAGS DESCRIBE THE MACHINE, NOT THE REQUEST. What an application
+    // asked SDL_CreateWindow for is carried through only where this window
+    // can honour it; every bit below is cleared because it would otherwise
+    // report the request back to the asker as though it had been granted.
+    //
+    //   HIDDEN, MINIMIZED   this window cannot be either, and claiming
+    //                       SDL_WINDOW_SHOWN alongside SDL_WINDOW_HIDDEN
+    //                       leaves a game to act on whichever it tested.
+    //   OPENGL, VULKAN,     there is no accelerated renderer of any kind
+    //   METAL               here. A game that treats the window flag as the
+    //                       test then takes its software path immediately,
+    //                       which is the path that works — rather than going
+    //                       down an accelerated one and finding out at
+    //                       SDL_GL_CreateContext, or never checking and
+    //                       drawing nothing at all. Upstream SDL reaches the
+    //                       same outcome by refusing to create the window;
+    //                       the window is worth having here, so the bit goes
+    //                       instead.
+    win->flags = a->flags & ~(Uint32)(SDL_WINDOW_HIDDEN | SDL_WINDOW_MINIMIZED
+                                    | SDL_WINDOW_OPENGL | SDL_WINDOW_VULKAN
+                                    | SDL_WINDOW_METAL);
     win->flags |= SDL_WINDOW_FULLSCREEN | SDL_WINDOW_SHOWN | SDL_WINDOW_INPUT_FOCUS;
     win->min_w = win->min_h = 0;
     win->max_w = win->max_h = 0;

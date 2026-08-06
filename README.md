@@ -90,6 +90,13 @@ quietly doing something else:
   `SDL_GL_DeleteContext` is a no-op so its shutdown path still runs. They
   are here because that shutdown path is usually written as
   `if (ctx) SDL_GL_DeleteContext(ctx)` — dead code that must still LINK.
+
+  **A window never reports `SDL_WINDOW_OPENGL`, `SDL_WINDOW_VULKAN` or
+  `SDL_WINDOW_METAL`, whatever was asked for**, because there is no such
+  renderer to report. A program that tests the window flag therefore takes
+  its software path straight away, which is the path that works here.
+  Upstream SDL reaches the same outcome by refusing to create the window at
+  all; the window is worth having, so the bit goes instead of the window.
 - Controller motion sensors and touchpads, virtual joysticks.
 
 ## Presentation geometry
@@ -198,6 +205,29 @@ sdl2video: copy src 320x224 -> canvas 720x504+0+36 -> scanout 1350x945+285+67 (n
 
 The `present:` line names the path that is actually in use — `dma copy` or
 `cpu copy`, and the reason when it is the latter.
+
+### What the window flags say
+
+`SDL_GetWindowFlags` describes **the machine, not the request**. A flag an
+application passed to `SDL_CreateWindow` is reported back only where this
+window can honour it; reporting it otherwise tells the asker its own question
+back, and a game branches on the answer.
+
+- **`SDL_WINDOW_INPUT_FOCUS` is always set.** There is one window and no
+  window manager to take focus away from it. A flag that is never set reads
+  exactly like a flag that is false, and a game that believes it has lost
+  focus pauses, stops drawing or drops input — a black screen with a clean
+  log.
+- **`SDL_WINDOW_SHOWN` is always set, and `SDL_HideWindow` does not clear
+  it.** The surface is on the glass and cannot leave it, so `SHOWN` is the
+  truth. `SDL_WINDOW_HIDDEN` and `SDL_WINDOW_MINIMIZED` are never reported.
+- **`SDL_WINDOW_OPENGL`, `SDL_WINDOW_VULKAN` and `SDL_WINDOW_METAL` are never
+  reported.** See the accelerated-graphics note above.
+- **`SDL_WINDOW_MOUSE_FOCUS` is asked, not stored**, because a USB mouse can
+  arrive or leave long after the window is made. It answers the same question
+  `SDL_GetMouseFocus` answers, so the flag and the function cannot drift
+  apart — which is the rule for any flag whose truth can change after the
+  window exists.
 
 ### Declaring the display
 
