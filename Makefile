@@ -52,6 +52,40 @@ ifneq ($(PRESENT_CMDS),$(filter $(PRESENT_CMDS),0 1 2 3 4 5 6 7 8 9 10 11 12 13 
 $(error PRESENT_CMDS must be a whole number from 0 to 16, not `$(PRESENT_CMDS)`)
 endif
 
+# The Arm GNU aarch64-none-elf cross toolchain.
+#
+# Established here so that building this library needs nothing but this
+# makefile. Driven from a consumer's own root makefile the toolchain is
+# usually already exported into the environment, and then this changes
+# nothing; run on its own (`make -C circle-libsdl2 libSDL2-rpi5.a`) it is
+# what stops every object failing at once with `aarch64-none-elf-g++:
+# command not found`, which reads like a broken source tree rather than a
+# PATH that was never set.
+#
+# PATH is honoured first, so a machine that already has the toolchain
+# installed is left alone. Failing that, in order:
+#
+#   $RAPI_TOOLCHAIN_DIR   names where the toolchain lives
+#   toolchains/           unpacked into this checkout
+#   ../toolchains/        and two levels above, which is where it is found
+#   ../../toolchains/     when this repository is used as a submodule
+#
+# Each may be the unpacked toolchain itself (it has a bin/) or a directory
+# holding one or more unpacked releases. Get release 15.2.Rel1 for the
+# aarch64-none-elf target, built for the machine you compile ON, from
+# https://developer.arm.com/downloads/-/arm-gnu-toolchain-downloads
+TOOLCHAIN_SEARCH := $(RAPI_TOOLCHAIN_DIR) $(CURDIR)/toolchains \
+                    $(CURDIR)/../toolchains $(CURDIR)/../../toolchains
+
+ifeq ($(shell command -v aarch64-none-elf-gcc 2>/dev/null),)
+TOOLCHAIN_BIN := $(firstword \
+	$(wildcard $(addsuffix /arm-gnu-toolchain-*-aarch64-none-elf/bin,$(TOOLCHAIN_SEARCH))) \
+	$(wildcard $(addsuffix /bin,$(TOOLCHAIN_SEARCH))))
+ifneq ($(TOOLCHAIN_BIN),)
+export PATH := $(TOOLCHAIN_BIN):$(PATH)
+endif
+endif
+
 # GNU getopt for circle-stdlib's configure (macOS BSD getopt drops long opts ->
 # wrong toolchain prefix). ccache is build/ccache.sh's job (mandatory source).
 GETOPT_BIN := $(firstword $(wildcard /opt/homebrew/opt/gnu-getopt/bin /usr/local/opt/gnu-getopt/bin))
@@ -81,6 +115,17 @@ CIRCLESTDLIBHOME ?= $(CURDIR)/$(CIRCLE_STDLIB)
 OBJDIR = build/$(BOARD)-cmds$(PRESENT_CMDS)
 
 .DEFAULT_GOAL := libSDL2-$(BOARD).a
+
+# One BOARD is configured per invocation, so the other boards' archives have
+# no rule here. Asking for one by name got "Nothing to be done" and an exit
+# status of zero — a build that never happened, reported as success. Say what
+# to run instead, and fail.
+OTHER_ARCHIVES := $(filter-out libSDL2-$(BOARD).a,$(BOARDS:%=libSDL2-%.a))
+.PHONY: $(OTHER_ARCHIVES)
+$(OTHER_ARCHIVES):
+	@echo "$@ is not built by BOARD=$(BOARD)."
+	@echo "Run: $(MAKE) BOARD=$(patsubst libSDL2-%.a,%,$@)"
+	@exit 1
 
 # LLVM/libc++ comes from a git checkout at a fixed tag via --libcxx-repo, NOT
 # circle-stdlib's default --libcxx tarball: Codeberg regenerates its archives,

@@ -199,6 +199,59 @@ extern "C" SDL_AudioStatus SDL_GetAudioDeviceStatus(SDL_AudioDeviceID)
     return s_paused ? SDL_AUDIO_PAUSED : SDL_AUDIO_PLAYING;
 }
 
+// ---------------------------------------------------------------------------
+// The device-less spelling SDL2 keeps from SDL 1.2
+//
+// These address the one audio device without naming it. There is exactly one
+// here, so each is its device-taking form applied to that device — the same
+// relationship SDL_LockAudio already has with SDL_LockAudioDevice above.
+// ---------------------------------------------------------------------------
+
+extern "C" int SDL_OpenAudio(SDL_AudioSpec *desired, SDL_AudioSpec *obtained)
+{
+    if (!desired)
+        return SDL_SetError("SDL_OpenAudio: no desired spec");
+
+    // SDL's contract differs by whether the caller will accept what the
+    // device actually offers. Given somewhere to report it, any difference
+    // is allowed and reported. Given nowhere, SDL undertakes to convert
+    // silently, so a difference has to be refused rather than passed off as
+    // success — an application that was promised its own format and is fed
+    // another produces noise, with nothing to point at.
+    SDL_AudioSpec got;
+    if (SDL_OpenAudioDevice(nullptr, 0, desired, &got,
+                            SDL_AUDIO_ALLOW_ANY_CHANGE) == 0)
+        return -1;   // SDL_OpenAudioDevice has set the error
+
+    if (obtained)
+    {
+        *obtained = got;
+        return 0;
+    }
+
+    if (got.freq != desired->freq || got.format != desired->format
+        || got.channels != desired->channels)
+    {
+        SDL_CloseAudioDevice(1);
+        return SDL_SetError("SDL_OpenAudio: the device offers %d Hz format "
+                            "0x%04x %d channels, not %d Hz format 0x%04x %d "
+                            "channels, and conversion was not requested "
+                            "(pass `obtained` to accept the device's own)",
+                            got.freq, (unsigned)got.format, got.channels,
+                            desired->freq, (unsigned)desired->format,
+                            desired->channels);
+    }
+    return 0;
+}
+
+extern "C" void SDL_CloseAudio(void)  { SDL_CloseAudioDevice(1); }
+extern "C" void SDL_PauseAudio(int p) { SDL_PauseAudioDevice(1, p); }
+
+extern "C" SDL_AudioStatus SDL_GetAudioStatus(void)
+{
+    return SDL_GetAudioDeviceStatus(1);
+}
+
 extern "C" int SDL_GetNumAudioDevices(int iscapture)
 {
     return iscapture ? 0 : 1;
@@ -243,4 +296,28 @@ extern "C" int SDL_GetDefaultAudioInfo(char **name, SDL_AudioSpec *spec,
 extern "C" const char *SDL_GetCurrentAudioDriver(void)
 {
     return "circle";
+}
+
+// One driver, always the one in use. Applications enumerate these to offer a
+// choice; there is nothing to choose between, and saying so is better than
+// reporting none and being dropped from the list.
+extern "C" int SDL_GetNumAudioDrivers(void) { return 1; }
+
+extern "C" const char *SDL_GetAudioDriver(int index)
+{
+    return index == 0 ? "circle" : nullptr;
+}
+
+// The subsystem is brought up with the rest of the shim, so selecting a
+// driver by name succeeds for the only name there is.
+extern "C" int SDL_AudioInit(const char *driver)
+{
+    if (driver && strcmp(driver, "circle") != 0)
+        return SDL_SetError("SDL_AudioInit: no audio driver named `%s`", driver);
+    return 0;
+}
+
+extern "C" void SDL_AudioQuit(void)
+{
+    SDL_CloseAudioDevice(1);
 }

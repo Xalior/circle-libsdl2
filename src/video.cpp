@@ -24,6 +24,15 @@ struct SDL_Window
     CBcmFrameBuffer *fb;
     int w, h;
     Uint32 flags;
+
+    // State a desktop window manager would own. There is none here: the
+    // window is the canvas and the canvas is the whole screen, so none of
+    // this changes what is drawn or where it lands. It is kept so that the
+    // getter for each setter answers with what was set, which is what
+    // applications read it for.
+    int min_w, min_h;
+    int max_w, max_h;
+    SDL_bool grabbed;
 };
 
 struct SDL_Renderer
@@ -1247,6 +1256,9 @@ static void create_window_on0(void *p)
     win->w = s_canvas_w;
     win->h = s_canvas_h;
     win->flags = a->flags | SDL_WINDOW_FULLSCREEN | SDL_WINDOW_SHOWN;
+    win->min_w = win->min_h = 0;
+    win->max_w = win->max_h = 0;
+    win->grabbed = SDL_FALSE;
 
     // Publish the presentation geometry before the window becomes visible
     // to the application core or the worker. This side is SCANOUT geometry: every
@@ -1390,6 +1402,169 @@ extern "C" Uint32 SDL_GetWindowFlags(SDL_Window *win)
 extern "C" void SDL_SetWindowTitle(SDL_Window *, const char *) {}
 extern "C" void SDL_ShowWindow(SDL_Window *) {}
 
+// ---------------------------------------------------------------------------
+// Window geometry and window-manager state
+//
+// A board has one screen and no window manager. The window is the canvas the
+// consumer declared, it fills the display, and it never moves or changes
+// size. Every call below is accepted and none of them changes the geometry.
+//
+// They are accepted rather than refused because of how applications use
+// them. A game toggling fullscreen calls SDL_SetWindowFullscreen and then
+// SDL_SetWindowSize, and treats a failure as a fatal video error; refusing
+// would stop a game that would otherwise run perfectly on a display that was
+// already showing it what it wanted. What each call must not do is claim the
+// geometry changed, so none of them sends a size or move event.
+// ---------------------------------------------------------------------------
+
+extern "C" int SDL_SetWindowFullscreen(SDL_Window *win, Uint32 flags)
+{
+    if (!win)
+        return SDL_SetError("SDL_SetWindowFullscreen: no window");
+
+    // The display is always fullscreen; what is recorded is the application's
+    // own request, so that SDL_GetWindowFlags answers a fullscreen toggle
+    // with the state the application believes it just set. A game that tracks
+    // its mode by reading the flags back therefore stays consistent with
+    // itself, and the picture is unchanged either way.
+    const Uint32 kFullscreenBits = SDL_WINDOW_FULLSCREEN | SDL_WINDOW_FULLSCREEN_DESKTOP;
+    win->flags &= ~kFullscreenBits;
+    win->flags |= (flags & kFullscreenBits);
+    return 0;
+}
+
+extern "C" void SDL_SetWindowSize(SDL_Window *, int, int)
+{
+    // The canvas size is fixed before SDL_Init and the present path is built
+    // around it. Nothing to do, and no SDL_WINDOWEVENT_SIZE_CHANGED, because
+    // the size did not change.
+}
+
+extern "C" void SDL_SetWindowMinimumSize(SDL_Window *win, int w, int h)
+{
+    if (win) { win->min_w = w; win->min_h = h; }
+}
+
+extern "C" void SDL_GetWindowMinimumSize(SDL_Window *win, int *w, int *h)
+{
+    if (w) *w = win ? win->min_w : 0;
+    if (h) *h = win ? win->min_h : 0;
+}
+
+extern "C" void SDL_SetWindowMaximumSize(SDL_Window *win, int w, int h)
+{
+    if (win) { win->max_w = w; win->max_h = h; }
+}
+
+extern "C" void SDL_GetWindowMaximumSize(SDL_Window *win, int *w, int *h)
+{
+    if (w) *w = win ? win->max_w : 0;
+    if (h) *h = win ? win->max_h : 0;
+}
+
+// The window is at the origin of the only display there is.
+extern "C" void SDL_SetWindowPosition(SDL_Window *, int, int) {}
+
+extern "C" void SDL_GetWindowPosition(SDL_Window *win, int *x, int *y)
+{
+    (void)win;
+    if (x) *x = 0;
+    if (y) *y = 0;
+}
+
+// No decoration exists, so every border is zero pixels thick.
+extern "C" int SDL_GetWindowBordersSize(SDL_Window *win, int *top, int *left,
+                                        int *bottom, int *right)
+{
+    if (!win)
+        return SDL_SetError("SDL_GetWindowBordersSize: no window");
+    if (top)    *top    = 0;
+    if (left)   *left   = 0;
+    if (bottom) *bottom = 0;
+    if (right)  *right  = 0;
+    return 0;
+}
+
+extern "C" void SDL_SetWindowBordered(SDL_Window *, SDL_bool) {}
+extern "C" void SDL_SetWindowResizable(SDL_Window *, SDL_bool) {}
+extern "C" void SDL_SetWindowAlwaysOnTop(SDL_Window *, SDL_bool) {}
+
+// There is nothing to grab away from and nowhere for a pointer to leave to,
+// so the grab is recorded and the input path is unaffected.
+extern "C" void SDL_SetWindowGrab(SDL_Window *win, SDL_bool grabbed)
+{
+    if (win)
+    {
+        win->grabbed = grabbed;
+        if (grabbed) win->flags |= SDL_WINDOW_INPUT_GRABBED;
+        else         win->flags &= ~SDL_WINDOW_INPUT_GRABBED;
+    }
+}
+
+extern "C" SDL_bool SDL_GetWindowGrab(SDL_Window *win)
+{
+    return win ? win->grabbed : SDL_FALSE;
+}
+
+extern "C" void SDL_SetWindowKeyboardGrab(SDL_Window *win, SDL_bool g)
+{
+    SDL_SetWindowGrab(win, g);
+}
+
+extern "C" SDL_bool SDL_GetWindowKeyboardGrab(SDL_Window *win)
+{
+    return SDL_GetWindowGrab(win);
+}
+
+extern "C" void SDL_SetWindowMouseGrab(SDL_Window *win, SDL_bool g)
+{
+    SDL_SetWindowGrab(win, g);
+}
+
+extern "C" SDL_bool SDL_GetWindowMouseGrab(SDL_Window *win)
+{
+    return SDL_GetWindowGrab(win);
+}
+
+extern "C" SDL_Window *SDL_GetGrabbedWindow(void)
+{
+    return (s_window && s_window->grabbed) ? s_window : nullptr;
+}
+
+extern "C" int SDL_SetWindowMouseRect(SDL_Window *, const SDL_Rect *)
+{
+    return 0;   // the pointer is already confined to the one screen
+}
+
+extern "C" const SDL_Rect *SDL_GetWindowMouseRect(SDL_Window *)
+{
+    return nullptr;
+}
+
+// The window cannot leave the screen it is, so these are the states it is
+// already in.
+extern "C" void SDL_MaximizeWindow(SDL_Window *) {}
+extern "C" void SDL_MinimizeWindow(SDL_Window *) {}
+extern "C" void SDL_RestoreWindow(SDL_Window *) {}
+extern "C" void SDL_RaiseWindow(SDL_Window *) {}
+extern "C" void SDL_HideWindow(SDL_Window *) {}
+
+// No window manager means no icon to hand it. Taking the surface and doing
+// nothing with it is the whole of the correct behaviour; the call returns
+// void, so an application cannot be told otherwise in any case.
+extern "C" void SDL_SetWindowIcon(SDL_Window *, SDL_Surface *) {}
+
+extern "C" Uint32 SDL_GetWindowPixelFormat(SDL_Window *)
+{
+    return SDL_PIXELFORMAT_ARGB8888;   // what the canvas is
+}
+
+// A bare-metal board has no screen blanking to suppress, so the screen saver
+// is permanently disabled and saying so costs nothing.
+extern "C" void SDL_DisableScreenSaver(void) {}
+extern "C" void SDL_EnableScreenSaver(void) {}
+extern "C" SDL_bool SDL_IsScreenSaverEnabled(void) { return SDL_FALSE; }
+
 extern "C" SDL_Renderer *SDL_CreateRenderer(SDL_Window *win, int, Uint32 flags)
 {
     if (!win)
@@ -1480,12 +1655,56 @@ LogicalMap logical_map(const SDL_Renderer *ren)
         m.oy = (int)((oh - ren->logical_h * m.sy) / 2.0f);
     }
 
+    // The viewport is given in the application's coordinates, like every
+    // other rectangle it hands over, so its origin is scaled by the same
+    // factors before it moves the origin.
     if (ren->viewport_set)
     {
-        m.ox += ren->viewport.x;
-        m.oy += ren->viewport.y;
+        m.ox += (int)(ren->viewport.x * m.sx);
+        m.oy += (int)(ren->viewport.y * m.sy);
     }
     return m;
+}
+
+// The window-pixel rectangle drawing is confined to. It is the viewport
+// where one is set and the whole window otherwise, narrowed by the clip
+// rectangle when clipping is enabled. Both come in the application's
+// coordinates and are mapped with the factors above, so a viewport under a
+// logical size letterboxes with everything else rather than against it.
+SDL_Rect confine_rect(const SDL_Renderer *ren)
+{
+    const LogicalMap m = logical_map(ren);
+    SDL_Rect r;
+
+    if (ren->viewport_set)
+    {
+        // m.ox/m.oy already carry the viewport's own origin.
+        r.x = m.ox;
+        r.y = m.oy;
+        r.w = (int)(ren->viewport.w * m.sx);
+        r.h = (int)(ren->viewport.h * m.sy);
+    }
+    else
+    {
+        r = { 0, 0, ren->window->w, ren->window->h };
+    }
+
+    if (ren->clip_enabled)
+    {
+        SDL_Rect c;
+        c.x = m.ox + (int)(ren->clip.x * m.sx);
+        c.y = m.oy + (int)(ren->clip.y * m.sy);
+        c.w = (int)(ren->clip.w * m.sx);
+        c.h = (int)(ren->clip.h * m.sy);
+        if (!SDL_IntersectRect(&r, &c, &r))
+            r = { 0, 0, 0, 0 };
+    }
+
+    // Never outside the window, whatever was asked for.
+    const SDL_Rect win = { 0, 0, ren->window->w, ren->window->h };
+    if (!SDL_IntersectRect(&r, &win, &r))
+        r = { 0, 0, 0, 0 };
+    return r;
 }
 
 // Map one destination rectangle from the application's coordinates into the
@@ -1818,28 +2037,33 @@ extern "C" void SDL_UnlockTexture(SDL_Texture *tex)
                       SDL_PIXELFORMAT_ARGB8888, dst, tex->pitch);
 }
 
-// Clip one axis of a scaled blit: trim the destination span to [0, limit)
-// and take the source span with it, in proportion, so the scale factor
-// survives the clip instead of quietly changing.
-static void clip_axis(int &d, int &dlen, int &s, int &slen, int limit)
+// Clip one axis of a scaled blit: trim the destination span to [lo, hi) and
+// take the source span with it, in proportion, so the scale factor survives
+// the clip instead of quietly changing.
+static void clip_axis_range(int &d, int &dlen, int &s, int &slen, int lo, int hi)
 {
-    if (d < 0)
+    if (d < lo)
     {
-        int cut = -d;
+        int cut = lo - d;
         if (cut >= dlen) { dlen = 0; return; }
         int scut = (int)(((s64)cut * slen) / dlen);
         s += scut;
         slen -= scut;
         dlen -= cut;
-        d = 0;
+        d = lo;
     }
-    if (d + dlen > limit)
+    if (d + dlen > hi)
     {
-        int cut = d + dlen - limit;
+        int cut = d + dlen - hi;
         if (cut >= dlen) { dlen = 0; return; }
         slen -= (int)(((s64)cut * slen) / dlen);
         dlen -= cut;
     }
+}
+
+static void clip_axis(int &d, int &dlen, int &s, int &slen, int limit)
+{
+    clip_axis_range(d, dlen, s, slen, 0, limit);
 }
 
 extern "C" int SDL_RenderCopy(SDL_Renderer *ren, SDL_Texture *tex,
@@ -1875,8 +2099,12 @@ extern "C" int SDL_RenderCopy(SDL_Renderer *ren, SDL_Texture *tex,
     // inside the canvas. Each clip carries the other rectangle with it.
     clip_axis(sx, sw, dx, dw, tex->w);
     clip_axis(sy, sh, dy, dh, tex->h);
-    clip_axis(dx, dw, sx, sw, ren->window->w);
-    clip_axis(dy, dh, sy, sh, ren->window->h);
+
+    // The destination is confined to the viewport and clip rectangle, which
+    // are the whole window when neither is set.
+    const SDL_Rect confine = confine_rect(ren);
+    clip_axis_range(dx, dw, sx, sw, confine.x, confine.x + confine.w);
+    clip_axis_range(dy, dh, sy, sh, confine.y, confine.y + confine.h);
     if (sw <= 0 || sh <= 0 || dw <= 0 || dh <= 0)
         return 0;
 
@@ -1920,9 +2148,167 @@ extern "C" int SDL_GetRenderDriverInfo(int, SDL_RendererInfo *info)
     return SDL_GetRendererInfo(nullptr, info);
 }
 
-extern "C" int SDL_RenderSetViewport(SDL_Renderer *, const SDL_Rect *)
+// ---------------------------------------------------------------------------
+// The renderer's coordinate state
+//
+// These are the setters for the mapping applied by logical_map above. None of
+// them draws anything; each changes how every later destination rectangle is
+// placed, and the getters answer with exactly what was set.
+// ---------------------------------------------------------------------------
+
+// SDL2: a logical size of 0x0 turns the logical coordinate system off and
+// gives the window's own size back as the coordinate system.
+extern "C" int SDL_RenderSetLogicalSize(SDL_Renderer *ren, int w, int h)
 {
-    return 0;   // the target is always the whole canvas
+    if (!ren)
+        return SDL_SetError("SDL_RenderSetLogicalSize: no renderer");
+    if (w < 0 || h < 0)
+        return SDL_SetError("SDL_RenderSetLogicalSize: negative size");
+
+    if (w == 0 || h == 0)
+    {
+        ren->logical_w = 0;
+        ren->logical_h = 0;
+        return 0;
+    }
+    ren->logical_w = w;
+    ren->logical_h = h;
+    return 0;
+}
+
+extern "C" void SDL_RenderGetLogicalSize(SDL_Renderer *ren, int *w, int *h)
+{
+    if (w) *w = ren ? ren->logical_w : 0;
+    if (h) *h = ren ? ren->logical_h : 0;
+}
+
+extern "C" int SDL_RenderSetIntegerScale(SDL_Renderer *ren, SDL_bool enable)
+{
+    if (!ren)
+        return SDL_SetError("SDL_RenderSetIntegerScale: no renderer");
+    ren->integer_scale = (enable == SDL_TRUE);
+    return 0;
+}
+
+extern "C" SDL_bool SDL_RenderGetIntegerScale(SDL_Renderer *ren)
+{
+    return (ren && ren->integer_scale) ? SDL_TRUE : SDL_FALSE;
+}
+
+extern "C" int SDL_RenderSetScale(SDL_Renderer *ren, float sx, float sy)
+{
+    if (!ren)
+        return SDL_SetError("SDL_RenderSetScale: no renderer");
+    if (sx <= 0.0f || sy <= 0.0f)
+        return SDL_SetError("SDL_RenderSetScale: scale must be positive");
+    ren->scale_x = sx;
+    ren->scale_y = sy;
+    return 0;
+}
+
+extern "C" void SDL_RenderGetScale(SDL_Renderer *ren, float *sx, float *sy)
+{
+    if (sx) *sx = ren ? ren->scale_x : 1.0f;
+    if (sy) *sy = ren ? ren->scale_y : 1.0f;
+}
+
+// A null rectangle means the whole render target, which under a logical size
+// is the logical rectangle rather than the window.
+extern "C" int SDL_RenderSetViewport(SDL_Renderer *ren, const SDL_Rect *rect)
+{
+    if (!ren)
+        return SDL_SetError("SDL_RenderSetViewport: no renderer");
+
+    if (!rect)
+    {
+        ren->viewport_set = false;
+        ren->viewport = { 0, 0, ren->window->w, ren->window->h };
+        return 0;
+    }
+    if (rect->w < 0 || rect->h < 0)
+        return SDL_SetError("SDL_RenderSetViewport: negative size");
+
+    ren->viewport = *rect;
+    ren->viewport_set = true;
+    return 0;
+}
+
+extern "C" void SDL_RenderGetViewport(SDL_Renderer *ren, SDL_Rect *rect)
+{
+    if (!rect)
+        return;
+    if (!ren)
+    {
+        *rect = { 0, 0, 0, 0 };
+        return;
+    }
+    if (ren->viewport_set)
+    {
+        *rect = ren->viewport;
+    }
+    else if (ren->logical_w > 0 && ren->logical_h > 0)
+    {
+        *rect = { 0, 0, ren->logical_w, ren->logical_h };
+    }
+    else
+    {
+        *rect = { 0, 0, ren->window->w, ren->window->h };
+    }
+}
+
+// A null rectangle disables clipping. An empty one does not: SDL keeps
+// clipping enabled with an empty rectangle, which discards every later draw,
+// and an application can tell the two apart with SDL_RenderIsClipEnabled.
+extern "C" int SDL_RenderSetClipRect(SDL_Renderer *ren, const SDL_Rect *rect)
+{
+    if (!ren)
+        return SDL_SetError("SDL_RenderSetClipRect: no renderer");
+
+    if (!rect)
+    {
+        ren->clip_enabled = false;
+        ren->clip = { 0, 0, 0, 0 };
+        return 0;
+    }
+    ren->clip = *rect;
+    ren->clip_enabled = true;
+    return 0;
+}
+
+extern "C" void SDL_RenderGetClipRect(SDL_Renderer *ren, SDL_Rect *rect)
+{
+    if (!rect)
+        return;
+    *rect = (ren && ren->clip_enabled) ? ren->clip : SDL_Rect{ 0, 0, 0, 0 };
+}
+
+extern "C" SDL_bool SDL_RenderIsClipEnabled(SDL_Renderer *ren)
+{
+    return (ren && ren->clip_enabled) ? SDL_TRUE : SDL_FALSE;
+}
+
+// There is one render target — the canvas. A request for the default target
+// is what the renderer is already doing; a request for a texture target is
+// refused rather than silently ignored, because an application that believes
+// it is drawing into a texture and is in fact drawing onto the screen has no
+// way to notice.
+extern "C" int SDL_SetRenderTarget(SDL_Renderer *ren, SDL_Texture *tex)
+{
+    if (!ren)
+        return SDL_SetError("SDL_SetRenderTarget: no renderer");
+    if (!tex)
+        return 0;
+    return SDL_SetError("SDL_SetRenderTarget: render-to-texture is not supported");
+}
+
+extern "C" SDL_Texture *SDL_GetRenderTarget(SDL_Renderer *)
+{
+    return nullptr;   // always the default target
+}
+
+extern "C" SDL_bool SDL_RenderTargetSupported(SDL_Renderer *)
+{
+    return SDL_FALSE;
 }
 
 extern "C" int SDL_SetRenderDrawBlendMode(SDL_Renderer *, SDL_BlendMode)
@@ -1937,10 +2323,25 @@ extern "C" int SDL_RenderFillRect(SDL_Renderer *ren, const SDL_Rect *rect)
     int y = rect ? rect->y : 0;
     int w = rect ? rect->w : ren->window->w;
     int h = rect ? rect->h : ren->window->h;
-    if (x < 0) { w += x; x = 0; }
-    if (y < 0) { h += y; y = 0; }
-    if (x + w > ren->window->w) w = ren->window->w - x;
-    if (y + h > ren->window->h) h = ren->window->h - y;
+
+    // An absent rectangle means the whole render target, which under a
+    // logical size is the logical rectangle rather than the window.
+    if (!rect && ren->logical_w > 0 && ren->logical_h > 0)
+    {
+        w = ren->logical_w;
+        h = ren->logical_h;
+    }
+    if (!map_dst(ren, x, y, w, h))
+        return 0;
+
+    // Confined to the viewport and clip rectangle, which are the whole
+    // window when neither is set.
+    const SDL_Rect confine = confine_rect(ren);
+    const SDL_Rect want = { x, y, w, h };
+    SDL_Rect out;
+    if (!SDL_IntersectRect(&want, &confine, &out))
+        return 0;
+    x = out.x; y = out.y; w = out.w; h = out.h;
     if (w <= 0 || h <= 0)
         return 0;
 
@@ -1992,6 +2393,70 @@ extern "C" int SDL_RenderDrawRect(SDL_Renderer *ren, const SDL_Rect *rect)
         || SDL_RenderDrawLine(ren, r.x, r.y, r.x, bottom) < 0
         || SDL_RenderDrawLine(ren, right, r.y, right, bottom) < 0)
         return -1;
+    return 0;
+}
+
+// The plural forms SDL offers so an application can hand over a batch
+// without a call per item. Each is its singular applied in order, and stops
+// at the first failure so the error describes the item that caused it.
+extern "C" int SDL_RenderFillRects(SDL_Renderer *ren, const SDL_Rect *rects,
+                                   int count)
+{
+    if (!ren)
+        return SDL_SetError("SDL_RenderFillRects: no renderer");
+    if (!rects && count > 0)
+        return SDL_SetError("SDL_RenderFillRects: no rectangles");
+    for (int i = 0; i < count; ++i)
+        if (SDL_RenderFillRect(ren, &rects[i]) < 0)
+            return -1;
+    return 0;
+}
+
+extern "C" int SDL_RenderDrawRects(SDL_Renderer *ren, const SDL_Rect *rects,
+                                   int count)
+{
+    if (!ren)
+        return SDL_SetError("SDL_RenderDrawRects: no renderer");
+    if (!rects && count > 0)
+        return SDL_SetError("SDL_RenderDrawRects: no rectangles");
+    for (int i = 0; i < count; ++i)
+        if (SDL_RenderDrawRect(ren, &rects[i]) < 0)
+            return -1;
+    return 0;
+}
+
+extern "C" int SDL_RenderDrawPoint(SDL_Renderer *ren, int x, int y)
+{
+    const SDL_Rect r = { x, y, 1, 1 };
+    return SDL_RenderFillRect(ren, &r);
+}
+
+extern "C" int SDL_RenderDrawPoints(SDL_Renderer *ren, const SDL_Point *points,
+                                    int count)
+{
+    if (!ren)
+        return SDL_SetError("SDL_RenderDrawPoints: no renderer");
+    if (!points && count > 0)
+        return SDL_SetError("SDL_RenderDrawPoints: no points");
+    for (int i = 0; i < count; ++i)
+        if (SDL_RenderDrawPoint(ren, points[i].x, points[i].y) < 0)
+            return -1;
+    return 0;
+}
+
+// SDL draws a connected polyline: each point joins the one before it, so N
+// points make N-1 segments.
+extern "C" int SDL_RenderDrawLines(SDL_Renderer *ren, const SDL_Point *points,
+                                   int count)
+{
+    if (!ren)
+        return SDL_SetError("SDL_RenderDrawLines: no renderer");
+    if (!points && count > 0)
+        return SDL_SetError("SDL_RenderDrawLines: no points");
+    for (int i = 1; i < count; ++i)
+        if (SDL_RenderDrawLine(ren, points[i - 1].x, points[i - 1].y,
+                               points[i].x, points[i].y) < 0)
+            return -1;
     return 0;
 }
 
