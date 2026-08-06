@@ -153,10 +153,21 @@ static std::atomic<u64> g_servo_beats{0};
 // turns a silent freeze into a diagnosis.
 //
 // The line goes through the ordinary log ring, so it costs the waiting core
-// nothing and breaks no rule about who owns the console. If core 0 is alive
-// it appears at once. If core 0 is the side that is stuck, it appears the
-// moment core 0 recovers — and if it never recovers, the wait was never the
-// thing that could have reported it anyway.
+// nothing and touches no device. It has to: the console belongs to core 0
+// because of how the hardware is wired, not because of a policy that could
+// be waived, so there is no arrangement under which another core writes it
+// instead. If core 0 is alive it appears at once.
+//
+// If core 0 is the side that has stopped, it never appears, and no amount of
+// cleverness elsewhere would change that. CORE 0 IS THE MACHINE: the serial
+// port, USB, video, the system timer, the scheduler and the watchdog are all
+// its. A core 0 that does not return is not a core that has gone quiet, it
+// is a dead board, and there is nothing left running anywhere to notice or
+// to say so.
+//
+// Which is why the answer is not a better report. It is that NOTHING ON THE
+// SERVO'S PATH MAY BLOCK — see the servo loop below, where every handler it
+// runs has to be bounded and has to return.
 // ---------------------------------------------------------------------------
 
 static const u64 STALL_REPORT_US = 5000000;   // 5 s
