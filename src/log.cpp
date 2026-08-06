@@ -13,8 +13,15 @@
 //
 // A ring that is full DROPS the line and counts it. Losing a line is bad;
 // stalling the core that produced it, or overwriting a line already in the
-// ring, is worse. The count is printed with the next drain, so the record
-// is honest about its own gaps.
+// ring, is worse. The console is a fixed, slow width — an application can
+// always ask for more than it will carry — so dropping is the steady state
+// for a chatty one, not a fault. The drain says when dropping starts and
+// when it stops, so the record is honest about its own gaps without
+// narrating them line by line.
+//
+// The servo's drain is BOUNDED, and that is what keeps core 0 alive. See
+// LOG_DRAIN_MAX_US below: an unbounded drain and a producer that never waits
+// are between them enough to stop the board.
 //
 // The hardware core does not use a ring. It owns the console, so it writes
 // straight through — which keeps the boot log immediate, before any servo
@@ -26,6 +33,7 @@
 #include "sdl2circle.h"
 
 #include <circle/logger.h>
+#include <circle/timer.h>
 
 #include <atomic>
 #include <cstdarg>
@@ -36,10 +44,40 @@
 // so there is no value in carrying more than it will print.
 static const unsigned LOG_LINE_MAX = 200;
 
-// Per core. Sized to hold a burst of a whole frame's worth of lines while
-// the servo is busy elsewhere, which is the case that would otherwise drop.
-static const unsigned LOG_RING_BYTES = 8192;
+// Per core. Sized to hold a START-UP BURST, not just a frame's worth: the
+// lines a port most needs are the ones it produces while bringing itself up,
+// before anything is steady, and those are exactly the ones a small ring
+// loses. Memory is not what is scarce on these boards.
+//
+// MUST BE A POWER OF TWO. The head and tail are free-running counters that
+// are reduced modulo this, so a size that does not divide 2^32 would make
+// the two disagree about where a record sits the first time they wrap.
+static const unsigned LOG_RING_BYTES = 32768;
 static const unsigned LOG_MAX_CORES = 4;
+
+// HOW MUCH THE SERVO WILL PRINT IN ONE PASS, and why there is a limit at all.
+//
+// The console is a device on core 0, and core 0's servo is also what pumps
+// USB, feeds the sound device and yields to the scheduler. A drain that runs
+// until its ring is empty gives that ring priority over every one of those.
+//
+// It is worse than unfair, it does not terminate. The producer never waits —
+// a full ring drops the line and returns — so an application that logs faster
+// than the console can carry keeps the ring permanently non-empty, `head`
+// never meets `tail`, and the drain never returns. Core 0 then stops
+// servicing everything it owns: USB never finishes enumerating, video never
+// comes up, and the application's own lines never appear, because they are
+// being dropped into a ring nobody is emptying. A chatty application, not a
+// large one, is all it takes.
+//
+// So the drain takes a bounded bite and returns. A time slice rather than a
+// line count, because what is being rationed is time on the console: at
+// 115200 baud in polling mode one 80-character line is around 7 ms, and the
+// same budget stays honest at a different rate or on a different device.
+// The record cap is a second bound for the case where lines are short enough
+// that the clock has barely moved.
+static const unsigned LOG_DRAIN_MAX_US = 2000;
+static const unsigned LOG_DRAIN_MAX_RECORDS = 16;
 
 namespace
 {
@@ -86,6 +124,43 @@ inline TLogSeverity ToCircle(unsigned severity)
     case SDL2CIRCLE_LOG_WARNING: return LogWarning;
     case SDL2CIRCLE_LOG_DEBUG:   return LogDebug;
     default:                     return LogNotice;
+    }
+}
+
+// Whether each core is currently losing lines, and how many it has lost
+// since it started. Only the servo touches these.
+bool g_dropping[LOG_MAX_CORES] = {};
+u32  g_droppedTotal[LOG_MAX_CORES] = {};
+
+// Say when a ring STARTS losing lines and when it STOPS, rather than once
+// per pass. A ring is full precisely when the console cannot keep up, so a
+// line per pass about it would be spending the scarce thing on describing
+// its own scarcity — and would push out the very lines it is reporting the
+// loss of. Two lines per episode say the same thing and cost nothing.
+void ReportDrops(unsigned core, LogRing &ring)
+{
+    const u32 lost = ring.dropped.exchange(0, std::memory_order_relaxed);
+
+    if (lost)
+    {
+        g_droppedTotal[core] += lost;
+        if (!g_dropping[core])
+        {
+            g_dropping[core] = true;
+            CLogger::Get()->Write("sdl2log", LogWarning,
+                                  "core %u: log ring full, lines are being "
+                                  "dropped (the console cannot carry them "
+                                  "this fast)", core);
+        }
+        return;
+    }
+
+    if (g_dropping[core])
+    {
+        g_dropping[core] = false;
+        CLogger::Get()->Write("sdl2log", LogWarning,
+                              "core %u: log ring keeping up again, %u line(s) "
+                              "lost in total", core, g_droppedTotal[core]);
     }
 }
 
@@ -215,14 +290,39 @@ void SDL2Circle_LogDrain(void)
     if (!SDL2Circle_SplitActive())
         return;                       // nothing rings when nothing is split
 
-    // Core order, so a reader sees each core's lines in the order that core
-    // produced them, which is the order that means anything.
-    for (unsigned c = 0; c < LOG_MAX_CORES; c++)
+    const u64 started = CTimer::GetClockTicks64();   // CLOCKHZ is 1 MHz
+    unsigned printed = 0;
+
+    // WHERE THIS PASS STARTS, and why it moves. The bounded bite has to be
+    // shared out, or the lowest-numbered core that keeps logging would spend
+    // the whole budget every pass and the cores above it would never be
+    // drained at all — silence that would look exactly like a core that had
+    // stopped. Each pass resumes at the core after the one the budget ran out
+    // on, so every ring gets its turn.
+    static unsigned s_nextCore = 0;
+
+    for (unsigned i = 0; i < LOG_MAX_CORES; i++)
     {
+        const unsigned c = (s_nextCore + i) % LOG_MAX_CORES;
         LogRing &ring = g_rings[c];
 
+        // Lines are taken in the order the core produced them, which is the
+        // order that means anything.
         for (;;)
         {
+            if (printed >= LOG_DRAIN_MAX_RECORDS
+                || CTimer::GetClockTicks64() - started >= LOG_DRAIN_MAX_US)
+            {
+                // Out of budget. Next pass starts at the core AFTER this one:
+                // starting at this one again would hand the whole budget back
+                // to the ring that just used it, and a core that logs without
+                // pause would keep every core above it permanently silent.
+                // What is left here waits one turn, which is a delay rather
+                // than a loss.
+                s_nextCore = (c + 1) % LOG_MAX_CORES;
+                return;
+            }
+
             u32 head = ring.head.load(std::memory_order_relaxed);
             u32 tail = ring.tail.load(std::memory_order_acquire);
             if (head == tail)
@@ -242,14 +342,15 @@ void SDL2Circle_LogDrain(void)
 
             CLogger::Get()->Write(rec.from ? rec.from : "sdl2",
                                   ToCircle(rec.severity), "%s", line);
+            printed++;
         }
 
-        // Report the gaps rather than hide them.
-        u32 lost = ring.dropped.exchange(0, std::memory_order_relaxed);
-        if (lost)
-            CLogger::Get()->Write("sdl2log", LogWarning,
-                                  "core %u: %u log lines dropped, ring full", c, lost);
+        ReportDrops(c, ring);
     }
+
+    // Every ring came up empty, so the next pass may as well start at the
+    // beginning again.
+    s_nextCore = 0;
 }
 
 // ---------------------------------------------------------------------------

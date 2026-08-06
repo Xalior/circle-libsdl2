@@ -767,9 +767,27 @@ SDL2Circle_Log("mygame", SDL2CIRCLE_LOG_NOTICE, "level %d loaded", n);
 ```
 
 - **It never blocks, and it never hides a loss.** If a ring is full the line
-  is dropped and counted, and the next drain prints how many were lost from
-  which core. Waiting would put the calling core to sleep for the sake of a
-  diagnostic, and overwriting would silently corrupt the record.
+  is dropped and counted. The drain says when a core STARTS dropping and when
+  it STOPS, with the total — rather than a line per pass, which would spend
+  the scarce console on describing its own scarcity. Waiting would put the
+  calling core to sleep for the sake of a diagnostic, and overwriting would
+  silently corrupt the record.
+- **The console is slower than any core, and dropping is the steady state for
+  an application that talks a lot.** At 115200 baud one ordinary line costs
+  around 7 ms, so the console carries on the order of 140 lines a second
+  whatever is asked of it. A game logging per frame is nowhere near that; a
+  game logging per file while it scans its data can pass it easily. If the
+  lines matter, raise the baud rate or log less — the ring cannot make the
+  wire wider.
+- **The servo's drain is bounded, and this is load-bearing.** It prints for a
+  couple of milliseconds and returns, leaving the rest of the servo loop and
+  the scheduler to run, and resumes at the next core so no ring is starved by
+  a noisier one. An unbounded drain and a producer that never waits are
+  between them enough to stop the board: the ring stays permanently
+  non-empty, the drain never reaches its end, and core 0 stops pumping USB,
+  feeding audio and yielding. It presents as a board that logs healthily for
+  a few seconds and then goes silent for ever, with USB half-enumerated and
+  no picture.
 - **`from` is stored as a pointer**, so it must outlive the call — a string
   literal, never a buffer on the stack. It is printed later, on another core.
 - **Byte output has its own entry point.** `SDL2Circle_LogBytes` takes output
