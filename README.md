@@ -936,7 +936,10 @@ templates, and the way a change is proven before it ships:
   event type so a click that produced no event is visible. It also hands its
   serial port to the library's input-injection channel, so the pointer can be
   driven from a terminal — `mouse to 100 100`, `mouse tap left` — when there
-  is nobody at the desk (mouse)
+  is nobody at the desk. It carries a patchable-defaults block at image
+  offset 0x800, so a network loader can stamp a switch into the image before
+  it boots, and the build refuses to leave behind an image that lost the
+  block (mouse)
 - `examples/tone` — 1 kHz sine over HDMI via the callback API (audio)
 - `examples/padview` — every attached joystick, gamepad and wheel on screen at
   once: name, GUID, USB IDs, whether the mapping database recognised it, live

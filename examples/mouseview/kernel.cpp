@@ -21,8 +21,11 @@
 //                    edge still draws one: the relative reading is what the
 //                    mouse reported, not what the clamp allowed
 //
-// The serial port is handed to the library's robot-hands channel, so the
-// same screen can be driven from the bench with no hand on the desk:
+// The serial port is handed to the library's robot-hands channel — always,
+// not only when a switch asks for it, because a harness whose whole purpose
+// is to be driven from a terminal should not require the terminal to have
+// stamped it first. So the same screen can be driven with no hand on the
+// desk:
 //
 //   mouse to 100 100      put the pointer at a coordinate
 //   mouse move -40 0      nudge it
@@ -31,6 +34,7 @@
 //   mouse wheel 3
 //
 #include "kernel.h"
+#include "defaults.h"
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_circle.h>
 #include <circle/bcmpropertytags.h>
@@ -154,6 +158,11 @@ boolean CKernel::Initialize(void)
 TShutdownMode CKernel::Run(void)
 {
     m_Logger.Write(From, LogNotice, "circle-libsdl2 mouseview test");
+
+    // Whatever a loader stamped into the image before it booted. Read once
+    // the logger is up, because reporting what was stamped is most of what
+    // the block is for on a bench.
+    DefaultsApply();
 
     if (!PhysicalDisplaySize(&W, &H))
     {
