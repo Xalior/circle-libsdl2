@@ -164,7 +164,13 @@ extern "C" SDL_Surface *SDL_CreateRGBSurfaceWithFormatFrom(void *pixels, int wid
         SDL_SetError("surface dimensions must not be negative");
         return nullptr;
     }
-    if (pitch < width * bpp)
+    // A pitch of zero means the caller has not got one yet: it is about to
+    // point this surface at memory it locks elsewhere, and will write the
+    // pitch in at the same time. SDL2 accepts that, so a zero is filled in
+    // with the natural row length rather than refused.
+    if (pitch == 0)
+        pitch = width * bpp;
+    else if (pitch < width * bpp)
     {
         SDL_SetError("pitch %d is too small for %d pixels of %d bytes",
                      pitch, width, bpp);
@@ -268,6 +274,9 @@ extern "C" int SDL_SetColorKey(SDL_Surface *surface, int flag, Uint32 key)
 {
     if (surface == nullptr)
         return SDL_InvalidParamError("surface");
+    if (surface->map == nullptr)
+        return SDL_SetError("SDL_SetColorKey: this surface has no blit state "
+                            "to set (it was not made by this library)");
     SDL_BlitMap *state = (SDL_BlitMap *)surface->map;
     if (flag)
     {
@@ -285,14 +294,14 @@ extern "C" SDL_bool SDL_HasColorKey(SDL_Surface *surface)
 {
     if (surface == nullptr)
         return SDL_FALSE;
-    return ((SDL_BlitMap *)surface->map)->colorkey_set;
+    return SDL2Circle_BlitState(surface)->colorkey_set;
 }
 
 extern "C" int SDL_GetColorKey(SDL_Surface *surface, Uint32 *key)
 {
     if (surface == nullptr)
         return SDL_InvalidParamError("surface");
-    SDL_BlitMap *state = (SDL_BlitMap *)surface->map;
+    const SDL_BlitMap *state = SDL2Circle_BlitState(surface);
     if (!state->colorkey_set)
         return SDL_SetError("surface has no colour key");
     if (key)
@@ -304,6 +313,10 @@ extern "C" int SDL_SetSurfaceBlendMode(SDL_Surface *surface, SDL_BlendMode blend
 {
     if (surface == nullptr)
         return SDL_InvalidParamError("surface");
+    if (surface->map == nullptr)
+        return SDL_SetError("SDL_SetSurfaceBlendMode: this surface has no "
+                            "blit state to set (it was not made by this "
+                            "library)");
     ((SDL_BlitMap *)surface->map)->blend = blendMode;
     return 0;
 }
@@ -313,7 +326,7 @@ extern "C" int SDL_GetSurfaceBlendMode(SDL_Surface *surface, SDL_BlendMode *blen
     if (surface == nullptr)
         return SDL_InvalidParamError("surface");
     if (blendMode)
-        *blendMode = ((SDL_BlitMap *)surface->map)->blend;
+        *blendMode = SDL2Circle_BlitState(surface)->blend;
     return 0;
 }
 
@@ -321,6 +334,10 @@ extern "C" int SDL_SetSurfaceAlphaMod(SDL_Surface *surface, Uint8 alpha)
 {
     if (surface == nullptr)
         return SDL_InvalidParamError("surface");
+    if (surface->map == nullptr)
+        return SDL_SetError("SDL_SetSurfaceAlphaMod: this surface has no "
+                            "blit state to set (it was not made by this "
+                            "library)");
     ((SDL_BlitMap *)surface->map)->alphamod = alpha;
     return 0;
 }
@@ -330,7 +347,7 @@ extern "C" int SDL_GetSurfaceAlphaMod(SDL_Surface *surface, Uint8 *alpha)
     if (surface == nullptr)
         return SDL_InvalidParamError("surface");
     if (alpha)
-        *alpha = ((SDL_BlitMap *)surface->map)->alphamod;
+        *alpha = SDL2Circle_BlitState(surface)->alphamod;
     return 0;
 }
 
@@ -338,6 +355,10 @@ extern "C" int SDL_SetSurfaceColorMod(SDL_Surface *surface, Uint8 r, Uint8 g, Ui
 {
     if (surface == nullptr)
         return SDL_InvalidParamError("surface");
+    if (surface->map == nullptr)
+        return SDL_SetError("SDL_SetSurfaceColorMod: this surface has no "
+                            "blit state to set (it was not made by this "
+                            "library)");
     SDL_BlitMap *state = (SDL_BlitMap *)surface->map;
     state->rmod = r;
     state->gmod = g;
@@ -349,7 +370,7 @@ extern "C" int SDL_GetSurfaceColorMod(SDL_Surface *surface, Uint8 *r, Uint8 *g, 
 {
     if (surface == nullptr)
         return SDL_InvalidParamError("surface");
-    SDL_BlitMap *state = (SDL_BlitMap *)surface->map;
+    const SDL_BlitMap *state = SDL2Circle_BlitState(surface);
     if (r) *r = state->rmod;
     if (g) *g = state->gmod;
     if (b) *b = state->bmod;

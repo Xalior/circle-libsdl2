@@ -75,7 +75,16 @@ static int blit_clipped(SDL_Surface *src, const SDL_Rect *srcrect,
     if (w <= 0 || h <= 0)
         return 0;
 
-    const SDL_BlitMap *state = (const SDL_BlitMap *)src->map;
+    // A surface built outside this library has no blit map, and reading one
+    // through a null pointer kills the board. See SDL2Circle_BlitState.
+    const SDL_BlitMap *state = SDL2Circle_BlitState(src);
+
+    // Same reasoning, one field along: a surface this library did not make
+    // may arrive without a format, and every line below reads through it. A
+    // message is recoverable; a fault on the application core is not.
+    if (src->format == nullptr || dst->format == nullptr)
+        return SDL_SetError("cannot blit a surface with no pixel format");
+
     const int sbpp = src->format->BytesPerPixel;
     const int dbpp = dst->format->BytesPerPixel;
     if (sbpp == 0 || dbpp == 0)
@@ -329,7 +338,16 @@ extern "C" int SDL_UpperBlitScaled(SDL_Surface *src, const SDL_Rect *srcrect,
         return 0;
     }
 
-    const SDL_BlitMap *state = (const SDL_BlitMap *)src->map;
+    // A surface built outside this library has no blit map, and reading one
+    // through a null pointer kills the board. See SDL2Circle_BlitState.
+    const SDL_BlitMap *state = SDL2Circle_BlitState(src);
+
+    // Same reasoning, one field along: a surface this library did not make
+    // may arrive without a format, and every line below reads through it. A
+    // message is recoverable; a fault on the application core is not.
+    if (src->format == nullptr || dst->format == nullptr)
+        return SDL_SetError("cannot blit a surface with no pixel format");
+
     const int sbpp = src->format->BytesPerPixel;
     const int dbpp = dst->format->BytesPerPixel;
     if (sbpp == 0 || dbpp == 0)
