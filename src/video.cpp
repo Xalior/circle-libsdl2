@@ -1281,7 +1281,22 @@ static void create_window_on0(void *p)
     win->fb = fb;
     win->w = s_canvas_w;
     win->h = s_canvas_h;
-    win->flags = a->flags | SDL_WINDOW_FULLSCREEN | SDL_WINDOW_SHOWN;
+    // The window's state, and the flags a game branches on.
+    //
+    // THIS WINDOW ALWAYS HAS INPUT FOCUS. There is one window and no window
+    // manager to take focus away from it, so a game asking whether it is
+    // focused is asking a question with only one possible answer here. A
+    // flag that is never set is indistinguishable from a flag that is false,
+    // and a game told it has no focus pauses, stops drawing or ignores
+    // input — a black screen with a clean log, which is the worst shape a
+    // failure can take.
+    //
+    // The flags the application asked for are carried through, EXCEPT those
+    // that contradict what this window actually is: it cannot be hidden and
+    // cannot be minimised, and claiming SDL_WINDOW_SHOWN alongside
+    // SDL_WINDOW_HIDDEN would leave a game to pick whichever it tested for.
+    win->flags = a->flags & ~(Uint32)(SDL_WINDOW_HIDDEN | SDL_WINDOW_MINIMIZED);
+    win->flags |= SDL_WINDOW_FULLSCREEN | SDL_WINDOW_SHOWN | SDL_WINDOW_INPUT_FOCUS;
     win->min_w = win->min_h = 0;
     win->max_w = win->max_h = 0;
     win->grabbed = SDL_FALSE;
@@ -1438,7 +1453,22 @@ extern "C" void SDL_GetWindowSize(SDL_Window *win, int *w, int *h)
 
 extern "C" Uint32 SDL_GetWindowFlags(SDL_Window *win)
 {
-    return win ? win->flags : 0;
+    if (win == nullptr)
+        return 0;
+
+    // Mouse focus is not stored, because it can change after the window is
+    // made: a USB mouse may be plugged in or pulled out at any time. It is
+    // asked of the mouse subsystem here so that this answer and
+    // SDL_GetMouseFocus can never disagree — a game that tests the flag and
+    // a game that calls the function are asking the same question, and one
+    // of them getting a different answer is a bug nobody would think to look
+    // for.
+    Uint32 flags = win->flags;
+    if (SDL_GetMouseFocus() == win)
+        flags |= SDL_WINDOW_MOUSE_FOCUS;
+    else
+        flags &= ~(Uint32)SDL_WINDOW_MOUSE_FOCUS;
+    return flags;
 }
 
 // There is no title bar to put a title in, but an application that sets one
