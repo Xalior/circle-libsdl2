@@ -147,7 +147,7 @@ struct SDL_Texture
     int w, h;
     Uint32 format;     // the format the APPLICATION asked for
     int access;        // SDL_TEXTUREACCESS_*, as asked for
-    u8 *pixels[2];     // [1] exists only under the core split: the app
+    u8 *pixels[3];     // [1] and [2] exist only under the core split: the app
                        // renders into one buffer while the presentation
                        // worker still reads the frame in flight
     u8 widx;           // buffer the app writes next
@@ -162,7 +162,7 @@ struct SDL_Texture
     // Tracking the buffer that was last POSTED is not the same question and
     // is what went wrong before: it says where the writer went, not what the
     // reader still holds.
-    u64 busy_seq[2];
+    u64 busy_seq[3];
     int pitch;         // stored pitch, always w * 4
 
     // Only for a texture whose format is not the stored one.
@@ -1088,7 +1088,30 @@ static void emit_cmd(SDL_Renderer *ren, const SDL2CirclePresentCmd &cmd)
     {
         start_rasterizing(ren);
         if (ren->rasterizing)
+        {
             exec_into(&cmd, s_canvas_surface, s_canvas_surface_pitch);
+            return;
+        }
+
+        // The canvas surface could not be allocated, so there is nowhere to
+        // draw this command and it is lost — and with it everything else
+        // this frame, since every later command lands here too.
+        //
+        // SAY SO. A frame that vanishes with nothing on the log is the
+        // shape of fault that costs whole nights: the picture stops
+        // changing, or never appears, and every other reading looks
+        // healthy. Once per run, because the condition that caused it does
+        // not clear and a line per command would bury the one that matters.
+        static bool told = false;
+        if (!told)
+        {
+            told = true;
+            SDL2Circle_Log("sdl2video", SDL2CIRCLE_LOG_ERROR,
+                           "no canvas surface (%dx%d, %u bytes): frames that "
+                           "are not the simple shape are being DISCARDED",
+                           s_canvas_w, s_canvas_h,
+                           (unsigned)((size_t)s_canvas_w * 4 * s_canvas_h));
+        }
         return;
     }
 
@@ -2172,8 +2195,9 @@ extern "C" SDL_Texture *SDL_CreateTexture(SDL_Renderer *, Uint32 format,
     tex->pitch = w * 4;
     tex->pixels[0] = (u8 *)malloc((size_t)tex->pitch * h);
     tex->pixels[1] = nullptr;   // allocated on first split-mode reuse
+    tex->pixels[2] = nullptr;
     tex->widx = 0;
-    tex->busy_seq[0] = tex->busy_seq[1] = 0;
+    tex->busy_seq[0] = tex->busy_seq[1] = tex->busy_seq[2] = 0;
     tex->app_bpp = app_bpp;
     tex->staging = nullptr;
     tex->staging_pitch = 0;
@@ -2209,13 +2233,23 @@ static inline bool texture_is_native(const SDL_Texture *tex)
 // provably enough. MAME's software path redraws the full texture each
 // frame; the partial-update path still copies the stable content across
 // first.
-// Whether the presentation core may still be reading a store.
+// Whether a store is spoken for: named by a frame that has been POSTED and
+// not yet finished with.
 //
-// Busy means the store was referenced by a frame that HAS been posted and
-// has NOT yet been acknowledged. A store recorded into the frame still being
-// built carries a sequence above the posted one: nothing is reading it, and
-// treating it as busy would deadlock an application that draws to the same
-// texture twice before presenting.
+// IT IS NOT ENOUGH TO ASK WHETHER THE WORKER HAS STARTED READING IT, and the
+// difference is worth writing down because the weaker test looks obviously
+// better and tears. A store carries ONE sequence — the last frame to name it
+// — so once a newer frame overwrites that mark, an older frame still queued
+// to read the same store is forgotten. Allowing the writer into a
+// posted-but-unstarted store is what lets a second frame claim it, and the
+// worker then reaches the first frame and reads a store two writers have
+// been through. Simulated with a worker slower than the poster, that tears
+// on essentially every frame.
+//
+// A store named by the frame still being BUILT is correctly free: it carries
+// a sequence above the posted one, and nothing has been sent that could read
+// it. Without that an application drawing to one texture twice before
+// presenting would wait for a frame nobody has posted.
 static bool texture_store_busy(const SDL_Texture *tex, u8 i)
 {
     const u64 b = tex->busy_seq[i];
@@ -2224,57 +2258,65 @@ static bool texture_store_busy(const SDL_Texture *tex, u8 i)
     return b > SDL2Circle_PresentAckedSeq() && b <= SDL2Circle_PresentPostedSeq();
 }
 
-// Hand back a store the application may write. Under the core split a posted
-// frame holds a raw pointer into one of these, and the worker reads it for as
-// long as its scale runs — so the one thing this must never do is return the
-// store that frame is reading. It used to, whenever the two-value flip
-// disagreed with what was actually in flight, and the result was a frame torn
-// between two pictures: every pitch correct, every pixel real, in the wrong
-// places.
+// Hand back a store the application may write.
+//
+// Under the core split a posted frame holds a raw pointer into one of these,
+// and the worker reads it for as long as its scale runs — so the one thing
+// this must never do is return the store that scale is reading.
+//
+// WHAT WENT WRONG BEFORE, since the fix is easier to keep if the fault it
+// replaced is written down: the old rule flipped stores when the last
+// RECORDED copy named the one about to be written. That is a proxy for the
+// question and not the question. It tracks where the WRITER went last; what
+// matters is what the READER still holds, and the two agree only by
+// coincidence. The result when they disagreed was a frame torn between two
+// pictures — every pitch correct, every pixel real, all of it in the wrong
+// place, which is why it read as a stride fault and was not one.
+//
+// (An earlier account of this blamed frames that were recorded and never
+// posted. There are none: every SDL_RenderPresent posts. The proxy was
+// simply the wrong question.)
 static u8 *texture_write_buffer(SDL_Texture *tex, bool preserve)
 {
     if (!SDL2Circle_SplitActive())
         return tex->pixels[tex->widx];
 
-    // TEMPORARY TRACE — remove with the rest.
-    {
-        static unsigned seen = 0;
-        if (seen < 30)
-        {
-            seen++;
-            SDL2Circle_Log("TRACE", SDL2CIRCLE_LOG_NOTICE,
-                           "PICK  widx=%d busy0=%llu busy1=%llu posted=%llu "
-                           "acked=%llu -> %s",
-                           (int)tex->widx,
-                           (unsigned long long)tex->busy_seq[0],
-                           (unsigned long long)tex->busy_seq[1],
-                           (unsigned long long)SDL2Circle_PresentPostedSeq(),
-                           (unsigned long long)SDL2Circle_PresentAckedSeq(),
-                           texture_store_busy(tex, tex->widx) ? "SWITCH" : "keep");
-        }
-    }
-
     if (!texture_store_busy(tex, tex->widx))
         return tex->pixels[tex->widx];      // still ours; no copy needed
 
-    const u8 next = tex->widx ^ 1;
-    if (!tex->pixels[next])
-        tex->pixels[next] = (u8 *)malloc((size_t)tex->pitch * tex->h);
-
-    // The second store may not exist — it is allocated on first need, and the
-    // earliest frames run before there is one — and it may itself be spoken
-    // for. Either way the answer is to WAIT for the worker to release the
-    // store rather than write into what is being read.
-    if (!tex->pixels[next] || texture_store_busy(tex, next))
+    // THREE STORES, AND THE THIRD IS WHAT REMOVES THE WAIT.
+    //
+    // With two, a poster running ahead of the worker has nowhere to put a
+    // frame: one store is being read and the other holds the frame already
+    // posted behind it, so the writer stops. That is the game core waiting
+    // for the presentation core, which is the thing this must not do — and
+    // simulation puts it at roughly every other frame once the worker is
+    // slower than the poster. With three there is always one that is neither.
+    //
+    // Taken in rotation rather than by a flip, so a store released by the
+    // worker comes back into use rather than one being favoured.
+    const unsigned n = (unsigned)(sizeof tex->pixels / sizeof tex->pixels[0]);
+    for (unsigned k = 1; k < n; k++)
     {
-        SDL2Circle_PresentWaitAck(tex->busy_seq[tex->widx]);
+        const u8 c = (u8)((tex->widx + k) % n);
+        if (!tex->pixels[c])
+            tex->pixels[c] = (u8 *)malloc((size_t)tex->pitch * tex->h);
+        if (!tex->pixels[c] || texture_store_busy(tex, c))
+            continue;
+
+        if (preserve)
+            memcpy(tex->pixels[c], tex->pixels[tex->widx],
+                   (size_t)tex->pitch * tex->h);
+        tex->widx = c;
         return tex->pixels[tex->widx];
     }
 
-    if (preserve)
-        memcpy(tex->pixels[next], tex->pixels[tex->widx],
-               (size_t)tex->pitch * tex->h);
-    tex->widx = next;
+    // Every store is spoken for, or none could be allocated. Waiting is the
+    // only answer left: writing into one the worker is reading is what all
+    // of this exists to prevent. Simulation never reaches this with three
+    // stores at any worker speed, so it is the safety net rather than the
+    // path.
+    SDL2Circle_PresentWaitAck(tex->busy_seq[tex->widx]);
     return tex->pixels[tex->widx];
 }
 
@@ -2434,6 +2476,7 @@ extern "C" void SDL_DestroyTexture(SDL_Texture *tex)
     SDL2Circle_PresentQuiesce();
     free(tex->pixels[0]);
     free(tex->pixels[1]);
+    free(tex->pixels[2]);
     free(tex->staging);
     delete tex;
 }
@@ -2614,25 +2657,6 @@ extern "C" int SDL_RenderCopy(SDL_Renderer *ren, SDL_Texture *tex,
     // be posted as the next sequence. Until the worker acknowledges that
     // frame, nothing may write here.
     tex->busy_seq[tex->widx] = SDL2Circle_PresentPostedSeq() + 1;
-
-    // TEMPORARY TRACE — remove with the rest.
-    {
-        static unsigned seen = 0;
-        if (seen < 30)
-        {
-            seen++;
-            SDL2Circle_Log("TRACE", SDL2CIRCLE_LOG_NOTICE,
-                           "RC    seq=%llu store=%d src=%lx tex=%lx "
-                           "p0=%lx p1=%lx posted=%llu acked=%llu",
-                           (unsigned long long)tex->busy_seq[tex->widx],
-                           (int)tex->widx, (unsigned long)(uintptr)cmd.src,
-                           (unsigned long)(uintptr)tex,
-                           (unsigned long)(uintptr)tex->pixels[0],
-                           (unsigned long)(uintptr)tex->pixels[1],
-                           (unsigned long long)SDL2Circle_PresentPostedSeq(),
-                           (unsigned long long)SDL2Circle_PresentAckedSeq());
-        }
-    }
     return 0;
 }
 

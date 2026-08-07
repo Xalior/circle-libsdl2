@@ -332,6 +332,7 @@ unsigned SDL2Circle_AudioRingRead(unsigned char *data, unsigned maxbytes)
 struct alignas(64) FrameBox
 {
     std::atomic<u64> seq{0};    // poster bumps
+    std::atomic<u64> taken{0};  // worker matches once the BOX is copied out
     std::atomic<u64> ack{0};    // worker matches once the frame is consumed
     std::atomic<u64> done{0};   // worker matches once the frame is on the glass
     unsigned half;
@@ -346,13 +347,23 @@ void SDL2Circle_PresentPost(const SDL2CirclePresentCmd *cmds, unsigned ncmds,
 {
     u64 seq = g_frame.seq.load(std::memory_order_relaxed);
     {
-        // The application core, blocked because the presentation core has
-        // not finished the previous frame. This is the number that says
-        // whether presentation is holding the application up, so it is
-        // accounted as waiting and not as render work.
+        // WAIT FOR THE BOX, NEVER FOR THE PICTURE.
+        //
+        // The only thing the poster can damage by writing here is the
+        // command list the worker has not copied out yet, and copying it is
+        // a memcpy of a handful of commands. Everything after that — the
+        // scale, the raster, the transfer — reads the worker's own copy and
+        // the texture stores, and the stores protect themselves (see
+        // busy_seq in video.cpp). None of it is this core's business.
+        //
+        // This used to wait on `ack`, which the worker publishes after the
+        // SCALE. That made the application core's frame rate the
+        // presentation core's frame rate: the game could not begin a frame
+        // until the previous picture had been composed, on a machine where
+        // the game has a core to itself and should never wait for anything.
         SDL2CirclePerfScope wait(SDL2CIRCLE_PERF_WAIT);
-        StallWatch watch("the presentation core to take the previous frame");
-        while (g_frame.ack.load(std::memory_order_acquire) < seq)
+        StallWatch watch("the presentation core to copy the previous frame out");
+        while (g_frame.taken.load(std::memory_order_acquire) < seq)
         {
             wfe();
             watch.tick();
@@ -366,20 +377,6 @@ void SDL2Circle_PresentPost(const SDL2CirclePresentCmd *cmds, unsigned ncmds,
     g_frame.half = half;
     g_frame.seq.store(seq + 1, std::memory_order_release);
     publish();
-
-    // TEMPORARY TRACE — remove with the rest.
-    {
-        static unsigned seen = 0;
-        if (seen < 30)
-        {
-            seen++;
-            SDL2Circle_Log("TRACE", SDL2CIRCLE_LOG_NOTICE,
-                           "POST  seq=%llu ncmds=%u src0=%lx (waited for ack>=%llu)",
-                           (unsigned long long)(seq + 1), ncmds,
-                           ncmds ? (unsigned long)(uintptr)cmds[ncmds - 1].src : 0UL,
-                           (unsigned long long)seq);
-        }
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -465,41 +462,45 @@ extern "C" void SDL2Circle_SplitPresentCore(void)
             wfe();
             continue;
         }
-        // Everything the mailbox owns is read into locals FIRST. Past the
-        // acknowledgement below the application core may overwrite the box,
-        // so nothing after it may still be reading out of one.
-        const unsigned ncmds = g_frame.ncmds;
+        // TAKE THE BOX AND RELEASE IT IMMEDIATELY.
+        //
+        // The command list is copied into this core's own memory before
+        // anything is drawn, so the box is free from here on and the
+        // application core is never held up by the picture. The copy is a
+        // few hundred bytes; the scale that follows is megabytes and
+        // milliseconds, and none of it needs the box.
+        //
+        // What the scale still reads is the TEXTURE STORES the commands
+        // point at, and those are held by busy_seq on the other side rather
+        // than by making the poster wait — a store is spoken for until
+        // `ack`, which is published once the scale below has finished with
+        // it.
+        static SDL2CirclePresentCmd s_local[SDL2CIRCLE_RECORD_MAX_CMDS];
+        unsigned ncmds = g_frame.ncmds;
         const unsigned half = g_frame.half;
+        if (ncmds > SDL2CIRCLE_RECORD_MAX_CMDS)
+            ncmds = SDL2CIRCLE_RECORD_MAX_CMDS;
+        memcpy(s_local, g_frame.cmds, ncmds * sizeof(s_local[0]));
 
-        // TEMPORARY TRACE — remove with the rest.
-        {
-            static unsigned seen = 0;
-            if (seen < 30)
-            {
-                seen++;
-                SDL2Circle_Log("TRACE", SDL2CIRCLE_LOG_NOTICE,
-                               "EXEC  seq=%llu ncmds=%u src0=%lx START",
-                               (unsigned long long)seq, ncmds,
-                               ncmds ? (unsigned long)(uintptr)g_frame.cmds[ncmds - 1].src
-                                     : 0UL);
-            }
-        }
+        g_frame.taken.store(seq, std::memory_order_release);
+        publish();
 
         {
-            // Consuming the frame: the scale, reading the command list and
-            // the texture buffers the application core posted.
+            // Consuming the frame: the scale, reading this core's copy of
+            // the command list and the texture stores it points at.
             SDL2CirclePerfScope render(SDL2CIRCLE_PERF_RENDER);
             for (unsigned i = 0; i < ncmds; i++)
-                SDL2Circle_VideoExecCmd(&g_frame.cmds[i], half);
+                SDL2Circle_VideoExecCmd(&s_local[i], half);
         }
 
-        // RELEASE THE APPLICATION CORE HERE, and not one line later.
+        // RELEASE THE TEXTURE STORES HERE, and not one line later.
         //
-        // The scale above is the last thing that reads anything the
-        // application core owns: the command list is consumed, and every
-        // texture buffer a command pointed at has been read to the end. So
-        // this is the earliest point at which the next frame may be posted,
-        // and posting is what the application core is blocked on.
+        // The scale above is the last thing that reads a store the
+        // application core owns, so this is the earliest point at which one
+        // may be written again. The application core is not waiting on this
+        // — it was released at `taken`, above — but a store it wants to
+        // reuse is, and holding this back would stall the writer for no
+        // reason.
         //
         // What follows is the OUTPUT side — waiting for the previous
         // transfer, waiting for the raster, starting the next transfer —
@@ -518,18 +519,6 @@ extern "C" void SDL2Circle_SplitPresentCore(void)
         done = seq;
         g_frame.ack.store(done, std::memory_order_release);
         publish();
-
-        // TEMPORARY TRACE — remove with the rest.
-        {
-            static unsigned seen = 0;
-            if (seen < 30)
-            {
-                seen++;
-                SDL2Circle_Log("TRACE", SDL2CIRCLE_LOG_NOTICE,
-                               "ACK   seq=%llu DONE READING",
-                               (unsigned long long)done);
-            }
-        }
 
         {
             SDL2CirclePerfScope render(SDL2CIRCLE_PERF_RENDER);
