@@ -197,11 +197,6 @@ static std::atomic<u64> g_servo_beats{0};
 // Which is why the answer is not a better report. It is that NOTHING ON THE
 // SERVO'S PATH MAY BLOCK — see the servo loop below, where every handler it
 // runs has to be bounded and has to return.
-//
-// When one does block anyway, the only thing that can say so is core 0 itself
-// speaking BEFORE the step rather than after it. That is
-// SDL2Circle_SplitTraceServo, further down: off by default, and the one way to
-// turn a board that died at the split into a named step and a handler address.
 // ---------------------------------------------------------------------------
 
 static const u64 STALL_REPORT_US = 5000000;   // 5 s
@@ -838,31 +833,6 @@ extern "C" void SDL2Circle_IOCloseDir(intptr_t dir)
 }
 
 // ---------------------------------------------------------------------------
-// Saying what the servo is about to do
-// ---------------------------------------------------------------------------
-//
-// Armed by SDL2Circle_SplitTraceServo, and off by default. The whole of the
-// reasoning is in SDL_circle.h beside that declaration; what matters here is
-// that this runs ON CORE 0, so SDL2Circle_Log writes straight through to the
-// console rather than into a ring somebody else has to drain. A line is
-// therefore on the wire BEFORE the step it names begins, which is the only
-// arrangement that survives a step that never ends.
-
-static std::atomic<unsigned> g_servo_trace{0};
-
-extern "C" void SDL2Circle_SplitTraceServo(unsigned nLaps)
-{
-    g_servo_trace.store(nLaps, std::memory_order_release);
-}
-
-static inline void servo_stage(bool bTrace, u64 nLap, const char *pStage)
-{
-    if (bTrace)
-        SDL2Circle_Log(From, SDL2CIRCLE_LOG_NOTICE,
-                       "servo lap %llu: %s", (unsigned long long)nLap, pStage);
-}
-
-// ---------------------------------------------------------------------------
 // Core-0 tasks: the servo and the watchdog.
 // ---------------------------------------------------------------------------
 
@@ -873,16 +843,11 @@ public:
 
     void Run(void) override
     {
-        u64 nLap = 0;
-
         for (;;)
         {
             // One lap. Counted before any of the work, so the count says the
             // servo is running even when there is nothing for it to do.
             g_servo_beats.fetch_add(1, std::memory_order_relaxed);
-
-            const unsigned nTraceLaps = g_servo_trace.load(std::memory_order_relaxed);
-            const bool bTrace = ++nLap <= (u64)nTraceLaps;
 
             // Call mailbox (init, window/audio creation, I/O service).
             // Scoped because on the hardware core this is not housekeeping,
@@ -891,20 +856,6 @@ public:
             u64 req = g_call.req.load(std::memory_order_acquire);
             if (req > g_call.ack.load(std::memory_order_relaxed))
             {
-                // Named for as long as the trace is armed, not just for the
-                // first laps: this is the step a stalled core 0 is nearly
-                // always in, and it is rare enough not to drown the console.
-                // The handler is named by its ADDRESS because that is all
-                // there is to name it by — the image's map file turns it
-                // back into a function.
-                if (nTraceLaps != 0)
-                    SDL2Circle_Log(From, SDL2CIRCLE_LOG_NOTICE,
-                                   "servo lap %llu: marshalled call, handler "
-                                   "0x%lX, arg 0x%lX — entering",
-                                   (unsigned long long)nLap,
-                                   (unsigned long)(uintptr)g_call.fn,
-                                   (unsigned long)(uintptr)g_call.arg);
-
                 SDL2CirclePerfScope serve(SDL2CIRCLE_PERF_SERVE);
                 g_calls_started.fetch_add(1, std::memory_order_relaxed);
                 publish();
@@ -912,18 +863,9 @@ public:
                 g_calls_served.fetch_add(1, std::memory_order_relaxed);
                 g_call.ack.store(req, std::memory_order_release);
                 publish();
-
-                // The other half of the bracket. An "entering" with no
-                // "returned" after it is the fatal one, and the line that
-                // carries it already names the handler.
-                if (nTraceLaps != 0)
-                    SDL2Circle_Log(From, SDL2CIRCLE_LOG_NOTICE,
-                                   "servo lap %llu: marshalled call returned",
-                                   (unsigned long long)nLap);
             }
 
             // USB plug-and-play + HID -> event ring.
-            servo_stage(bTrace, nLap, "input pump");
             {
                 SDL2CirclePerfScope input(SDL2CIRCLE_PERF_INPUT);
                 SDL2Circle_InputPump();
@@ -934,14 +876,12 @@ public:
             // pump early-returns past it. Its synthesized key events go through
             // SDL_PushEvent, which on core 0 publishes to the same ring the app
             // core drains. (Inert unless --rapi-debug-uart armed it.)
-            servo_stage(bTrace, nLap, "serial injection pump");
             {
                 SDL2CirclePerfScope input(SDL2CIRCLE_PERF_INPUT);
                 SDL2Circle_InjectPump();
             }
 
             // Audio ring -> sound device.
-            servo_stage(bTrace, nLap, "audio drain");
             {
                 SDL2CirclePerfScope audio(SDL2CIRCLE_PERF_AUDIO);
                 SDL2Circle_AudioDrain();
@@ -952,7 +892,6 @@ public:
             // it, and it is why a core that logs never has to block. It is
             // charged as service because that is what it is: printing on
             // another core's behalf.
-            servo_stage(bTrace, nLap, "log drain");
             {
                 SDL2CirclePerfScope serve(SDL2CIRCLE_PERF_SERVE);
                 SDL2Circle_LogDrain();
@@ -963,27 +902,18 @@ public:
             // shared-memory work), so the reporter's home is here on the
             // hardware core: the logger is core 0's device, and the other
             // cores' banks are shared memory read by their stamps.
-            servo_stage(bTrace, nLap, "performance report");
             SDL2Circle_PerfTick();
 
             // The CPU clock and the case fan. This library owns them, and
             // this servo is the heartbeat that drives them under the split:
             // the application core's pump returns before its own tail, so
             // this is the only loop left that runs every frame.
-            //
-            // Named separately from the rest because it is the one step on
-            // this lap that talks to the FIRMWARE: the throttle reads the SoC
-            // temperature through the VideoCore mailbox, whose lock every
-            // core shares and whose wait has no timeout.
-            servo_stage(bTrace, nLap, "hardware tick (CPU throttle, fan)");
             SDL2Circle_HardwareTick();
 
-            servo_stage(bTrace, nLap, "yielding to the scheduler");
             {
                 SDL2CirclePerfScope yield(SDL2CIRCLE_PERF_YIELD);
                 CScheduler::Get()->Yield();
             }
-            servo_stage(bTrace, nLap, "yield returned — lap complete");
         }
     }
 };

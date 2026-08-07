@@ -884,49 +884,6 @@ ordered per core rather than against each other. For working out what
 happened that is enough; for measuring how long something took, use the
 performance reports below.
 
-## When the hardware core stops
-
-Every handler the servo runs is another core's work being done on core 0, and
-**core 0 is the machine**: the console, USB, video, the system timer, the
-scheduler and the watchdog all belong to it. So a handler that does not return
-takes the whole board with it and leaves nothing running to report it. On the
-bench that looks exactly like a board that died the instant the split was
-armed — no further output, no exception, no watchdog line, every core silent
-at once — which is also what a boot failure looks like, and they are
-investigated completely differently.
-
-The rule that prevents it is that **nothing on the servo's path may block**.
-When something does anyway, this is how to find out what:
-
-```c
-SDL2Circle_SplitTraceServo(20);      /* before SDL2Circle_SplitInit */
-```
-
-The servo then says what it is about to do, **before** it does it, through
-core 0's own logger straight to the device core 0 owns. The last line on the
-wire names the step that never returned:
-
-```
-sdl2split: servo lap 7: marshalled call, handler 0x8A41C4, arg 0x4A1E30 — entering
-```
-
-and no `marshalled call returned` after it. The handler is named by its
-address because that is all there is to name it by; the image's `.map` file
-turns it back into a function.
-
-- The argument is how many complete laps to describe in full. **Marshalled
-  calls are described for as long as the trace is armed at all**, however
-  many laps have passed, because that is the step a stall is nearly always
-  in and it is rare enough not to drown the console.
-- Zero — the default — disables everything and costs one relaxed load per
-  lap.
-- **It changes what it measures.** At 115200 baud a described lap takes tens
-  of milliseconds, so an armed trace makes core 0 far slower than it really
-  is. It is for finding a board that has stopped, not for watching one that
-  is running.
-- Like `SDL2Circle_SetPerfInterval`, the call is the only way in: how a host
-  decides to make it is the host's design.
-
 ## Performance reports
 
 Call `SDL2Circle_SetPerfInterval(10)` and the library prints, every 10
