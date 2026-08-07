@@ -30,6 +30,15 @@
 // application's configuration still works, but nothing reads them yet, and
 // Mix_LoadMUS on a MIDI file fails and says exactly this.
 //
+// EFFECTS ARE HOW AN APPLICATION BRINGS ITS OWN SOUND ENGINE. An effect
+// registered on MIX_CHANNEL_POST is handed the finished mix, in the device's
+// format, and may rewrite it — which is the door through which an
+// application that HAS a synthesiser of its own puts its output into the
+// stream without needing one here. Chocolate Doom is the case that matters:
+// it emulates an OPL2 chip itself and adds the chip's samples to the mix
+// from a post effect, so its music plays even though nothing above can read
+// a MIDI file. Mix_SetPostMix is the same door one stage further down.
+//
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_mixer.h>
 #include "sdl2circle.h"
@@ -86,6 +95,82 @@ void *s_music_hook_data = nullptr;
 char *s_soundfonts = nullptr;
 char *s_timidity_cfg = nullptr;
 
+// ---------------------------------------------------------------------------
+// Effects
+//
+// A list per channel, plus one for MIX_CHANNEL_POST which runs on the
+// finished mix. The order they were added in is the order they run in, which
+// is SDL_mixer's contract: an application may stack two and expect the second
+// to see the first one's output.
+//
+// The limit is a fixed array rather than a linked list because registration
+// happens while the device is playing and the callback walks the list on
+// every buffer: a fixed array needs no allocation on either side. Eight per
+// channel is far past what any application registers — Chocolate Doom, the
+// heaviest user here, registers one.
+// ---------------------------------------------------------------------------
+
+const int MIX_MAX_EFFECTS = 8;
+
+struct Effect
+{
+    Mix_EffectFunc_t f;
+    Mix_EffectDone_t done;
+    void *arg;
+};
+
+struct EffectChain
+{
+    Effect e[MIX_MAX_EFFECTS];
+    int count;
+};
+
+EffectChain s_channel_effect[MIX_MAX_CHANNELS] = {};
+EffectChain s_post_effect = {};
+
+void (SDLCALL *s_postmix)(void *, Uint8 *, int) = nullptr;
+void *s_postmix_arg = nullptr;
+
+void RunEffects(const EffectChain &chain, int chan, void *stream, int len)
+{
+    for (int i = 0; i < chain.count; i++)
+        if (chain.e[i].f)
+            chain.e[i].f(chan, stream, len, chain.e[i].arg);
+}
+
+// SDL_mixer tells an effect when its channel stops, which is how an effect
+// holding state per sound knows to drop it. The post chain never stops — the
+// mix is always playing — so this is only ever reached for a real channel.
+void RunEffectsDone(const EffectChain &chain, int chan)
+{
+    for (int i = 0; i < chain.count; i++)
+        if (chain.e[i].done)
+            chain.e[i].done(chan, chain.e[i].arg);
+}
+
+// The last stage of every buffer: the post effects on the finished mix, in
+// the order they were registered, then the post-mix callback. Reached even
+// when the mix above could not be made, because an application's own sound
+// engine writes from here and keeps its time by counting the samples it is
+// asked for — a buffer it never sees is time it never advances.
+void RunPost(Uint8 *stream, int len)
+{
+    RunEffects(s_post_effect, MIX_CHANNEL_POST, stream, len);
+    if (s_postmix)
+        s_postmix(s_postmix_arg, stream, len);
+}
+
+// A channel has stopped, for whatever reason. Everything that wanted telling
+// gets told from here, so the three places a channel can stop — its sound
+// running out, its time limit arriving, and Mix_HaltChannel — all say the
+// same thing in the same order.
+void ChannelDone(int c)
+{
+    RunEffectsDone(s_channel_effect[c], c);
+    if (s_channel_finished)
+        s_channel_finished(c);
+}
+
 // Add one source into the accumulator with a gain per side. Everything is
 // 16-bit signed stereo here, which is what the device speaks.
 void MixInto(Sint32 *acc, const Uint8 *src, int frames, float left, float right)
@@ -95,6 +180,21 @@ void MixInto(Sint32 *acc, const Uint8 *src, int frames, float left, float right)
     {
         acc[i * 2]     += (Sint32)(s[i * 2]     * left);
         acc[i * 2 + 1] += (Sint32)(s[i * 2 + 1] * right);
+    }
+}
+
+// The same, into a buffer of the device's own 16-bit samples. This is what a
+// channel carrying effects is rendered into, because an effect is handed its
+// channel in the format the device plays and not in the wider accumulator
+// the summing uses. No sample can exceed the range: every gain here is at
+// most 1 and the source is already 16-bit.
+void MixIntoS16(Sint16 *dst, const Uint8 *src, int frames, float left, float right)
+{
+    const Sint16 *s = (const Sint16 *)src;
+    for (int i = 0; i < frames; i++)
+    {
+        dst[i * 2]     = (Sint16)(s[i * 2]     * left);
+        dst[i * 2 + 1] = (Sint16)(s[i * 2 + 1] * right);
     }
 }
 
@@ -118,7 +218,28 @@ void SDLCALL MixerCallback(void *, Uint8 *stream, int len)
 
     Sint32 *acc = (Sint32 *)SDL_calloc((size_t)frames * 2, sizeof(Sint32));
     if (!acc)
+    {
+        RunPost((Uint8 *)stream, len);
         return;
+    }
+
+    // A channel carrying effects is rendered on its own before it joins the
+    // sum, so its effect chain is handed that channel's samples and nothing
+    // else. The buffer is only allocated when some channel has effects at
+    // all, which is usually none of them.
+    Sint16 *chs = nullptr;
+    for (int c = 0; c < s_allocated; c++)
+        if (s_channel_effect[c].count > 0)
+        {
+            chs = (Sint16 *)SDL_malloc((size_t)frames * 2 * sizeof(Sint16));
+            if (!chs)
+            {
+                SDL_free(acc);
+                RunPost((Uint8 *)stream, len);
+                return;
+            }
+            break;
+        }
 
     // Whatever the hook already wrote is part of the mix.
     if (s_music_hook)
@@ -178,10 +299,13 @@ void SDLCALL MixerCallback(void *, Uint8 *stream, int len)
         if (ch.expire_ms && now >= ch.expire_ms)
         {
             ch.playing = false;
-            if (s_channel_finished)
-                s_channel_finished(c);
+            ChannelDone(c);
             continue;
         }
+
+        const bool effects = chs && s_channel_effect[c].count > 0;
+        if (effects)
+            memset(chs, 0, (size_t)frames * 2 * sizeof(Sint16));
 
         int done = 0;
         while (done < frames && ch.playing)
@@ -198,8 +322,12 @@ void SDLCALL MixerCallback(void *, Uint8 *stream, int len)
                 // loud channel.
                 const float g = ((float)ch.volume / (float)MIX_MAX_VOLUME)
                               * ((float)ch.chunk->volume / (float)MIX_MAX_VOLUME);
-                MixInto(acc + done * 2, ch.chunk->abuf + ch.pos, take,
-                        ch.left * g, ch.right * g);
+                if (effects)
+                    MixIntoS16(chs + done * 2, ch.chunk->abuf + ch.pos, take,
+                               ch.left * g, ch.right * g);
+                else
+                    MixInto(acc + done * 2, ch.chunk->abuf + ch.pos, take,
+                            ch.left * g, ch.right * g);
                 ch.pos += (Uint32)take * bytes_per_frame;
                 done += take;
             }
@@ -213,12 +341,19 @@ void SDLCALL MixerCallback(void *, Uint8 *stream, int len)
                 else
                 {
                     ch.playing = false;
-                    if (s_channel_finished)
-                        s_channel_finished(c);
+                    ChannelDone(c);
                 }
             }
             if (take <= 0 && ch.playing && ch.pos < ch.chunk->alen)
                 break;
+        }
+
+        // The channel's own effects, then what they left behind joins the sum.
+        if (effects)
+        {
+            RunEffects(s_channel_effect[c], c, chs, frames * bytes_per_frame);
+            for (int i = 0; i < frames * 2; i++)
+                acc[i] += chs[i];
         }
     }
 
@@ -231,6 +366,9 @@ void SDLCALL MixerCallback(void *, Uint8 *stream, int len)
         out[i] = (Sint16)v;
     }
     SDL_free(acc);
+    SDL_free(chs);
+
+    RunPost((Uint8 *)stream, len);
 }
 
 // Everything a chunk or a track has to become before it can be mixed: the
@@ -572,16 +710,14 @@ extern "C" int Mix_HaltChannel(int channel)
             if (s_channel[c].playing)
             {
                 s_channel[c].playing = false;
-                if (s_channel_finished)
-                    s_channel_finished(c);
+                ChannelDone(c);
             }
         return 0;
     }
     if (channel < s_allocated && s_channel[channel].playing)
     {
         s_channel[channel].playing = false;
-        if (s_channel_finished)
-            s_channel_finished(channel);
+        ChannelDone(channel);
     }
     return 0;
 }
@@ -736,14 +872,139 @@ extern "C" int Mix_SetDistance(int channel, Uint8 distance)
     return Mix_SetPosition(channel, 0, distance);
 }
 
+// ---------------------------------------------------------------------------
+// Effects
+//
+// An effect is a function handed a buffer of samples in the device's format,
+// free to rewrite it in place. Registered on a channel it sees that channel
+// alone; registered on MIX_CHANNEL_POST it sees the whole finished mix.
+//
+// The post channel is the one that matters most here, because it is how an
+// application with a sound engine of its own — Chocolate Doom's emulated OPL
+// chip, for one — puts that engine's output into the stream. Nothing above
+// has to know what it is synthesising.
+// ---------------------------------------------------------------------------
+
+namespace
+{
+
+// Which chain a channel number names. Null for a channel that does not exist,
+// which is how a bad registration is turned away.
+EffectChain *ChainFor(int channel)
+{
+    if (channel == MIX_CHANNEL_POST)
+        return &s_post_effect;
+    if (channel >= 0 && channel < s_allocated)
+        return &s_channel_effect[channel];
+    return nullptr;
+}
+
+} // namespace
+
+extern "C" int Mix_RegisterEffect(int chan, Mix_EffectFunc_t f,
+                                  Mix_EffectDone_t d, void *arg)
+{
+    EffectChain *chain = ChainFor(chan);
+    if (!chain)
+    {
+        Mix_SetError("Mix_RegisterEffect: no channel %d", chan);
+        return 0;
+    }
+    if (!f)
+    {
+        Mix_SetError("Mix_RegisterEffect: no effect function");
+        return 0;
+    }
+    if (chain->count >= MIX_MAX_EFFECTS)
+    {
+        Mix_SetError("Mix_RegisterEffect: channel %d already carries %d "
+                     "effects", chan, MIX_MAX_EFFECTS);
+        return 0;
+    }
+
+    // The device's callback walks this chain. Fill the slot before the count
+    // admits it exists, so a callback landing between the two reads a chain
+    // that is one effect short rather than one effect of rubbish.
+    chain->e[chain->count].f = f;
+    chain->e[chain->count].done = d;
+    chain->e[chain->count].arg = arg;
+    chain->count++;
+    return 1;
+}
+
+extern "C" int Mix_UnregisterEffect(int channel, Mix_EffectFunc_t f)
+{
+    EffectChain *chain = ChainFor(channel);
+    if (!chain)
+    {
+        Mix_SetError("Mix_UnregisterEffect: no channel %d", channel);
+        return 0;
+    }
+
+    int found = 0;
+    for (int i = 0; i < chain->count; )
+    {
+        if (chain->e[i].f != f)
+        {
+            i++;
+            continue;
+        }
+
+        Effect gone = chain->e[i];
+        for (int j = i; j + 1 < chain->count; j++)
+            chain->e[j] = chain->e[j + 1];
+        chain->count--;
+        found++;
+
+        // Told after it has left the chain, so an effect that unregisters
+        // something from inside its own done function finds the chain as it
+        // will be and not as it was.
+        if (gone.done)
+            gone.done(channel, gone.arg);
+    }
+
+    if (!found)
+    {
+        Mix_SetError("Mix_UnregisterEffect: that effect is not on channel %d",
+                     channel);
+        return 0;
+    }
+    return 1;
+}
+
+// Panning is an effect in SDL_mixer, so clearing a channel's effects clears
+// its panning with them. It is not one here — a gain per side is part of what
+// the mixing loop already does — so the panning is put back by hand.
 extern "C" int Mix_UnregisterAllEffects(int channel)
 {
+    EffectChain *chain = ChainFor(channel);
+    if (!chain)
+    {
+        Mix_SetError("Mix_UnregisterAllEffects: no channel %d", channel);
+        return 0;
+    }
+
+    const EffectChain was = *chain;
+    chain->count = 0;
+    for (int i = 0; i < was.count; i++)
+        if (was.e[i].done)
+            was.e[i].done(channel, was.e[i].arg);
+
     if (channel >= 0 && channel < s_allocated)
     {
         s_channel[channel].left = 1.0f;
         s_channel[channel].right = 1.0f;
     }
     return 1;
+}
+
+// The very last thing to touch a buffer before the device gets it, after
+// every channel, the music and the post effects.
+extern "C" void Mix_SetPostMix(void (SDLCALL *mix_func)(void *, Uint8 *, int),
+                               void *arg)
+{
+    s_postmix = mix_func;
+    s_postmix_arg = arg;
 }
 
 // ---------------------------------------------------------------------------
@@ -922,6 +1183,18 @@ extern "C" int Mix_VolumeMusic(int volume)
 }
 
 extern "C" Mix_Fading Mix_FadingMusic(void) { return MIX_NO_FADING; }
+
+// SDL_mixer plays music through an external program by handing the track to
+// a command line and letting a separate process do the work. There are no
+// processes here and no shell to start one from, so this refuses rather than
+// accepting a command it will never run — an application that asked for an
+// external player and got silence would have nothing to go on.
+extern "C" int Mix_SetMusicCMD(const char *command)
+{
+    return Mix_SetError("Mix_SetMusicCMD: `%s' cannot be run — this build has "
+                        "no way to start a separate program",
+                        command ? command : "");
+}
 
 extern "C" Mix_MusicType Mix_GetMusicType(const Mix_Music *)
 {
