@@ -309,8 +309,15 @@ int SDL2Circle_EventRingPop(SDL_Event *ev)
 
 // ---------------------------------------------------------------------------
 // Audio ring: application core (callback output) -> core 0 (sound device feeder).
-// Byte-granular SPSC; sized to carry the underrun budget between servo
-// visits on top of the device's own queue.
+// Byte-granular SPSC.
+//
+// THIS SIZE IS NOT THE BUFFER DEPTH, and the difference is the whole reason
+// the ring is this big. How much audio waits here is decided by the producer,
+// which stops well short of full (audio.cpp), because everything waiting is
+// delay before a sound is heard. The storage is generous so that an
+// application whose callback produces a large block at a time still has room
+// for one — a ring too small to hold a single block would never be written to
+// at all, and the sound would not be late, it would be absent.
 // ---------------------------------------------------------------------------
 
 static const unsigned AUDIO_RING_SIZE = 64 * 1024;   // power of two
@@ -329,6 +336,16 @@ unsigned SDL2Circle_AudioRingSpace(void)
     u32 tail = g_audio.tail.load(std::memory_order_relaxed);
     u32 head = g_audio.head.load(std::memory_order_acquire);
     return AUDIO_RING_SIZE - (tail - head);
+}
+
+// How much finished audio is waiting here. Every byte of it is time between a
+// sound being started and being heard, which is why the producer reads this
+// and stops rather than filling the ring: see the latency budget in audio.cpp.
+unsigned SDL2Circle_AudioRingUsed(void)
+{
+    u32 tail = g_audio.tail.load(std::memory_order_relaxed);
+    u32 head = g_audio.head.load(std::memory_order_acquire);
+    return tail - head;
 }
 
 void SDL2Circle_AudioRingWrite(const unsigned char *data, unsigned bytes)

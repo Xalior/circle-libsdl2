@@ -20,7 +20,14 @@ bool SDL2Circle_VirtualDeviceDeclared(void);
 
 void SDL2Circle_InputInit(void);   // bring up USB (idempotent)
 void SDL2Circle_InputPump(void);   // PnP + translate HID reports to events
-void SDL2Circle_AudioPump(void);   // run app audio callback into the queue
+// Producing audio: run the application's callback and queue what it makes.
+// The first of these claims production for the calling core and every other
+// core is refused after that, because both places the result goes have exactly
+// one writer. The second never claims — it lets the core that already owns
+// production keep going while it is blocked in a wait, and does nothing at all
+// on any other core.
+void SDL2Circle_AudioPump(void);
+void SDL2Circle_AudioPumpIfOwner(void);
 
 // Board hardware — the CPU clock and the case fan (src/hardware.cpp).
 // SDL2Circle_HardwareInit (SDL_circle.h) creates the one CCPUThrottle this
@@ -161,6 +168,7 @@ void SDL2Circle_ApplyEventState(const union SDL_Event *ev);
 
 // Audio sample ring (application core producer -> hardware-core device feeder).
 unsigned SDL2Circle_AudioRingSpace(void);
+unsigned SDL2Circle_AudioRingUsed(void);   // finished audio waiting to be played
 void     SDL2Circle_AudioRingWrite(const unsigned char *data, unsigned bytes);
 unsigned SDL2Circle_AudioRingRead(unsigned char *data, unsigned maxbytes);
 void     SDL2Circle_AudioDrain(void);   // hardware-core servo: ring -> sound device

@@ -205,9 +205,15 @@ void SDL2Circle_ThreadWaitSpin(void)
     // it if the callback runs. Spinning alone, such a wait is a wait for
     // something the waiter is itself preventing, and it never ends.
     //
+    // ONLY FOR THE CORE THAT ALREADY OWNS AUDIO PRODUCTION. This runs on every
+    // core, and both places produced audio goes have exactly one writer, so a
+    // wait must never make the waiting core a second producer — that does not
+    // sound late, it sounds torn and out of order. The owner-only entry point
+    // is where that rule lives; on any other core this costs a comparison.
+    //
     // An application that must keep the callback out of a section already has
     // SDL's own answer for it, SDL_LockAudioDevice, which the pump obeys.
-    SDL2Circle_AudioPump();
+    SDL2Circle_AudioPumpIfOwner();
 
     asm volatile("yield" ::: "memory");
 }
