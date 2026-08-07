@@ -128,17 +128,21 @@ int format_bits(Uint32 format)
     return bytes > 2 ? bytes * 8 : (int)SDL_BITSPERPIXEL(format);
 }
 
-// SDL2 answers a mask lookup by depth CLASS, not by exact equality: its own
-// SDL_MasksToPixelFormatEnum takes 12, 15 and 16 in a single arm, because any
-// of the three names a two-byte pixel. XRGB4444 reports twelve bits and
-// applications routinely ask for it at sixteen.
+// A mask lookup matches on the depth the caller named, with ONE pairing that
+// is not equality: 15 and 16 answer for each other. XRGB1555 reports fifteen
+// bits, and an application asking for a 555 surface names sixteen — real SDL2
+// hands back SDL_PIXELFORMAT_RGB555 either way, and refusing it would fail a
+// surface every port expects to get.
+//
+// The twelve-bit formats are deliberately NOT in that pairing, because real
+// SDL2 does not put them there: 4444 masks at a depth of sixteen are an
+// unknown format to it, and answering with a surface that then reports twelve
+// bits is exactly the kind of surprise an application asserts on.
 bool depth_matches(int want, int have)
 {
     if (want == have)
         return true;
-    const bool want_two_byte = (want == 12 || want == 15 || want == 16);
-    const bool have_two_byte = (have == 12 || have == 15 || have == 16);
-    return want_two_byte && have_two_byte;
+    return (want == 15 && have == 16) || (want == 16 && have == 15);
 }
 
 // Derive shift and loss from a channel mask, the way SDL2's own
@@ -313,12 +317,12 @@ extern "C" Uint32 SDL_MasksToPixelFormatEnum(int bpp, Uint32 Rmask, Uint32 Gmask
         case 16: return SDL_PIXELFORMAT_RGB565;
         case 24: return SDL_PIXELFORMAT_RGB24;
 
-        // ARGB8888 AND NOT RGB888, which is what SDL2 itself answers for a
-        // depth of 32 with no masks. Both are four bytes wide and both
-        // report 32 bits, so either would fit the caller's request; ARGB8888
-        // is the one that carries an alpha channel, and it is the format the
-        // display already works in, so a surface made this way reaches the
-        // glass without a conversion.
+        // ARGB8888 AND NOT RGB888, and this one is a DELIBERATE DIFFERENCE
+        // from real SDL2, which answers RGB888 here. Both are four bytes wide
+        // and both report 32 bits, so either satisfies the depth the caller
+        // named; ARGB8888 is the one that carries an alpha channel, and it is
+        // the format the display already works in, so a surface made this way
+        // reaches the glass without a conversion.
         case 32: return SDL_PIXELFORMAT_ARGB8888;
 
         default: return SDL_PIXELFORMAT_UNKNOWN;
