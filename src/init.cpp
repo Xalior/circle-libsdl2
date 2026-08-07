@@ -1,12 +1,23 @@
 //
-// init.cpp — subsystem bookkeeping, version, platform — and the wall clock
-// for code that runs before the host kernel exists.
+// init.cpp — subsystem bookkeeping, version, platform — and the two clocks
+// this library serves for code that runs before the host kernel exists.
 //
+// The two feature macros come before every include, and they have to: newlib
+// hides clockid_t and clock_gettime behind them, and a definition written
+// without them either does not compile or compiles into a second, differently
+// typed function that the C library's own header would then clash with. The
+// C library this project builds against is configured the same way, in its
+// own clock_gettime.cpp, for the same reason.
+#define _POSIX_TIMERS 1
+#define _POSIX_MONOTONIC_CLOCK 200112L
+
 #include <SDL2/SDL.h>
 #include "sdl2circle.h"
 #include <circle/koptions.h>
 #include <circle/timer.h>
 #include <sys/time.h>
+#include <time.h>
+#include <errno.h>
 
 static Uint32 s_initialized = 0;
 
@@ -102,6 +113,100 @@ extern "C" int _gettimeofday(struct timeval *ptimeval, void *ptimezone)
     ptimeval->tv_sec  = (time_t)(BuildEpoch() + nElapsed / CLOCKHZ);
     ptimeval->tv_usec = (suseconds_t)(nElapsed % CLOCKHZ);
     return 0;
+}
+
+// ---- The monotonic clock ---------------------------------------------------
+//
+// The same override, for the same reason, from the same always-linked object:
+// this is the clock_gettime every consumer of this library reaches.
+//
+// WHAT THE C LIBRARY'S ONE DOES, AND WHY IT IS DANGEROUS HERE. It answers
+// CLOCK_REALTIME and CLOCK_MONOTONIC and refuses every other clock id — and
+// the refusal returns -1 WITHOUT WRITING THE TIMESPEC. A caller that does not
+// check the return, which is most of them because a monotonic clock is not
+// expected to fail, then reads whatever its own stack held. Read the clock
+// twice from the same stack frame and the same bytes come back both times, so
+// the clock appears to have stopped: any "spin until the clock has advanced"
+// loop runs forever, on whichever core it is on, printing nothing. That is a
+// silent hang with no evidence at all, and it is not an exotic way to reach
+// one — the header this project builds against defines CLOCK_MONOTONIC_RAW,
+// so an ordinary portable program asks for the refused id BY PREFERENCE.
+//
+// So every id this board can answer meaningfully gets an answer:
+//
+//   REALTIME, REALTIME_COARSE     the wall clock above, whatever is currently
+//                                 serving it.
+//   MONOTONIC, and its RAW and    time since power-on, read straight from the
+//   COARSE spellings, BOOTTIME    free-running system counter. Nothing here
+//                                 adjusts, slews or suspends that counter, so
+//                                 the distinctions those ids draw on a desktop
+//                                 do not exist on this board and one honest
+//                                 reading serves all of them.
+//   PROCESS_CPUTIME_ID,           the same counter: this machine runs one
+//   THREAD_CPUTIME_ID             program from power-on and nothing else, so
+//                                 the program's CPU time IS the uptime.
+//
+// An id outside that set is still refused, because inventing an answer for a
+// clock nobody can name is worse than saying no. But the timespec is ZEROED
+// before the refusal, so a caller that ignores the return reads a defined
+// value instead of its own stack.
+extern "C" int clock_gettime(clockid_t clock_id, struct timespec *tp)
+{
+    if (tp == nullptr)
+    {
+        errno = EINVAL;
+        return -1;
+    }
+
+    switch (clock_id)
+    {
+    case CLOCK_REALTIME:
+#ifdef CLOCK_REALTIME_COARSE
+    case CLOCK_REALTIME_COARSE:
+#endif
+    {
+        struct timeval tv;
+        if (_gettimeofday(&tv, nullptr) != 0)
+            break;
+        tp->tv_sec  = tv.tv_sec;
+        tp->tv_nsec = (long)tv.tv_usec * 1000L;
+        return 0;
+    }
+
+    case CLOCK_MONOTONIC:
+#ifdef CLOCK_MONOTONIC_RAW
+    case CLOCK_MONOTONIC_RAW:
+#endif
+#ifdef CLOCK_MONOTONIC_COARSE
+    case CLOCK_MONOTONIC_COARSE:
+#endif
+#ifdef CLOCK_BOOTTIME
+    case CLOCK_BOOTTIME:
+#endif
+#ifdef CLOCK_PROCESS_CPUTIME_ID
+    case CLOCK_PROCESS_CPUTIME_ID:
+#endif
+#ifdef CLOCK_THREAD_CPUTIME_ID
+    case CLOCK_THREAD_CPUTIME_ID:
+#endif
+    {
+        // Static, and a direct read of the free-running counter: valid on
+        // every core and from the first instruction, before any CTimer
+        // object exists to be asked.
+        const u64 nTicks = CTimer::GetClockTicks64();
+        tp->tv_sec  = (time_t)(nTicks / CLOCKHZ);
+        tp->tv_nsec = (long)((nTicks % CLOCKHZ) * (1000000000ULL / CLOCKHZ));
+        return 0;
+    }
+
+    default:
+        break;
+    }
+
+    tp->tv_sec  = 0;
+    tp->tv_nsec = 0;
+    errno = EINVAL;
+    return -1;
 }
 
 static void init_input_on0(void *)
