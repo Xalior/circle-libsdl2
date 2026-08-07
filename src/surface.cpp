@@ -46,7 +46,18 @@ static SDL_Surface *surface_alloc(int width, int height, SDL_PixelFormat *format
         SDL_SetError("out of memory allocating surface state");
         return nullptr;
     }
-    state->blend    = SDL_BLENDMODE_NONE;
+    // A SURFACE THAT HAS AN ALPHA CHANNEL STARTS OUT BLENDING. SDL2 does
+    // this at creation, and applications rely on it without ever calling
+    // SDL_SetSurfaceBlendMode: they build an ARGB surface, write per-pixel
+    // alpha into it, and blit it with the plain SDL_BlitSurface, expecting
+    // the alpha to decide what lands. Started at NONE instead, that same
+    // blit copies every pixel including the transparent ones, so the shape
+    // in the alpha channel is lost and what appears is a solid rectangle of
+    // the colour underneath it. Text is where this shows first, because a
+    // glyph is exactly that: a rectangle whose alpha channel IS the letter.
+    state->blend    = (format != nullptr && format->Amask != 0)
+                          ? SDL_BLENDMODE_BLEND
+                          : SDL_BLENDMODE_NONE;
     state->alphamod = 255;
     state->rmod = state->gmod = state->bmod = 255;
 
