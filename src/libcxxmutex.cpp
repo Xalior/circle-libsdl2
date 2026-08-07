@@ -2,38 +2,53 @@
 // libcxxmutex.cpp — libc++'s mutex primitives, for the cores this library
 // actually puts applications on.
 //
-// WHY THIS FILE EXISTS, and the shape of the fault is worth having in front
-// of you before the code:
+// WHY THIS FILE EXISTS. Not because anything upstream is broken — it is not,
+// and reading its documentation first would have saved a night.
 //
-// std::recursive_mutex could not be used on ANY core except core 0. Not
-// merely across cores — taken and released microseconds apart on the same
-// core, it asserted and halted the board.
+// Circle's scheduler is SPECIFIED as core 0 only. doc/multicore.txt, lines
+// 62-64:
 //
-// circle-stdlib backs the two standard mutex types differently. std::mutex
-// gets a semaphore-based non-recursive implementation; std::recursive_mutex
-// is Circle's CMutex directly. CMutex is a SCHEDULER object: Acquire records
-// the task the scheduler is currently running, and Release asserts that the
-// same task is still current. There is one scheduler and it belongs to core
-// 0, so a caller on any other core is stamped with whatever task core 0
-// happened to be running at that instant — and this library's own servo
-// yields on every pass, so that answer changes continuously. Acquire records
-// one task, Release compares against another, and Circle asserts.
+//     "The cooperative non-preemptive scheduler is intended to allow multiple
+//      threads of operation on a single core. It cannot be used on more than
+//      one core at a time and should always run on core 0."
 //
-// Two more, on the success path and silent: Acquire under contention waits
-// on a scheduler synchronisation object from a core that has no scheduler,
-// and Release calls Yield() on CORE 0's scheduler from another core.
+// circle-stdlib builds libc++'s threading on that scheduler, and says so. So
+// the C++ standard library's threading primitives are core-0-only BY DESIGN
+// and BY DOCUMENTATION. std::recursive_mutex is backed by Circle's CMutex,
+// which records ownership as the task the scheduler is currently running and
+// asserts on release that the same task still is. On core 0 that is exactly
+// right. It is not a mis-binding; it is that library working to its spec.
 //
-// THE REASON IT HID FOR SO LONG IS WORTH KEEPING. It is a property of WHICH
-// MUTEX TYPE the code reaches for, not of what the code does. std::mutex
-// works everywhere, so nearly all locking is fine, and only the code that
-// happens to want recursion falls over — one game through its audio manager,
-// another through a logging library that takes the lock on every line. The
-// two have nothing in common but the type, which is why it looked like an
-// application problem twice over and was not.
+// WHAT IS OUT OF SPEC IS OURS. This library starts the application on a
+// SECOND core and then lets it call that runtime. There is one scheduler, it
+// belongs to core 0, so on the application core the "current task" is
+// whatever core 0 happens to be running at that instant — and this library's
+// own servo yields on every pass, so the answer moves continuously. Acquire
+// records one task, Release compares against another, and Circle asserts,
+// correctly, about a situation it told us not to create.
 //
-// It is the library's to fix because the library is what puts applications
-// on a core without a scheduler. A framework that owns the core split owes
-// the code it hosts a C++ runtime that works on the cores it chose.
+// The consequence is worth stating plainly because it is easy to under-read:
+// std::recursive_mutex could not be used on the application core AT ALL. Not
+// merely across cores — locked and unlocked microseconds apart on that one
+// core, with no contention and no second core involved, it halted the board.
+// Two games died on it after everything else about them worked: one through
+// its audio manager, one through a logging library that takes the lock on
+// every line. Two further hazards sit on the success path and say nothing:
+// Acquire under contention waits on a scheduler object from a core that has
+// no scheduler, and Release yields CORE 0's scheduler from another core.
+//
+// So these primitives are a DEBT THIS LIBRARY OWES, not a fix to someone
+// else's bug. We chose to run the application off core 0; honouring that
+// choice means supplying the parts of the C++ runtime that choice breaks.
+// Ownership below is an identity that does not move under its holder, and
+// waiting goes through the one wait here that is correct on every core.
+//
+// WHY IT HID FOR SO LONG, and this is the part to keep: it is a property of
+// WHICH MUTEX TYPE the code reaches for, not of what the code does.
+// std::mutex works everywhere, so nearly all locking is fine, and only code
+// that happens to want recursion falls over. The two games that died had
+// nothing in common but the type, which is why it read as an application
+// problem twice and was neither time.
 //
 // HOW THE OVERRIDE WORKS, since it is unusual. All nine of these symbols
 // live in ONE object inside liblibcxx-threading.a. Defining any of them here

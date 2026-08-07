@@ -4,12 +4,20 @@
 // This is the smallest program that would have caught a fault which halted
 // two games on the bench after everything else about them worked.
 //
-// std::recursive_mutex used to be backed by Circle's CMutex, which records
-// ownership as "the task the scheduler is currently running". There is one
-// scheduler and it belongs to core 0, so on any other core the answer is
-// whatever core 0 happened to be doing at that instant — and it moves
-// continuously. Lock and unlock microseconds apart on the same core, and the
-// two readings differ and Circle asserts. No contention, no second core
+// Circle's scheduler is SPECIFIED as core 0 only — doc/multicore.txt: "It
+// cannot be used on more than one core at a time and should always run on
+// core 0." circle-stdlib builds libc++'s threading on that scheduler, so the
+// C++ standard library's threading is core-0-only by design and by
+// documentation.
+//
+// This library runs the application on a SECOND core anyway. That is our
+// decision, so the primitives that decision breaks are our debt — and this
+// is the thing that proves the debt is paid. std::recursive_mutex used to
+// take its ownership from "the task the scheduler is currently running",
+// which on any core but 0 is whatever core 0 was doing at that instant and
+// moves continuously. Lock and unlock microseconds apart on the same core,
+// and the two readings differ and Circle asserts — correctly, about a
+// situation it told us not to create. No contention, no second core
 // involved, nothing exotic: just the wrong core.
 //
 // It hid because it is a property of WHICH MUTEX TYPE the code reaches for,
