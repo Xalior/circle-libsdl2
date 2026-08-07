@@ -38,6 +38,14 @@
 //   core. Waits are for handing work between parties that are really running,
 //   not for idling.
 //
+//   A WAIT KEEPS THE AUDIO DEVICE FED. On the application core the audio
+//   callback is run by whatever calls SDL_PumpEvents, which is the application
+//   itself, so a wait that only spun would stop the sound for as long as it
+//   lasted — and would deadlock outright an application whose callback is what
+//   ends the wait. The spin loop runs the audio pump, which is as close to a
+//   desktop's separate audio thread as this gets; SDL_LockAudioDevice is still
+//   how an application keeps its callback out of a section.
+//
 //   SDL_CreateThread WORKS FROM ANY CORE, and so do SDL_WaitThread,
 //   SDL_DetachThread and SDL_GetThreadID on what it returns. That matters
 //   because an application that creates its main game thread through SDL — and
@@ -184,6 +192,22 @@ void SDL2Circle_ThreadWaitSpin(void)
         CScheduler::Get()->Yield();
         return;
     }
+
+    // A WAIT MUST NOT STOP THE SOUND. The audio callback here is run by
+    // whichever context calls SDL_PumpEvents, which on the application core is
+    // the application's own loop — so a wait that only spins is a wait with the
+    // device unfed. On a desktop that never happens: SDL gives the callback a
+    // thread of its own and it keeps going while the application waits.
+    //
+    // Applications depend on that, and not only for the sound. A game whose
+    // audio callback drives its music clock — an emulated sound chip, say —
+    // waits at start-up for that clock to reach a mark, and it can only reach
+    // it if the callback runs. Spinning alone, such a wait is a wait for
+    // something the waiter is itself preventing, and it never ends.
+    //
+    // An application that must keep the callback out of a section already has
+    // SDL's own answer for it, SDL_LockAudioDevice, which the pump obeys.
+    SDL2Circle_AudioPump();
 
     asm volatile("yield" ::: "memory");
 }

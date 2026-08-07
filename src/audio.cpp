@@ -232,10 +232,23 @@ extern "C" SDL_AudioDeviceID SDL_OpenAudioDevice(const char *, int iscapture,
     return 2;   // SDL device ids for opened devices start at 2
 }
 
+// Set for as long as the application's callback is running. The pump is
+// reached from a blocking wait as well as from the event pump now (see
+// SDL2Circle_ThreadWaitSpin), so a callback that itself waits on something
+// would otherwise re-enter the pump and be asked to fill a second buffer
+// from inside the first.
+namespace { bool s_pumping = false; }
+
 void SDL2Circle_AudioPump(void)
 {
-    if (!s_device || s_paused || !s_spec.callback || s_lock > 0)
+    if (!s_device || s_paused || !s_spec.callback || s_lock > 0 || s_pumping)
         return;
+
+    struct Guard
+    {
+        Guard()  { s_pumping = true; }
+        ~Guard() { s_pumping = false; }
+    } guard;
 
     // Core split inverts audio from pull to push: the application core runs its
     // callback into the cross-core sample ring; the hardware-core servo feeds the
