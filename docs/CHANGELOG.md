@@ -10,6 +10,34 @@ followed.
 
 ## vPoC3
 
+### SDL has one framebuffer, and every frame is drawn into it
+
+A frame is no longer sent to the presentation core as a pointer into the
+application's own texture. Every frame is composed into SDL's framebuffer — a
+buffer this library owns, at the size the application was told the display is
+— and that buffer is what crosses between the cores.
+
+Two faults go with it.
+
+The presentation core used to keep reading an application texture after
+`SDL_RenderPresent` had returned. At that moment the application is entitled
+to destroy the texture, or to lock it and draw the next frame into it, and
+nothing stopped it. Whether that showed as a torn picture, a wrong one or a
+halted board depended on timing alone.
+
+`SDL_RenderReadPixels` used to read the display panel rather than SDL's
+framebuffer. Where the picture is fitted and centred on a larger panel, it
+returned the top-left corner of the panel — part black margin, part picture,
+scaled to the panel and not to the size the caller drew in. It now reads
+SDL's framebuffer, in the coordinates the caller drew in, and returns the
+frame as it stands: everything drawn since the frame began. A screenshot
+taken before the present is the picture the application just drew.
+
+The cost is one full-size copy per frame on the application's core, and for
+the frame shape that used to be recognised, one further resampling pass. It
+is paid so that no buffer is ever read by one core while another may be
+writing it.
+
 ### The C++ standard library's threading works on the core your application runs on
 
 `std::mutex`, `std::recursive_mutex`, `std::condition_variable`,
@@ -124,13 +152,11 @@ not make.
 ### A build setting chooses what crosses between the cores
 
 `make PRESENT_CMDS=n` sets how many drawing commands may travel to the
-presentation core as a list. A frame that does not fit within the count
-crosses as a finished picture instead.
+presentation core as a list. A frame that does not fit within the count is
+composed into SDL's own framebuffer instead, and that framebuffer crosses.
 
-The default of zero sends every frame as a picture, which costs nothing
-extra: the usual frame is a screen clear followed by one opaque image, and
-that is already a finished picture sitting in the application's own texture.
-Which framebuffer the firmware granted no longer influences the choice.
+The default of zero composes every frame here and sends a picture. Which
+framebuffer the firmware granted no longer influences the choice.
 
 Only the default has been measured against a real workload.
 

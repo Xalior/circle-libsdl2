@@ -39,9 +39,12 @@ struct SDL_Window
 struct SDL_Renderer
 {
     SDL_Window *window;
-    u8 *base;          // start of the (2x height) virtual framebuffer
-    unsigned pitch;
-    unsigned back;     // half we're drawing into: 0 = top, 1 = bottom
+    // The framebuffer half the presentation core is to draw into next. It is
+    // carried with the frame and handed to the executor, and it is the only
+    // thing here that refers to the panel at all — a slot number, never its
+    // geometry or its address. Nothing on this side of the library knows what
+    // the panel is or where it lives.
+    unsigned back;
     bool vsync;        // present blocks for vertical sync
     Uint8 r, g, b, a;  // draw color
     SDL_BlendMode draw_blend;
@@ -66,34 +69,16 @@ struct SDL_Renderer
     SDL_Rect clip;
     bool     clip_enabled;
 
-    // Draw calls become present commands. Single-core they execute
-    // immediately (the degenerate case of the same design); under the core
-    // split they are recorded here and RenderPresent posts the frame to the
-    // presentation worker, which blits and flips off-core.
-    // Draw calls are RECORDED here, in canvas coordinates, and nothing is
-    // executed until SDL_RenderPresent. What crosses to the presentation
-    // core then is a finished frame, never this list.
+    // Draw calls held back, in canvas coordinates, while the frame is still
+    // short enough to cross to the presentation core as a LIST. A frame that
+    // outgrows the crossing count is composed into the virtual framebuffer
+    // instead, and at the default count of zero every frame is.
     SDL2CirclePresentCmd cmds[SDL2CIRCLE_RECORD_MAX_CMDS];
     unsigned ncmds;
 
-    // Set once a frame has stopped being a simple one and is being drawn
-    // into the canvas surface instead. Cleared at the start of each frame.
+    // Set once this frame has started being drawn into the virtual
+    // framebuffer. Cleared at the start of each frame.
     bool rasterizing;
-
-    // Whether the frame being recorded has had its one opaque copy yet. It
-    // is what lets the simple shape be ruled out as each command arrives
-    // rather than only when the whole frame is known: a second copy, or any
-    // fill after the copy, cannot be part of a clear-plus-one-blit frame no
-    // matter what follows. Cleared at the start of each frame.
-    bool have_copy;
-
-    // What the border looked like when it was last painted: the colour it
-    // was painted in, and the frame rectangle it was painted around.
-    // Borders are geometry, so they are repainted when this changes and
-    // never otherwise.
-    u32 border_color;
-    int frame_x, frame_y, frame_w, frame_h;
-    unsigned border_repaint;   // frames still owing a repaint
 
     // Pixels a command needs that exist nowhere else — a mirrored copy for
     // SDL_RenderCopyEx, which the texture itself does not hold. A recorded
@@ -113,10 +98,12 @@ struct SDL_Renderer
     u8     scratch_idx;
 };
 
-// The canvas-resolution surface a frame is rasterized into when it is not
-// the simple shape. Allocated the first time one occurs, and never if none
-// ever does — an application that clears and blits a texture, which is most
-// of them, never touches this.
+// THE VIRTUAL FRAMEBUFFER: the one framebuffer SDL has, at canvas
+// resolution, and the surface every frame is composed into. It exists for as
+// long as a window does — it is allocated when the window is made, and a
+// window cannot be made without it — so nothing downstream has to ask whether
+// SDL's framebuffer is really there.
+//
 // Two of them, alternating, for the same reason the textures come in
 // pairs: the presentation core may still be reading the one that was
 // posted while this thread starts drawing the next.
@@ -264,6 +251,15 @@ struct AcquireFbArgs { int w, h; };
 // Zero until it has been asked, and zero if the firmware declines to say.
 static int s_phys_w = 0, s_phys_h = 0;
 
+// The geometry the grant was made at, taken from the framebuffer object at
+// the moment it is created and held here.
+//
+// Held rather than asked for again, because asking means calling into a
+// Circle device object and the callers that want this answer — the display
+// mode and display bounds queries — run on the application core. It never
+// changes: the grant is made once and kept for the life of the program.
+static int s_grant_w = 0, s_grant_h = 0;
+
 // Ask the firmware what the physical display is. Core 0 only — it is a
 // mailbox transaction — and only meaningful after the allocation, because
 // the allocation is what sets the mode and this reads back what was set.
@@ -306,6 +302,8 @@ static void acquire_fb_on0(void *p)
         return;
     }
     s_fb0 = fb;
+    s_grant_w = (int)fb->GetWidth();
+    s_grant_h = (int)fb->GetHeight();
 
     // Read the mode back on this same trip to core 0, now that setting it
     // has happened.
@@ -504,15 +502,16 @@ static bool resolve_display_size(void)
         s_scanout_h = a.h;
         source = "firmware silent, physical request";
     }
-    else if (s_fb0)
+    else if (s_grant_w > 0 && s_grant_h > 0)
     {
         // Nothing named and the firmware silent to us. Circle asked the same
         // question in its constructor and allocated against whatever it got,
         // so its width and height are the geometry the grant was actually
         // made at. They are only an echo of a request when a request was
-        // made, and none was.
-        s_scanout_w = (int)s_fb0->GetWidth();
-        s_scanout_h = (int)s_fb0->GetHeight();
+        // made, and none was. Read off the object on core 0 when the grant
+        // was made, and held since.
+        s_scanout_w = s_grant_w;
+        s_scanout_h = s_grant_h;
         source = "firmware silent, grant geometry";
     }
     else
@@ -1032,8 +1031,10 @@ void SDL2Circle_VideoFlip(unsigned half)
     }
 }
 
-// The canvas surface, made the first time a frame needs one.
-static bool canvas_surface_ready(void)
+// Allocate the virtual framebuffer. Called once, from window creation, and
+// a window that cannot have one is not created: everything below this point
+// composes into it, so a missing one is not a condition to carry around.
+static bool canvas_surface_alloc(void)
 {
     if (s_canvas_surface)
         return true;
@@ -1052,116 +1053,54 @@ static bool canvas_surface_ready(void)
     s_canvas_surface_idx = 0;
     s_canvas_surface = s_canvas_surface_buf[0];
     SDL2Circle_Log("sdl2video", SDL2CIRCLE_LOG_NOTICE,
-                   "canvas surface %dx%d allocated: a frame arrived that has to "
-                   "be composed here before it crosses",
-                   s_canvas_w, s_canvas_h);
+                   "virtual framebuffer %dx%d, double buffered, %u bytes",
+                   s_canvas_w, s_canvas_h,
+                   (unsigned)(2 * (size_t)s_canvas_surface_pitch * s_canvas_h));
     return true;
 }
 
 // Stop recording and start drawing. Everything recorded so far goes into
-// the canvas surface, and everything after it goes straight there.
+// the virtual framebuffer, and everything after it goes straight there.
 static void start_rasterizing(SDL_Renderer *ren)
 {
-    if (ren->rasterizing || !canvas_surface_ready())
+    if (ren->rasterizing)
         return;
     for (unsigned i = 0; i < ren->ncmds; i++)
         exec_into(&ren->cmds[i], s_canvas_surface, s_canvas_surface_pitch);
     ren->ncmds = 0;
-    ren->have_copy = false;
     ren->rasterizing = true;
 }
 
-// Could this command still be part of a clear-plus-one-opaque-copy frame?
-// The same rule simple_frame_copy applies to a finished list, asked one
-// command at a time: a fill that is not a full-target clear, a fill after
-// the copy, a second copy, or a copy that is blended or alpha-modded, and
-// the frame cannot be the simple shape whatever follows.
+// Record a draw call, or draw it.
 //
-// simple_frame_copy remains the authority on a finished list. This only ever
-// brings the same verdict FORWARD, so the two cannot disagree about what is
-// simple — at worst this is the more cautious of the two and the frame is
-// painted that much sooner.
-static bool keeps_simple_shape(SDL_Renderer *ren, const SDL2CirclePresentCmd &cmd)
-{
-    if (cmd.op == SDL2CirclePresentCmd::FILL)
-        return !ren->have_copy
-            && cmd.dx == 0 && cmd.dy == 0
-            && cmd.w == ren->window->w && cmd.h == ren->window->h;
-
-    return !ren->have_copy && !cmd.blend && cmd.alphamod == 255;
-}
-
-// Record a draw call. Nothing is executed here and nothing is placed on the
-// scanout yet: both are decided at present time, when the whole frame is
-// known and can be reduced to the one thing that crosses.
+// A frame is only ever held back for one reason: it may still be short
+// enough to CROSS as a list, and then the presentation core composes it and
+// this core paints nothing. The moment it is too long for that, everything
+// held is replayed into the virtual framebuffer and this command and every
+// later one go straight in.
+//
+// At the default crossing count of zero nothing is ever held: the first draw
+// call of the frame starts the painting.
+//
+// There is no third possibility. A frame is NEVER handed over as the
+// application's own texture, however simple its shape — that pointer belongs
+// to the application, which is free to destroy the texture or draw the next
+// frame into it the moment present returns, while the presentation core is
+// still reading it.
 static void emit_cmd(SDL_Renderer *ren, const SDL2CirclePresentCmd &cmd)
 {
     if (cmd.w <= 0 || cmd.h <= 0)
         return;
 
-    if (ren->rasterizing)
+    if (!ren->rasterizing
+        && ren->ncmds < (unsigned)SDL2CIRCLE_PRESENT_MAX_CMDS)
     {
-        exec_into(&cmd, s_canvas_surface, s_canvas_surface_pitch);
+        ren->cmds[ren->ncmds++] = cmd;
         return;
     }
 
-    // Painting starts at the first moment the frame can be NEITHER of the
-    // two things worth holding it back for.
-    //
-    // It is worth holding back while the frame could still be the simple
-    // shape, because that shape is the application's own texture and never
-    // needs painting at all. It is also worth holding back while the list
-    // is still short enough to CROSS as a list, because then the far side
-    // composes it and this core paints nothing either. A command that ends
-    // both possibilities ends the waiting with it: replay what is held,
-    // paint this one straight in, and every later one goes straight in too.
-    //
-    // Waiting past that point would add latency to exactly the frames the
-    // recogniser cannot help — the work is the same either way, but done
-    // here it is spread across the application's own draw calls instead of
-    // landing in one lump at present.
-    const bool could_be_simple = keeps_simple_shape(ren, cmd);
-    const bool could_still_cross =
-        ren->ncmds < (unsigned)SDL2CIRCLE_PRESENT_MAX_CMDS;
-
-    // The recorder's own capacity is the third way to run out, and it is
-    // never the crossing count: recognising the simple shape has to keep
-    // working however few commands this build lets cross.
-    if ((!could_be_simple && !could_still_cross)
-        || ren->ncmds >= SDL2CIRCLE_RECORD_MAX_CMDS)
-    {
-        start_rasterizing(ren);
-        if (ren->rasterizing)
-        {
-            exec_into(&cmd, s_canvas_surface, s_canvas_surface_pitch);
-            return;
-        }
-
-        // The canvas surface could not be allocated, so there is nowhere to
-        // draw this command and it is lost — and with it everything else
-        // this frame, since every later command lands here too.
-        //
-        // SAY SO. A frame that vanishes with nothing on the log is the
-        // shape of fault that costs whole nights: the picture stops
-        // changing, or never appears, and every other reading looks
-        // healthy. Once per run, because the condition that caused it does
-        // not clear and a line per command would bury the one that matters.
-        static bool told = false;
-        if (!told)
-        {
-            told = true;
-            SDL2Circle_Log("sdl2video", SDL2CIRCLE_LOG_ERROR,
-                           "no canvas surface (%dx%d, %u bytes): frames that "
-                           "are not the simple shape are being DISCARDED",
-                           s_canvas_w, s_canvas_h,
-                           (unsigned)((size_t)s_canvas_w * 4 * s_canvas_h));
-        }
-        return;
-    }
-
-    if (cmd.op == SDL2CirclePresentCmd::COPY)
-        ren->have_copy = true;
-    ren->cmds[ren->ncmds++] = cmd;
+    start_rasterizing(ren);
+    exec_into(&cmd, s_canvas_surface, s_canvas_surface_pitch);
 }
 
 // Answer one display-mode query. False when there is no display to describe,
@@ -1346,6 +1285,19 @@ static void create_window_on0(void *p)
     if (!fb)
     {
         SDL_SetError("CBcmFrameBuffer::Initialize failed (%dx%d)", a->w, a->h);
+        return;
+    }
+
+    // SDL's own framebuffer, at canvas resolution. Every frame is composed
+    // into it and it is the only surface anything on this side of the library
+    // reads or writes, so a window without one would be a window with nowhere
+    // to draw. There is no fallback to borrow: say so and make no window.
+    if (!canvas_surface_alloc())
+    {
+        SDL_SetError("the %dx%d virtual framebuffer could not be allocated "
+                     "(%u bytes, double buffered)",
+                     s_canvas_w, s_canvas_h,
+                     (unsigned)(2 * (size_t)s_canvas_w * 4 * s_canvas_h));
         return;
     }
 
@@ -1908,84 +1860,55 @@ extern "C" int SDL_UpdateWindowSurfaceRects(SDL_Window *win,
     // WHY THE WHOLE CANVAS IS CARRIED ACROSS EACH TIME, and not just the
     // rectangles the caller named. The surface handed over has to be one the
     // application cannot write while the presentation core is still reading
-    // it, so the frame is copied into the canvas surface, which is double
-    // buffered exactly for that: this frame goes into the buffer the worker
-    // is not holding. Copying only the named rectangles into that buffer
-    // would leave everything else in it showing the frame BEFORE last, so
-    // what is copied is the whole surface. It buys back far more than it
+    // it, so the frame is copied into the virtual framebuffer, which is
+    // double buffered exactly for that: this frame goes into the buffer the
+    // worker is not holding. Copying only the named rectangles into that
+    // buffer would leave everything else in it showing the frame BEFORE last,
+    // so what is copied is the whole surface. It buys back far more than it
     // costs — the scale it moves off this core is the larger picture, at
-    // scanout size, every frame.
+    // scanout size, every frame. The named rectangles are therefore read for
+    // nothing but their bounds, and this path ignores them.
     //
-    // The rectangles are still honoured where they can be: with no canvas
-    // surface to be had this falls back to presenting the named rectangles
-    // straight from the application's own surface, on this core, which is
-    // safe precisely because nothing crosses.
-    const SDL_Rect whole = { 0, 0, win->w, win->h };
+    // The window IS the canvas, so these agree by construction — but the copy
+    // below writes canvas-sized storage from window-sized rows, and a
+    // disagreement would write past the end of it. Tested rather than
+    // assumed.
+    (void)rects; (void)numrects;
+    if (win->w != s_canvas_w || win->h != s_canvas_h)
+        return SDL_SetError("SDL_UpdateWindowSurfaceRects: the window is "
+                            "%dx%d and the canvas is %dx%d",
+                            win->w, win->h, s_canvas_w, s_canvas_h);
 
     SDL2CirclePresentCmd frame;
     memset(&frame, 0, sizeof(frame));
     frame.op = SDL2CirclePresentCmd::COPY;
     frame.alphamod = 255;
 
-    // The window IS the canvas here, so these agree by construction — but
-    // the copy below writes canvas-sized storage from window-sized rows, and
-    // a disagreement would write past the end of it. Tested rather than
-    // assumed, and a disagreement simply takes the other route.
-    const bool bCrossable = win->w == s_canvas_w && win->h == s_canvas_h
-                            && canvas_surface_ready();
-    if (bCrossable)
+    SDL2CirclePresentCmd in = frame;
+    in.dx = 0; in.dy = 0;
+    in.w = win->w; in.h = win->h;
+    in.sw = win->w; in.sh = win->h;
+    in.src = (u8 *)s_window_surface->pixels;
+    in.srcpitch = s_window_surface->pitch;
+    exec_into(&in, s_canvas_surface, s_canvas_surface_pitch);
+
+    frame.src = s_canvas_surface;
+    frame.srcpitch = (int)s_canvas_surface_pitch;
+    frame.dx = 0; frame.dy = 0;
+    frame.w = win->w; frame.h = win->h;
+    frame.sw = win->w; frame.sh = win->h;
+
+    if (SDL2Circle_SplitActive() && SDL2Circle_ThisCore() != 0)
     {
-        SDL2CirclePresentCmd in = frame;
-        in.dx = 0; in.dy = 0;
-        in.w = win->w; in.h = win->h;
-        in.sw = win->w; in.sh = win->h;
-        in.src = (u8 *)s_window_surface->pixels;
-        in.srcpitch = s_window_surface->pitch;
-        exec_into(&in, s_canvas_surface, s_canvas_surface_pitch);
-
-        frame.src = s_canvas_surface;
-        frame.srcpitch = (int)s_canvas_surface_pitch;
-        frame.dx = 0; frame.dy = 0;
-        frame.w = win->w; frame.h = win->h;
-        frame.sw = win->w; frame.sh = win->h;
-
-        if (SDL2Circle_SplitActive() && SDL2Circle_ThisCore() != 0)
-        {
-            SDL2Circle_PresentPost(&frame, 1, s_window_surface_back);
-            if (s_canvas_surface_buf[1])
-            {
-                s_canvas_surface_idx ^= 1;
-                s_canvas_surface = s_canvas_surface_buf[s_canvas_surface_idx];
-            }
-            if (s_fb_halves == 2)
-                s_window_surface_back ^= 1;
-            return 0;
-        }
-
-        SDL2Circle_VideoExecCmd(&frame, s_window_surface_back);
+        SDL2Circle_PresentPost(&frame, 1, s_window_surface_back);
+        s_canvas_surface_idx ^= 1;
+        s_canvas_surface = s_canvas_surface_buf[s_canvas_surface_idx];
+        if (s_fb_halves == 2)
+            s_window_surface_back ^= 1;
+        return 0;
     }
-    else
-    {
-        for (int i = 0; i < (rects ? numrects : 1); i++)
-        {
-            SDL_Rect r = rects ? rects[i] : whole;
-            if (!SDL_IntersectRect(&r, &whole, &r))
-                continue;
 
-            SDL2CirclePresentCmd cmd = frame;
-            cmd.dx = r.x;
-            cmd.dy = r.y;
-            cmd.w = r.w;
-            cmd.h = r.h;
-            cmd.src = (u8 *)s_window_surface->pixels
-                    + (size_t)r.y * s_window_surface->pitch + (size_t)r.x * 4;
-            cmd.srcpitch = s_window_surface->pitch;
-            cmd.sw = r.w;
-            cmd.sh = r.h;
-
-            SDL2Circle_VideoExecCmd(&cmd, s_window_surface_back);
-        }
-    }
+    SDL2Circle_VideoExecCmd(&frame, s_window_surface_back);
 
     // The flip asks the firmware, through the VideoCore mailbox, and this
     // function runs on whichever core the application is on. The mailbox is
@@ -2012,8 +1935,6 @@ extern "C" SDL_Renderer *SDL_CreateRenderer(SDL_Window *win, int, Uint32 flags)
     }
     SDL_Renderer *ren = new SDL_Renderer;
     ren->window = win;
-    ren->base = (u8 *)(uintptr)win->fb->GetBuffer();
-    ren->pitch = win->fb->GetPitch();
     // Half 0 is visible after init, so draw into half 1 first -- unless the
     // grant forced single-buffering, where half 0 is all there is.
     ren->back = s_fb_halves == 2 ? 1 : 0;
@@ -2021,11 +1942,7 @@ extern "C" SDL_Renderer *SDL_CreateRenderer(SDL_Window *win, int, Uint32 flags)
     ren->r = ren->g = ren->b = 0;
     ren->a = 255;
     ren->ncmds = 0;
-    ren->have_copy = false;
     ren->rasterizing = false;
-    ren->border_color = 0;
-    ren->frame_x = ren->frame_y = ren->frame_w = ren->frame_h = -1;
-    ren->border_repaint = 0;
     ren->draw_blend = SDL_BLENDMODE_NONE;
     ren->logical_w = 0;
     ren->logical_h = 0;
@@ -2777,10 +2694,17 @@ extern "C" int SDL_RenderCopy(SDL_Renderer *ren, SDL_Texture *tex,
     cmd.alphamod = tex->alphamod;
     emit_cmd(ren, cmd);
 
-    // This store is now spoken for by the frame being assembled, which will
-    // be posted as the next sequence. Until the worker acknowledges that
-    // frame, nothing may write here.
-    tex->busy_seq[tex->widx] = SDL2Circle_PresentPostedSeq() + 1;
+    // A command the renderer DREW has already read this store, here, on this
+    // core, before returning — the pixels are in the virtual framebuffer and
+    // the store is the application's again immediately.
+    //
+    // A command the renderer HELD BACK is a different matter: it will cross
+    // as a list, carrying a raw pointer into this store, so the store is
+    // spoken for by the frame being assembled — which will be posted as the
+    // next sequence — and nothing may write here until the worker
+    // acknowledges that frame.
+    if (!ren->rasterizing)
+        tex->busy_seq[tex->widx] = SDL2Circle_PresentPostedSeq() + 1;
     return 0;
 }
 
@@ -2884,33 +2808,44 @@ extern "C" int SDL_RenderCopyEx(SDL_Renderer *ren, SDL_Texture *tex,
     return 0;
 }
 
-// Reads back what has been drawn. The frame being assembled has not been
-// executed yet — commands are recorded and run at present — so this answers
-// with the last frame actually placed on the canvas.
+// Reads back what has been drawn, out of the virtual framebuffer — the only
+// framebuffer SDL has, and the one every frame is composed into. The panel
+// does not come into it: it is a different size, it holds the picture fitted
+// and centred inside a black margin, and none of that is anything SDL was
+// ever told about.
+//
+// The rectangle is in canvas coordinates, which is what the caller drew in,
+// and the answer is the frame as it stands right now: everything drawn since
+// this frame began, over whatever the buffer held before that. An application
+// reading back before its present therefore gets the picture it just drew.
 extern "C" int SDL_RenderReadPixels(SDL_Renderer *ren, const SDL_Rect *rect,
                                     Uint32 format, void *pixels, int pitch)
 {
     if (!ren || !pixels)
         return SDL_SetError("SDL_RenderReadPixels: no renderer or destination");
+    if (!s_canvas_surface)
+        return SDL_SetError("SDL_RenderReadPixels: no virtual framebuffer");
 
-    SDL_Rect r = rect ? *rect
-                      : SDL_Rect{ 0, 0, ren->window->w, ren->window->h };
-    const SDL_Rect win = { 0, 0, ren->window->w, ren->window->h };
-    if (!SDL_IntersectRect(&r, &win, &r))
+    // Anything the renderer is still holding back to cross as a list has not
+    // been drawn anywhere yet. Draw it, so the read sees the whole frame.
+    start_rasterizing(ren);
+
+    SDL_Rect r = rect ? *rect : SDL_Rect{ 0, 0, s_canvas_w, s_canvas_h };
+    const SDL_Rect canvas = { 0, 0, s_canvas_w, s_canvas_h };
+    if (!SDL_IntersectRect(&r, &canvas, &r))
         return 0;
 
     if (format == 0)
         format = SDL_PIXELFORMAT_ARGB8888;
 
-    // The visible half is the one NOT being drawn into.
-    const unsigned front = (s_fb_halves == 2) ? (ren->back ^ 1) : 0;
-    const u8 *base = ren->base + (size_t)front * ren->pitch * (unsigned)ren->window->h;
-
     for (int y = 0; y < r.h; y++)
     {
-        const u8 *src = base + (size_t)(r.y + y) * ren->pitch + (size_t)r.x * 4;
+        const u8 *src = s_canvas_surface
+                      + (size_t)(r.y + y) * s_canvas_surface_pitch
+                      + (size_t)r.x * 4;
         u8 *dst = (u8 *)pixels + (size_t)y * pitch;
-        if (SDL_ConvertPixels(r.w, 1, SDL_PIXELFORMAT_ARGB8888, src, ren->pitch,
+        if (SDL_ConvertPixels(r.w, 1, SDL_PIXELFORMAT_ARGB8888, src,
+                              (int)s_canvas_surface_pitch,
                               format, dst, pitch) < 0)
             return -1;
     }
@@ -3532,111 +3467,64 @@ extern "C" int SDL_RenderDrawLines(SDL_Renderer *ren, const SDL_Point *points,
 // is on the serial log without the app's help.
 unsigned g_SDL2CirclePresents = 0;
 
-// ---- reducing a frame ------------------------------------------------------
+// ---- what crosses to the presentation core ---------------------------------
 //
-// What crosses to the presentation core is a FINISHED FRAME: pixels, and
-// where on the scanout they go. Never a list of draw calls to execute
-// there. The presentation core impersonates display hardware the board does
-// not have — frame in, scanout out — and no part of SDL lives on it.
+// TWO THINGS, AND NOTHING ELSE.
 //
-// Reducing is what turns a recorded frame into that. Almost every frame an
-// application draws is the same shape: clear the target, then blit one
-// opaque texture over it. That shape reduces to the texture itself, exactly
-// as it already sits in memory — for a game raster, a few hundred kilobytes
-// instead of a screen — and the clear reduces to nothing at all, because
-// the only part of it anything can see is the border around the placed
-// frame, and a border only changes when the geometry does.
+//   THE VIRTUAL FRAMEBUFFER, a bitmap at canvas resolution that this library
+//   owns and composed itself. It is double buffered, so the buffer handed
+//   over is never the one the application's next frame is drawn into.
 //
-// A frame of any other shape is drawn on this thread, into the canvas
-// surface, and that surface is the finished frame. So the fast shape is a
-// fact about the recorded stream, never an assumption about the caller: no
-// application has to draw a particular way to be correct, only to be quick.
+//   A LIST OF COMMANDS in canvas coordinates, when the frame is short enough
+//   for the far side to compose it. That is a build-time choice
+//   (SDL2CIRCLE_PRESENT_MAX_CMDS, described in sdl2circle.h) and at the
+//   default of zero only an empty frame ever takes it.
+//
+// NEVER THE APPLICATION'S OWN MEMORY. This used to recognise the commonest
+// frame there is — clear the target, blit one opaque texture over it — and
+// send that texture straight across, in place, unpainted. It cost nothing and
+// it was wrong twice over: the presentation core went on reading a texture
+// the application was free to destroy or redraw the moment present returned,
+// and on that path SDL's framebuffer was never written at all, so the one
+// framebuffer SDL is supposed to have did not exist and anything that tried
+// to read it (SDL_RenderReadPixels) had nothing to read.
+//
+// What replaced it is one rule with no exceptions: every frame is composed
+// into the virtual framebuffer, and the virtual framebuffer is what crosses.
+// The price is one full-canvas copy per frame on this core, and for a frame
+// that used to be recognised, a second resample — the canvas is resampled
+// onto the scanout where before the texture went straight there. Both were
+// weighed and accepted.
 
-// Is this the simple shape? Returns the index of the one copy, or -1.
-static int simple_frame_copy(SDL_Renderer *ren)
+extern "C" void SDL_RenderPresent(SDL_Renderer *ren)
 {
-    int copy = -1;
-    for (unsigned i = 0; i < ren->ncmds; i++)
-    {
-        const SDL2CirclePresentCmd &c = ren->cmds[i];
-        if (c.op == SDL2CirclePresentCmd::FILL)
-        {
-            // Only a clear of the whole target reduces, and only before
-            // the copy: a fill after one is drawing, not clearing.
-            if (copy >= 0 || c.dx != 0 || c.dy != 0
-                || c.w != ren->window->w || c.h != ren->window->h)
-                return -1;
-            continue;
-        }
-        // One opaque copy, and nothing else.
-        if (copy >= 0 || c.blend || c.alphamod != 255)
-            return -1;
-        copy = (int)i;
-    }
-    return copy;
-}
+    SDL2CirclePerfScope perf(SDL2CIRCLE_PERF_RENDER);
+    g_SDL2CirclePresents++;
 
-// Paint the border — the target minus the frame — when it has moved,
-// resized or changed colour, and for as many frames as there are buffers
-// behind the present, since each holds its own copy of it. Emits the fill
-// into the reduced list; the presentation core does the painting.
-static void border_if_changed(SDL_Renderer *ren, u32 color,
-                              const SDL2CirclePresentCmd &frame,
-                              SDL2CirclePresentCmd *out, unsigned *nout)
-{
-    if (color != ren->border_color
-        || frame.dx != ren->frame_x || frame.dy != ren->frame_y
-        || frame.w != ren->frame_w || frame.h != ren->frame_h)
-    {
-        ren->border_color = color;
-        ren->frame_x = frame.dx; ren->frame_y = frame.dy;
-        ren->frame_w = frame.w;  ren->frame_h = frame.h;
-        ren->border_repaint = s_shadow_buf[1] ? 2 : 1;
-    }
-
-    if (!ren->border_repaint)
-        return;
-    ren->border_repaint--;
-
-    // The WHOLE CANVAS, which is as much of the display as anything on this
-    // side of the library can name. The executor is what knows that clearing
-    // the whole canvas means clearing the whole panel, border and all.
-    SDL2CirclePresentCmd fill;
-    memset(&fill, 0, sizeof(fill));
-    fill.op = SDL2CirclePresentCmd::FILL;
-    fill.dx = 0; fill.dy = 0;
-    fill.w = s_canvas_w; fill.h = s_canvas_h;
-    fill.color = color;
-    out[(*nout)++] = fill;
-}
-
-// Turn the recorded frame into what crosses. Returns the number of entries
-// written to `out` (at most two: a border repaint, and the frame).
-static unsigned reduce_frame(SDL_Renderer *ren, SDL2CirclePresentCmd *out)
-{
-    unsigned nout = 0;
-
-    int copy = ren->rasterizing ? -1 : simple_frame_copy(ren);
-    u32 clear_color = 0xFF000000u;
-    if (copy >= 0)
-        for (unsigned i = 0; i < ren->ncmds; i++)
-            if (ren->cmds[i].op == SDL2CirclePresentCmd::FILL)
-                clear_color = ren->cmds[i].color;
+    // A frame still short enough to cross as a list has not been composed
+    // anywhere, and crosses as it was recorded. The grant does not enter into
+    // it: both endings reach the same executor, which writes into the shadow
+    // or the staging frame according to what was granted, and the flip is the
+    // grant's business either way.
+    const bool as_list =
+        !ren->rasterizing && ren->ncmds <= (unsigned)SDL2CIRCLE_PRESENT_MAX_CMDS;
 
     SDL2CirclePresentCmd frame;
-    if (copy >= 0)
+    const SDL2CirclePresentCmd *out;
+    unsigned nout;
+
+    if (as_list)
     {
-        // The simple shape: the frame IS the application's own texture,
-        // untouched, wherever it already is in memory.
-        frame = ren->cmds[copy];
+        out = ren->cmds;
+        nout = ren->ncmds;
     }
     else
     {
-        // Anything else was drawn here, on this thread, at canvas
-        // resolution. That surface is the frame.
+        // Everything else was composed here, into the virtual framebuffer,
+        // as it was drawn. That surface IS the frame, at canvas resolution
+        // and at the canvas origin: placing it on the panel is the executor's
+        // job and not this one's.
         start_rasterizing(ren);
-        if (!ren->rasterizing)
-            return 0;                  // no surface: nothing can be shown
         memset(&frame, 0, sizeof(frame));
         frame.op = SDL2CirclePresentCmd::COPY;
         frame.src = s_canvas_surface;
@@ -3645,86 +3533,18 @@ static unsigned reduce_frame(SDL_Renderer *ren, SDL2CirclePresentCmd *out)
         frame.dx = 0; frame.dy = 0;
         frame.w = s_canvas_w; frame.h = s_canvas_h;
         frame.alphamod = 255;
-    }
+        out = &frame;
+        nout = 1;
 
-    if (frame.w <= 0 || frame.h <= 0)
-        return 0;
-
-    border_if_changed(ren, clear_color, frame, out, &nout);
-    out[nout++] = frame;
-    return nout;
-}
-
-extern "C" void SDL_RenderPresent(SDL_Renderer *ren)
-{
-    SDL2CirclePerfScope perf(SDL2CIRCLE_PERF_RENDER);
-    g_SDL2CirclePresents++;
-
-    // A short enough frame crosses as a LIST and is composed on the far
-    // side; anything else crosses as a PICTURE, below. How short is short
-    // enough was fixed when the library was built
-    // (SDL2CIRCLE_PRESENT_MAX_CMDS, described in sdl2circle.h), and at the
-    // default of zero nothing but an empty frame takes this path.
-    //
-    // The grant does not enter into it. Both endings reach the same
-    // executor, which writes into the shadow or the staging frame according
-    // to what was granted, and the flip is the grant's business either way.
-    //
-    // A frame the recorder gave up on has already been drawn into the canvas
-    // surface and has no list left to send, whatever the count.
-    if (!ren->rasterizing && ren->ncmds <= (unsigned)SDL2CIRCLE_PRESENT_MAX_CMDS)
-    {
-        // Composed command by command on the far side. The whole recorded
-        // list travels, because composing IS what this path does — in canvas
-        // coordinates exactly as it was recorded, because placing it on the
-        // panel is the far side's job and not this one's.
-        if (SDL2Circle_SplitActive() && SDL2Circle_ThisCore() != 0)
-        {
-            SDL2Circle_PresentPost(ren->cmds, ren->ncmds, ren->back);
-            ren->ncmds = 0;
-            ren->have_copy = false;
-            ren->rasterizing = false;
-            frame_scratch_next(ren);
-            if (s_fb_halves == 2)
-                ren->back ^= 1;
-            return;
-        }
-        for (unsigned i = 0; i < ren->ncmds; i++)
-            SDL2Circle_VideoExecCmd(&ren->cmds[i], ren->back);
-        ren->ncmds = 0;
-        ren->have_copy = false;
-        ren->rasterizing = false;
-        frame_scratch_next(ren);
-        SDL2Circle_VideoFlip(ren->back);
-        if (ren->vsync)
-        {
-            SDL2CirclePerfScope wait(SDL2CIRCLE_PERF_WAIT_VSYNC);
-            ren->window->fb->WaitForVerticalSync();
-        }
-        // Only a grant of two halves has a second half to draw into. On a
-        // single-half grant the half is not a target at all — the executor
-        // and the flip both ignore it and work through the shadow — and
-        // naming half 1 there would address memory past the grant.
-        if (s_fb_halves == 2)
-            ren->back ^= 1;
-        return;
-    }
-
-    SDL2CirclePresentCmd out[2];
-    bool drew_canvas = ren->rasterizing;
-    unsigned nout = reduce_frame(ren, out);
-    ren->ncmds = 0;
-    ren->have_copy = false;
-    drew_canvas = drew_canvas || ren->rasterizing;
-    ren->rasterizing = false;
-
-    // A posted canvas surface belongs to the frame in flight; the next one
-    // is drawn into the other.
-    if (drew_canvas && s_canvas_surface_buf[1])
-    {
+        // The buffer just handed over belongs to the frame in flight; the
+        // next frame is drawn into the other one.
         s_canvas_surface_idx ^= 1;
         s_canvas_surface = s_canvas_surface_buf[s_canvas_surface_idx];
     }
+
+    ren->ncmds = 0;
+    ren->rasterizing = false;
+    frame_scratch_next(ren);
 
     if (SDL2Circle_SplitActive() && SDL2Circle_ThisCore() != 0)
     {
@@ -3737,14 +3557,19 @@ extern "C" void SDL_RenderPresent(SDL_Renderer *ren)
     for (unsigned i = 0; i < nout; i++)
         SDL2Circle_VideoExecCmd(&out[i], ren->back);
     SDL2Circle_VideoFlip(ren->back);
+
+    // Only when the app asked for vsync: throttled apps pace themselves, and
+    // blocking here would double-throttle.
     if (ren->vsync)
     {
         SDL2CirclePerfScope wait(SDL2CIRCLE_PERF_WAIT_VSYNC);
         ren->window->fb->WaitForVerticalSync();
     }
+
+    // Only a grant of two halves has a second half to draw into. On a
+    // single-half grant the half is not a target at all — the executor and
+    // the flip both ignore it and work through the shadow — and naming half 1
+    // there would address memory past the grant.
     if (s_fb_halves == 2)
         ren->back ^= 1;
-                                     // only when the app asked for vsync:
-                                     // throttled apps pace themselves, and
-                                     // blocking here would double-throttle
 }

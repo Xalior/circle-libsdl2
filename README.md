@@ -524,26 +524,20 @@ is SDL's, and SDL runs on the main core. A build may raise the crossing count
 and send short frames as a command list instead; see
 [Choosing what crosses](#choosing-what-crosses-the-crossing-count).
 
-Almost every frame an application draws is the same shape: clear the target,
-then blit one opaque texture over it. This library recognises that shape as it
-records the frame, and reduces it to the texture itself, exactly where it
-already sits in memory — for a game's own rendered picture that is a few
-hundred kilobytes rather than a whole screen. The clear reduces to nothing:
-the only part of it anything can see is the border around the placed frame,
-and a border changes when the geometry changes, not sixty times a second.
+The pixels are **SDL's framebuffer**: one buffer at the canvas size, owned by
+this library, that every frame is drawn into on the main core. It is double
+buffered, so the buffer handed to the presentation core is never the one the
+next frame is being drawn into.
 
-A frame of any other shape — several draws, a blend over what was already
-there, more draws than the recorder holds — is drawn on the main core into a
-canvas-sized surface, which is then the finished frame. That surface is
-allocated the first time such a frame occurs and never if none ever does. So
-the quick path is something this library notices about a frame, never
-something an application has to know or do: **every drawing sequence is
-correct, and the common one is also cheap.**
+**No memory belonging to the application is ever handed to another core.**
+An application texture is the application's: it may be destroyed, locked or
+redrawn the moment a call returns, and a frame that is still being read
+elsewhere cannot depend on it. So a frame is composed here first, always, and
+the composed frame is what travels.
 
-The result on a single-screen grant is a single pass over the screen:
-resample the finished frame to scanout size, make it visible. What used
-to be a screen-sized clear, a screen-sized compose and a screen-sized copy is
-now the one resample.
+The cost is one canvas-sized copy per frame on the main core. It buys a rule
+with no exceptions, which is the only kind that survives contact with an
+application nobody here wrote.
 
 ### Choosing what crosses: the crossing count
 
@@ -557,73 +551,50 @@ make PRESENT_CMDS=8
 ```
 
 - A frame whose draw list **fits within the count** crosses as a list, and
-  the presentation core composes it command by command. Nothing is reduced
-  and no intermediate surface is written on this side.
-- A frame that **does not fit** crosses as a finished picture instead.
+  the presentation core composes it command by command. Nothing is drawn on
+  this side.
+- A frame that **does not fit** is drawn into SDL's framebuffer here, and
+  that framebuffer crosses as a finished picture.
 
-**Zero — every frame a picture — is the default, and it costs nothing
-extra.** The usual frame is a clear plus one opaque blit, and that shape *is*
-the finished picture already: it is the application's own texture, exactly
-where it already sits in memory, a few hundred kilobytes for a game's
-rendered picture. The library recognises the shape and sends the texture.
-Nothing is painted and nothing is copied. The clear reduces to nothing but a
-border repaint when the geometry moves.
-
-Raising the count moves composition to the presentation core, frame by
-frame, up to the recorder's own capacity — every value in between is a real
-setting, not a mode.
+**Zero — every frame a picture — is the default.** At zero nothing is held
+back: the first draw call of a frame goes straight into SDL's framebuffer,
+and every one after it does too. Raising the count moves composition to the
+presentation core, frame by frame, up to the mailbox's capacity — every value
+in between is a real setting, not a mode.
 
 Both paths reach the same executor, which writes into the shadow buffer or
 the staging frame according to what the firmware granted, and the page flip
 or the copy to the screen is decided by the grant either way. **What crosses
 does not know or care what was granted.**
 
-#### Recognising a picture is not the same as sending one
-
-Limits are at work here and they are deliberately separate.
+#### The two numbers
 
 ```c
-SDL2CIRCLE_RECORD_MAX_CMDS  16      /* src/sdl2circle.h — the recorder */
+SDL2CIRCLE_RECORD_MAX_CMDS  16      /* src/sdl2circle.h — mailbox capacity */
 SDL2CIRCLE_PRESENT_MAX_CMDS  n      /* PRESENT_CMDS — what may cross */
 ```
 
-The **recorder** holds draw calls so that a finished frame can be recognised
-before anything is painted. Recognising a clear plus one blit takes a couple
-of recorded commands, nothing like sixteen, and it has to keep working
-however few commands the build lets cross — otherwise a low count would
-starve the recogniser as well as the crossing, and every frame would pay for
-a full canvas paint it did not need. That is what a single shared limit used
-to do, and it is why the count could only usefully be set high.
+The frame mailbox is a fixed structure in coherent memory that both cores
+read — one frame in flight, no allocation and no locks on the path a frame
+takes. Each of its sixteen slots holds a source and destination rectangle, a
+colour, a source pointer and pitch, and two blend flags, and the space is
+reserved whether a frame uses it or not. That capacity is the hard ceiling on
+the count, and the build refuses a count above it.
 
-The **count** decides only how much may travel as a list.
-
-Painting begins the moment a frame can be neither of the two things worth
-delaying it for: no longer the simple shape, and already too long to send.
-Both possibilities are checked as each draw call arrives, so a frame that is
-going to need painting starts at that point rather than waiting for present —
+Drawing begins the moment a frame grows past the count, so a frame that is
+going to be drawn here starts at that point rather than waiting for present —
 the work is the same either way, but spread across the application's own draw
 calls instead of occurring all at once at the end.
 
-Nothing is ever dropped. A frame the recorder abandons is replayed into the
-canvas-sized surface and every later call is painted directly into it, so it
-renders correctly; it simply crosses as a picture.
-
-The recorder is a fixed array because the frame mailbox is a fixed structure
-in coherent memory that both cores read — one frame in flight, no allocation
-and no locks on the path a frame takes. Each slot holds a source and
-destination rectangle, a colour, a source pointer and pitch, and two blend
-flags, and the space is reserved whether a frame uses it or not.
+Nothing is ever dropped. A frame that outgrows the count has the commands held
+so far replayed into SDL's framebuffer, and every later call is drawn directly
+into it, so it renders correctly; it simply crosses as a picture.
 
 The count is compiled into the archive when the library is built. It is not in
 any installed header, so an application's own translation units neither see
 it nor need to match it; and because every count shares one archive name,
 changing it deletes the archive so the previous build cannot be quietly
 reused.
-
-The recorder has held sixteen since the core split was written. A count of
-zero is the default because it is what this library did before the count was
-adjustable, on any board whose firmware grants a single screen rather than
-two.
 
 ### Why the split is shaped this way
 
