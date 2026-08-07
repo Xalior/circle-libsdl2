@@ -174,6 +174,28 @@ struct SDL_Texture
 };
 
 // TEMPORARY DIAGNOSTIC — remove once the stride question is settled.
+//
+// A cheap fingerprint of a pixel store: one word from the start of sixteen
+// evenly spaced rows. Taken on the writing core after a conversion and again
+// on the presenting core before the scale, it answers whether the two are
+// looking at the same bytes — which pointer equality alone cannot, because
+// the same address can hold different data on two cores if a write has not
+// become visible.
+static u32 diag_fingerprint(const u8 *base, int pitch, int rows)
+{
+    if (!base || pitch <= 0 || rows <= 0)
+        return 0;
+    u32 f = 2166136261u;
+    for (int k = 0; k < 16; k++)
+    {
+        const int y = (int)(((s64)k * rows) / 16);
+        u32 w;
+        memcpy(&w, base + (size_t)y * pitch, sizeof(w));
+        f = (f ^ w) * 16777619u;
+    }
+    return f;
+}
+
 static void diag_tex(const char *what, const SDL_Texture *t, int extra_pitch)
 {
     static unsigned seen = 0;
@@ -672,6 +694,21 @@ static void scale_copy(const SDL2CirclePresentCmd *cmd, u8 *dst, unsigned dpitch
     if (dw > SCALE_MAP_MAX || dh > SCALE_MAP_MAX)
         return;                          // beyond any real scanout
     build_scale_maps(sw, sh, dw, dh);
+    {
+        static unsigned seen = 0;
+        if (seen < 3)
+        {
+            seen++;
+            SDL2Circle_Log("STRIDE2", SDL2CIRCLE_LOG_NOTICE,
+                           "scale: src %dx%d srcpitch=%d -> dst %dx%d at +%d+%d "
+                           "dpitch=%u xrep=%d | xmap[0]=%d xmap[%d]=%d "
+                           "ymap[0]=%d ymap[%d]=%d",
+                           sw, sh, cmd->srcpitch, dw, dh, cmd->dx, cmd->dy,
+                           dpitch, (dw % sw == 0) ? dw / sw : 0,
+                           (int)s_xmap[0], dw - 1, (int)s_xmap[dw - 1],
+                           (int)s_ymap[0], dh - 1, (int)s_ymap[dh - 1]);
+        }
+    }
 
     // An integer horizontal ratio replicates each source pixel a fixed
     // number of times, which needs no table lookup at all — the common
@@ -787,6 +824,24 @@ static void exec_into(const SDL2CirclePresentCmd *cmd, u8 *dst0, unsigned dpitch
     // extents are the unscaled blit below, unchanged to the byte.
     const int sw = cmd->sw > 0 ? cmd->sw : cmd->w;
     const int sh = cmd->sh > 0 ? cmd->sh : cmd->h;
+    {
+        static unsigned seen = 0;
+        if (seen < 6)
+        {
+            seen++;
+            SDL2Circle_Log("STRIDE2", SDL2CIRCLE_LOG_NOTICE,
+                           "exec COPY: cmd sw/sh=%d/%d w/h=%d/%d at +%d+%d "
+                           "srcpitch=%d dpitch=%u src=%lx -> %s",
+                           cmd->sw, cmd->sh, cmd->w, cmd->h, cmd->dx, cmd->dy,
+                           cmd->srcpitch, dpitch,
+                           (unsigned long)(uintptr)cmd->src,
+                           (sw != cmd->w || sh != cmd->h) ? "SCALE" : "1:1 rowcopy");
+            SDL2Circle_Log("STRIDE2", SDL2CIRCLE_LOG_NOTICE,
+                           "exec COPY fp=%08x (over %d rows of %d)",
+                           (unsigned)diag_fingerprint(cmd->src, cmd->srcpitch, sh),
+                           sh, cmd->srcpitch);
+        }
+    }
     if (sw != cmd->w || sh != cmd->h)
     {
         scale_copy(cmd, dst, dpitch, sw, sh);
@@ -837,6 +892,21 @@ void SDL2Circle_VideoExecCmd(const SDL2CirclePresentCmd *cmd, unsigned half)
 {
     if (!s_fb_base)
         return;
+    {
+        static unsigned seen = 0;
+        if (seen < 2)
+        {
+            seen++;
+            SDL2Circle_Log("STRIDE2", SDL2CIRCLE_LOG_NOTICE,
+                           "present target: shadow=%d shadow_pitch=%u "
+                           "shadow_bytes=%u stage=%d stage_pitch=%u "
+                           "fb_pitch=%u fb %dx%d halves=%u half=%u",
+                           s_shadow ? 1 : 0, s_shadow_pitch,
+                           (unsigned)s_shadow_bytes, s_stage ? 1 : 0,
+                           s_stage_pitch, s_fb_pitch, s_fb_w, s_fb_h,
+                           s_fb_halves, half);
+        }
+    }
     if (s_shadow)
         exec_into(cmd, s_shadow, s_shadow_pitch);
     else if (s_stage)
@@ -2269,8 +2339,25 @@ extern "C" int SDL_UpdateTexture(SDL_Texture *tex, const SDL_Rect *rect,
     diag_tex("UpdateTexture", tex, pitch);
 
     bool partial = (x != 0) || (y != 0) || (w != tex->w) || (h != tex->h);
+    const u8 prev_widx = tex->widx;
+    const u8 prev_posted = tex->posted;
     u8 *dst = texture_write_buffer(tex, partial)
               + (size_t)y * tex->pitch + (size_t)x * 4;
+    {
+        static unsigned seen = 0;
+        if (seen < 4)
+        {
+            seen++;
+            SDL2Circle_Log("STRIDE2", SDL2CIRCLE_LOG_NOTICE,
+                           "UpdateTexture buf: partial=%d widx %d->%d posted=%d "
+                           "p0=%lx p1=%lx dst=%lx rect=%dx%d+%d+%d",
+                           partial ? 1 : 0, (int)prev_widx, (int)tex->widx,
+                           (int)prev_posted,
+                           (unsigned long)(uintptr)tex->pixels[0],
+                           (unsigned long)(uintptr)tex->pixels[1],
+                           (unsigned long)(uintptr)dst, w, h, x, y);
+        }
+    }
 
     if (texture_is_native(tex))
     {
@@ -2284,8 +2371,21 @@ extern "C" int SDL_UpdateTexture(SDL_Texture *tex, const SDL_Rect *rect,
         return 0;
     }
 
-    return SDL_ConvertPixels(w, h, tex->format, pixels, pitch,
-                             SDL_PIXELFORMAT_ARGB8888, dst, tex->pitch);
+    const int rc = SDL_ConvertPixels(w, h, tex->format, pixels, pitch,
+                                     SDL_PIXELFORMAT_ARGB8888, dst, tex->pitch);
+    {
+        static unsigned seen = 0;
+        if (seen < 4)
+        {
+            seen++;
+            SDL2Circle_Log("STRIDE2", SDL2CIRCLE_LOG_NOTICE,
+                           "UpdateTexture done: rc=%d store=%lx fp=%08x",
+                           rc, (unsigned long)(uintptr)tex->pixels[tex->widx],
+                           (unsigned)diag_fingerprint(tex->pixels[tex->widx],
+                                                      tex->pitch, tex->h));
+        }
+    }
+    return rc;
 }
 
 extern "C" int SDL_UpdateYUVTexture(SDL_Texture *, const SDL_Rect *,
@@ -2577,9 +2677,13 @@ extern "C" int SDL_RenderCopy(SDL_Renderer *ren, SDL_Texture *tex,
             seen++;
             SDL2Circle_Log("STRIDE", SDL2CIRCLE_LOG_NOTICE,
                            "RenderCopy cmd: src=%dx%d srcpitch=%d dst=%dx%d "
-                           "tex fmt=0x%08x store_pitch=%d",
+                           "tex fmt=0x%08x store_pitch=%d | widx=%d src=%lx "
+                           "p0=%lx p1=%lx",
                            cmd.sw, cmd.sh, cmd.srcpitch, cmd.w, cmd.h,
-                           (unsigned)tex->format, tex->pitch);
+                           (unsigned)tex->format, tex->pitch,
+                           (int)tex->widx, (unsigned long)(uintptr)cmd.src,
+                           (unsigned long)(uintptr)tex->pixels[0],
+                           (unsigned long)(uintptr)tex->pixels[1]);
         }
     }
     emit_cmd(ren, cmd);
