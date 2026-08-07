@@ -101,11 +101,28 @@ static int blit_clipped(SDL_Surface *src, const SDL_Rect *srcrect,
     const bool          modded = (state->rmod != 255) || (state->gmod != 255)
                               || (state->bmod != 255);
 
-    // Straight copy: same format, nothing to key, nothing to blend and no
-    // modulation. This is a surface used as a staging buffer, and it is by
-    // far the most common blit a port performs.
+    // Two indexed surfaces of the same format only hold the same picture if
+    // their indices mean the same colours. Each paletted surface owns its
+    // palette, so that has to be asked rather than assumed: copying indices
+    // into a surface whose palette differs would repaint the picture in the
+    // destination's colours.
+    bool same_meaning = true;
+    if (src->format->palette != nullptr || dst->format->palette != nullptr)
+    {
+        const SDL_Palette *sp = src->format->palette;
+        const SDL_Palette *dp = dst->format->palette;
+        same_meaning = (sp == dp)
+                    || (sp != nullptr && dp != nullptr
+                        && sp->ncolors == dp->ncolors
+                        && memcmp(sp->colors, dp->colors,
+                                  (size_t)sp->ncolors * sizeof(SDL_Color)) == 0);
+    }
+
+    // Straight copy: same format and the same meaning, nothing to key,
+    // nothing to blend and no modulation. This is a surface used as a
+    // staging buffer, and it is by far the most common blit a port performs.
     if (!keyed && blend == SDL_BLENDMODE_NONE && amod == 255 && !modded &&
-        src->format->format == dst->format->format)
+        same_meaning && src->format->format == dst->format->format)
     {
         const size_t bytes = (size_t)w * (size_t)sbpp;
         for (int y = 0; y < h; y++)
