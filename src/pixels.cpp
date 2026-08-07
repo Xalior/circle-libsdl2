@@ -259,7 +259,21 @@ extern "C" Uint32 SDL_MasksToPixelFormatEnum(int bpp, Uint32 Rmask, Uint32 Gmask
         case 15: return SDL_PIXELFORMAT_RGB555;
         case 16: return SDL_PIXELFORMAT_RGB565;
         case 24: return SDL_PIXELFORMAT_RGB24;
-        case 32: return SDL_PIXELFORMAT_RGB888;
+
+        // ARGB8888 AND NOT RGB888, and the difference is not cosmetic.
+        // SDL2's RGB888 is an X-channel format: it occupies four bytes but
+        // reports TWENTY-FOUR significant bits, because the fourth byte
+        // carries nothing. So a caller that asks for depth 32 and reads
+        // format->BitsPerPixel back gets 24, which is not what it asked for
+        // and not a depth it is prepared to handle — one game asserts
+        // outright on a surface that reports neither 32 nor 8, which is
+        // exactly how this was found.
+        //
+        // ARGB8888 reports 32, which is the number the caller named. It is
+        // also the format the display already works in, so a surface made
+        // this way reaches the glass without a conversion.
+        case 32: return SDL_PIXELFORMAT_ARGB8888;
+
         default: return SDL_PIXELFORMAT_UNKNOWN;
         }
     }
