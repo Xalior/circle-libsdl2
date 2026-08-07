@@ -73,6 +73,18 @@ extern "C" void SDL2Circle_ArmCoreRuntime(void)
     // The register is per core, which is why this must execute ON the core
     // it arms.
     asm volatile("msr tpidr_el0, %0" ::"r"(p) : "memory");
+
+    // The application's own static constructors, held back by
+    // sdl-app-init.ld until the kernel exists. Core 0 only, and after the
+    // runtime above rather than before it: a deferred constructor may use
+    // thread_local storage, and that is what was just armed.
+    //
+    // Hung off this call deliberately. An application already makes it, on
+    // core 0, at the point in its start-up where everything a constructor
+    // could reach is up — so adopting the deferral costs it nothing and
+    // there is no second call to forget.
+    if (core == 0)
+        SDL2Circle_RunDeferredConstructors();
 }
 
 #else

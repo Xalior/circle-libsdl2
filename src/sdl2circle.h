@@ -53,6 +53,10 @@ void SDL2Circle_InjectPump(void);
 // The library's own switches, found by the library rather than forwarded to
 // it. Idempotent; safe to call from any start-up order.
 void SDL2Circle_ReadBootArgs(void);
+
+// The application's static constructors, deferred by sdl-app-init.ld until
+// the kernel exists. Called once, on core 0, from SDL2Circle_ArmCoreRuntime.
+void SDL2Circle_RunDeferredConstructors(void);
 bool SDL2Circle_DebugUartArmed(void);
 
 // ---- core split internals (src/split.cpp) ----------------------------------

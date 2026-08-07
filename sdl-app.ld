@@ -24,13 +24,7 @@ SECTIONS
 		*(.rodata*)
 	}
 
-	.init_array : {
-		__init_start = .;
-
-		KEEP(*(.init_array*))
-
-		__init_end = .;
-	}
+	INCLUDE sdl-app-init.ld
 
 	.ARM.exidx : {
 		__exidx_start = .;

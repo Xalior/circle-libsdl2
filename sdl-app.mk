@@ -8,7 +8,13 @@
 # sdl-app.ld is derived from Circle's circle.ld and remains GPLv3 (see its
 # header); the rest of this project is zlib-licensed.
 
-SDL_APP_LDSCRIPT ?= $(dir $(lastword $(MAKEFILE_LIST)))sdl-app.ld
+# This directory, captured before anything else can change MAKEFILE_LIST. It
+# is both where the default script lives and where the linker is told to look
+# for INCLUDEd fragments, so an application that overrides the script with its
+# own can still pull sdl-app-init.ld in by name.
+SDL_APP_DIR := $(dir $(lastword $(MAKEFILE_LIST)))
+
+SDL_APP_LDSCRIPT ?= $(SDL_APP_DIR)sdl-app.ld
 
 # The shim's audio backend needs Circle's sound library; carry it here so
 # applications only ever list libSDL2.a.
@@ -24,7 +30,7 @@ LIBS_FILES = $(filter-out -%,$(LIBS))
 $(TARGET).img: $(OBJS) $(LIBS_FILES) $(SDL_APP_LDSCRIPT)
 	@echo "  LD    $(TARGET).elf (sdl-app.ld)"
 	@$(LD) -o $(TARGET).elf -Map $(TARGET).map $(LDFLAGS) \
-		-T $(SDL_APP_LDSCRIPT) $(CRTBEGIN) $(OBJS) \
+		-L$(SDL_APP_DIR) -T $(SDL_APP_LDSCRIPT) $(CRTBEGIN) $(OBJS) \
 		--start-group $(LIBS) $(EXTRALIBS) --end-group $(CRTEND)
 	@echo "  DUMP  $(TARGET).lst"
 	@$(OBJDUMP) -d $(TARGET).elf | $(CPPFILT) > $(TARGET).lst
