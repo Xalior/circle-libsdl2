@@ -1091,6 +1091,27 @@ and nothing tells you: it builds, it links, and it is wrong at runtime.
 A world elsewhere on disk works with
 `make CIRCLESTDLIBHOME=/path/to/circle-stdlib`.
 
+### The world must set `USE_PHYSICAL_COUNTER`
+
+This library requires it, and `make deps` configures a world that has it.
+
+It decides what `CTimer::GetClockTicks64` compiles to. With the option, it is
+`mrs CNTPCT_EL0` — a CPU system register private to the core that reads it,
+needing no lock, no device and no other core. Without it, the same call reads
+the system timer's memory-mapped registers, which is a device, and a device
+belongs to core 0.
+
+That matters because the timing this library does is not on core 0 and cannot
+be: an application's frame pacing, every timed wait in the C++ threading
+runtime, the presentation core's own accounting. Those read the counter
+constantly, from cores that must never touch a device. With the option they
+are core-private register reads; without it every one of them is a breach of
+the rule that keeps this design standing up, and the breach is silent — it
+builds, it links, and it is wrong on hardware.
+
+So it is not a tuning choice. A world without it does not satisfy this
+library's requirements, whatever else it is configured with.
+
 ### Choosing the crossing count
 
 `make PRESENT_CMDS=n` (0 by default) sets how much of a frame may travel to
