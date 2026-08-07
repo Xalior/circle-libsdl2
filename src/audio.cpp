@@ -482,7 +482,26 @@ void SDL2Circle_AudioDrain(void)
 
         unsigned n = SDL2Circle_AudioRingRead(drainChunk, want);
         if (n == 0)
-            break;
+        {
+            // THE DEVICE'S CLOCK MUST NEVER STOP. An application that has
+            // produced nothing gets a gap in its audio; what it must not get
+            // is a device that stands still, because anything measuring time
+            // by the device then stands still with it — and on this machine
+            // that includes the application itself. Doom's OPL emulation
+            // waits for a chip timer that only advances as buffers are
+            // consumed, so a device fed only when the game produces is a
+            // device the game can stop and then wait on for ever.
+            //
+            // Desktop SDL has this for free: its callback runs on a thread of
+            // its own at a fixed rate, and a callback that produces nothing
+            // yields silence rather than a stall. Here the servo is that
+            // thread, so the servo supplies the silence.
+            //
+            // Signed 16-bit device format, so silence is zero (see
+            // SetWriteFormat above).
+            memset(drainChunk, 0, want);
+            n = want;
+        }
         if (s_device->Write(drainChunk, n) <= 0)
             break;
         space -= n / frame_bytes;
