@@ -21,13 +21,12 @@ bool SDL2Circle_VirtualDeviceDeclared(void);
 void SDL2Circle_InputInit(void);   // bring up USB (idempotent)
 void SDL2Circle_InputPump(void);   // PnP + translate HID reports to events
 // Producing audio: run the application's callback and queue what it makes.
-// The first of these claims production for the calling core and every other
-// core is refused after that, because both places the result goes have exactly
-// one writer. The second never claims — it lets the core that already owns
-// production keep going while it is blocked in a wait, and does nothing at all
-// on any other core.
+// Both places the result goes have exactly one writer, so production belongs to
+// one core — settled when the device is opened — and this does nothing at all
+// on any other core. Safe to call from anywhere for that reason, and it is
+// called both from the event pump and from inside a blocking wait, so that a
+// core waiting on something its own callback delivers can still make progress.
 void SDL2Circle_AudioPump(void);
-void SDL2Circle_AudioPumpIfOwner(void);
 
 // Board hardware — the CPU clock and the case fan (src/hardware.cpp).
 // SDL2Circle_HardwareInit (SDL_circle.h) creates the one CCPUThrottle this

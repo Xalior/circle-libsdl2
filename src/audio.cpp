@@ -114,6 +114,82 @@ constexpr unsigned DMA_CHUNK_WORDS = 384 * 4;
 // block would round down to no sound at all.
 constexpr unsigned RING_BLOCKS = 3;
 
+// ---------------------------------------------------------------------------
+// WHO MAY PRODUCE
+// ---------------------------------------------------------------------------
+//
+// Producing audio means running the application's callback and putting the
+// result somewhere: into the cross-core ring under the split, or straight into
+// the sound device's queue without it. BOTH destinations have exactly one
+// writer by construction — the ring is single-producer, and the device's queue
+// is filled by core 0's servo and by nobody else — and neither of them says so
+// anywhere. The rule was a convention: production happened in SDL_PumpEvents,
+// and the application core was the only core that called it.
+//
+// A convention is not a rule. Two cores producing at once do not merely
+// interleave, they overwrite: they read the same ring tail, write the same
+// bytes, and both publish a tail that accounts for one of the two blocks. They
+// also share s_chunk, the single buffer the callback fills, so one block can
+// be half of one core's audio and half of another's. What comes out is not
+// late, it is WRONG — chunks in the wrong order and torn across the seam.
+//
+// So the owner is named, AND IT IS NAMED WHEN THE DEVICE OPENS rather than at
+// the first pump. That timing is not a detail. An application may wait for the
+// sound to advance before it has pumped even once — Chocolate Doom does: it
+// sets up its emulated OPL chip immediately after opening the device, and
+// setting it up waits for a chip timer that only the audio callback advances.
+// With ownership still unclaimed at that moment, the wait asks who may produce,
+// is told nobody, and waits for something only it could have started. The board
+// stops there, having printed that the mixer opened and nothing after it.
+//
+// Ownership is not the same question as re-entrancy and one does not answer the
+// other: s_pumping stops a core being asked to produce from inside its own
+// callback, which is a different accident and needs its own guard.
+int s_owner_core = -1;    // the core production belongs to; -1 until claimed
+bool s_pumping = false;   // a callback is running on the owning core
+
+// Settle who produces, at the one moment that is both early enough and
+// unambiguous: an application opens its own audio device, so the core that
+// opened it is the core whose loop will drive the callback.
+void claim_production(void)
+{
+    const int core = (int)SDL2Circle_ThisCore();
+
+    // The one core that can never own it is core 0 under the split, which
+    // drains and never produces. An application that opened its device from
+    // there — from a thread, say, since SDL threads are core-0 tasks — leaves
+    // the question to the first core that legitimately pumps.
+    s_owner_core = (SDL2Circle_SplitActive() && core == 0) ? -1 : core;
+}
+
+// Whether the calling core may produce. ONE rule, in one place, for every
+// caller — the event pump and a blocking wait alike. A wait needs the same
+// answer the pump gets: it is asking because the thing it is waiting for may
+// be on the other side of the callback, and a rule that were stricter here
+// than there would be a rule that can deadlock.
+bool may_produce(void)
+{
+    if (!s_device || s_paused || !s_spec.callback || s_lock > 0 || s_pumping)
+        return false;
+
+    // Under the split, core 0 drains and never produces: its servo is already
+    // the device queue's only writer, and a pump here would take the
+    // direct-to-device path below and write into that queue beside it.
+    const int core = (int)SDL2Circle_ThisCore();
+    if (SDL2Circle_SplitActive() && core == 0)
+        return false;
+
+    // Normally settled at open. Unclaimed here means the device was opened
+    // from a core that cannot own it, and then the first eligible core to ask
+    // takes it — never TAKES IT FROM anyone, which is what keeps two cores off
+    // the ring. Letting the asker have it is what stops a wait finding nobody
+    // at home, and having nobody at home is the one outcome that never
+    // recovers.
+    if (s_owner_core < 0)
+        s_owner_core = core;
+    return s_owner_core == core;
+}
+
 // Fill in the derived fields SDL leaves to the implementation.
 void complete_spec(SDL_AudioSpec &spec)
 {
@@ -301,6 +377,9 @@ extern "C" SDL_AudioDeviceID SDL_OpenAudioDevice(const char *, int iscapture,
     if (obtained)
         *obtained = s_spec;
 
+    // Before anything can wait on the sound advancing, and that is the point.
+    claim_production();
+
     if (s_convert)
         SDL2Circle_Log("sdl2audio", SDL2CIRCLE_LOG_NOTICE,
                        "application writes %d Hz format 0x%04x %d channel(s); "
@@ -315,67 +394,10 @@ extern "C" SDL_AudioDeviceID SDL_OpenAudioDevice(const char *, int iscapture,
     return 2;   // SDL device ids for opened devices start at 2
 }
 
-namespace
-{
-
-// ---------------------------------------------------------------------------
-// WHO MAY PRODUCE
-// ---------------------------------------------------------------------------
-//
-// Producing audio means running the application's callback and putting the
-// result somewhere: into the cross-core ring under the split, or straight into
-// the sound device's queue without it. BOTH destinations have exactly one
-// writer by construction — the ring is single-producer, and the device's queue
-// is filled by core 0's servo and by nobody else — and neither of them says so
-// anywhere. The rule was a convention: production happened in SDL_PumpEvents,
-// and the application core was the only core that called it.
-//
-// A convention is not a rule. Two cores producing at once do not merely
-// interleave, they overwrite: they read the same ring tail, write the same
-// bytes, and both publish a tail that accounts for one of the two blocks. They
-// also share s_chunk, the single buffer the callback fills, so one block can
-// be half of one core's audio and half of another's. What comes out is not
-// late, it is WRONG — chunks in the wrong order and torn across the seam.
-//
-// So the owner is named. The first pump from the event pump claims production
-// for its core, and every other core is refused. Ownership is not the same
-// question as re-entrancy and one does not answer the other: s_pumping stops a
-// core being asked to produce from inside its own callback, which is a
-// different accident and needs its own guard.
-int s_owner_core = -1;    // the core production belongs to; -1 until claimed
-bool s_pumping = false;   // a callback is running on the owning core
-
-// Whether the calling core may produce, and why not if it may not.
-// `claim` distinguishes the two callers: the event pump is the authority on
-// which core the application drives audio from and may take ownership, while
-// an opportunistic pump from inside a blocking wait may only ever help the
-// core that already owns it.
-bool may_produce(bool claim)
-{
-    if (!s_device || s_paused || !s_spec.callback || s_lock > 0 || s_pumping)
-        return false;
-
-    // Under the split, core 0 drains and never produces: its servo is already
-    // the device queue's only writer, and a pump here would take the
-    // direct-to-device path below and write into that queue beside it.
-    const int core = (int)SDL2Circle_ThisCore();
-    if (SDL2Circle_SplitActive() && core == 0)
-        return false;
-
-    if (s_owner_core < 0)
-    {
-        if (!claim)
-            return false;
-        s_owner_core = core;
-    }
-    return s_owner_core == core;
-}
-
-}   // namespace
 
 void SDL2Circle_AudioPump(void)
 {
-    if (!may_produce(true))
+    if (!may_produce())
         return;
 
     struct Guard
@@ -422,20 +444,6 @@ void SDL2Circle_AudioPump(void)
 }
 
 // Core-0 servo: sample ring -> sound device.
-// Production from inside a blocking wait — see SDL2Circle_ThreadWaitSpin. It
-// never claims ownership: a core that waits is not thereby the core that drives
-// the audio, and letting a wait decide would hand production to whichever core
-// happened to block first. It only lets the core that ALREADY owns production
-// carry on producing while it waits, which is the whole point — on a desktop
-// the callback keeps running on a thread of its own, and an application whose
-// own callback is what ends the wait would otherwise wait for itself.
-void SDL2Circle_AudioPumpIfOwner(void)
-{
-    if (!may_produce(false))
-        return;
-    SDL2Circle_AudioPump();
-}
-
 void SDL2Circle_AudioDrain(void)
 {
     if (!s_device || s_paused)
@@ -523,7 +531,7 @@ extern "C" void SDL_CloseAudioDevice(SDL_AudioDeviceID)
     if (!s_device)
         return;
     s_paused = true;   // stop the servo feeding a device that is going away
-    s_owner_core = -1; // the next device is claimed by whoever opens and pumps it
+    s_owner_core = -1; // the next device settles it again when it is opened
     SDL2Circle_CallOn0(close_device_on0, nullptr);
     free(s_chunk);
     s_chunk = nullptr;
