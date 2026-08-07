@@ -22,8 +22,9 @@
 #   make rebuild-all     the same for all three boards
 #
 # The consumer picks a board's archive+world explicitly; nothing here assumes
-# a single board. Override a world's location with
-# `make CIRCLESTDLIBHOME=/path/to/world` if needed.
+# a single board. `make CIRCLE_WORLDS=/path/to/worlds` puts every board's
+# world under one directory instead of this repository's own submodules, so
+# several consumers can share them.
 #
 
 # GNU make 4.0 or later. macOS ships 3.81 as `make`, and Homebrew installs a
@@ -144,8 +145,22 @@ ifneq ($(BASH5_BIN),)
 export PATH := $(patsubst %/,%,$(dir $(BASH5_BIN))):$(PATH)
 endif
 
-CIRCLE_STDLIB     = circle-stdlib-$(BOARD)
-CIRCLESTDLIBHOME ?= $(CURDIR)/$(CIRCLE_STDLIB)
+# WHERE THE PER-BOARD WORLDS LIVE.
+#
+# The default is this repository, where they are submodules of it: a plain
+# clone and a CI runner are self-contained with nothing set, which is the
+# behaviour every consumer has today.
+#
+# Point several consumers at one directory and each board's world is built
+# once and shared. A world is gigabytes and its sources are pinned, so two
+# consumers on the same pin with the same configuration produce the same
+# bytes twice over; whoever shares them owns initialising them, because a
+# world outside this repository is not this repository's submodule to fetch.
+#
+# Same shape as CIRCLE_LLVM below, and for the same reason.
+CIRCLE_WORLDS    ?= $(CURDIR)
+CIRCLE_STDLIB     = $(CIRCLE_WORLDS)/circle-stdlib-$(BOARD)
+CIRCLESTDLIBHOME ?= $(abspath $(CIRCLE_STDLIB))
 
 # Per-board, per-count object tree, so all three archives coexist without one
 # board's objects clobbering another's — no `make clean` between boards, each
@@ -251,7 +266,15 @@ deps:
 # which every board and every project beside this one points at.
 .PHONY: world-fetch
 world-fetch: llvm-cache
-	git submodule update --init --recursive $(CIRCLE_STDLIB)
+	@if [ "$(CIRCLE_WORLDS)" = "$(CURDIR)" ]; then \
+		git submodule update --init --recursive circle-stdlib-$(BOARD); \
+	elif [ ! -d "$(CIRCLE_STDLIB)/libs/circle" ]; then \
+		echo "no $(BOARD) world at $(CIRCLE_STDLIB)." >&2; \
+		echo "CIRCLE_WORLDS names a directory someone else owns, so this" >&2; \
+		echo "makefile will not fetch into it. Populate it, or unset" >&2; \
+		echo "CIRCLE_WORLDS to use this repository's own submodules." >&2; \
+		exit 1; \
+	fi
 	@[ -f $(CIRCLE_STDLIB)/libs/llvm-project/runtimes/CMakeLists.txt ] || \
 		ln -sfn $(CIRCLE_LLVM) $(CIRCLE_STDLIB)/libs/llvm-project
 
