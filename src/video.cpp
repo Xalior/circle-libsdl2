@@ -2236,6 +2236,24 @@ static u8 *texture_write_buffer(SDL_Texture *tex, bool preserve)
     if (!SDL2Circle_SplitActive())
         return tex->pixels[tex->widx];
 
+    // TEMPORARY TRACE — remove with the rest.
+    {
+        static unsigned seen = 0;
+        if (seen < 30)
+        {
+            seen++;
+            SDL2Circle_Log("TRACE", SDL2CIRCLE_LOG_NOTICE,
+                           "PICK  widx=%d busy0=%llu busy1=%llu posted=%llu "
+                           "acked=%llu -> %s",
+                           (int)tex->widx,
+                           (unsigned long long)tex->busy_seq[0],
+                           (unsigned long long)tex->busy_seq[1],
+                           (unsigned long long)SDL2Circle_PresentPostedSeq(),
+                           (unsigned long long)SDL2Circle_PresentAckedSeq(),
+                           texture_store_busy(tex, tex->widx) ? "SWITCH" : "keep");
+        }
+    }
+
     if (!texture_store_busy(tex, tex->widx))
         return tex->pixels[tex->widx];      // still ours; no copy needed
 
@@ -2596,6 +2614,25 @@ extern "C" int SDL_RenderCopy(SDL_Renderer *ren, SDL_Texture *tex,
     // be posted as the next sequence. Until the worker acknowledges that
     // frame, nothing may write here.
     tex->busy_seq[tex->widx] = SDL2Circle_PresentPostedSeq() + 1;
+
+    // TEMPORARY TRACE — remove with the rest.
+    {
+        static unsigned seen = 0;
+        if (seen < 30)
+        {
+            seen++;
+            SDL2Circle_Log("TRACE", SDL2CIRCLE_LOG_NOTICE,
+                           "RC    seq=%llu store=%d src=%lx tex=%lx "
+                           "p0=%lx p1=%lx posted=%llu acked=%llu",
+                           (unsigned long long)tex->busy_seq[tex->widx],
+                           (int)tex->widx, (unsigned long)(uintptr)cmd.src,
+                           (unsigned long)(uintptr)tex,
+                           (unsigned long)(uintptr)tex->pixels[0],
+                           (unsigned long)(uintptr)tex->pixels[1],
+                           (unsigned long long)SDL2Circle_PresentPostedSeq(),
+                           (unsigned long long)SDL2Circle_PresentAckedSeq());
+        }
+    }
     return 0;
 }
 

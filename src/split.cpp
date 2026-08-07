@@ -366,6 +366,20 @@ void SDL2Circle_PresentPost(const SDL2CirclePresentCmd *cmds, unsigned ncmds,
     g_frame.half = half;
     g_frame.seq.store(seq + 1, std::memory_order_release);
     publish();
+
+    // TEMPORARY TRACE — remove with the rest.
+    {
+        static unsigned seen = 0;
+        if (seen < 30)
+        {
+            seen++;
+            SDL2Circle_Log("TRACE", SDL2CIRCLE_LOG_NOTICE,
+                           "POST  seq=%llu ncmds=%u src0=%lx (waited for ack>=%llu)",
+                           (unsigned long long)(seq + 1), ncmds,
+                           ncmds ? (unsigned long)(uintptr)cmds[ncmds - 1].src : 0UL,
+                           (unsigned long long)seq);
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -457,6 +471,20 @@ extern "C" void SDL2Circle_SplitPresentCore(void)
         const unsigned ncmds = g_frame.ncmds;
         const unsigned half = g_frame.half;
 
+        // TEMPORARY TRACE — remove with the rest.
+        {
+            static unsigned seen = 0;
+            if (seen < 30)
+            {
+                seen++;
+                SDL2Circle_Log("TRACE", SDL2CIRCLE_LOG_NOTICE,
+                               "EXEC  seq=%llu ncmds=%u src0=%lx START",
+                               (unsigned long long)seq, ncmds,
+                               ncmds ? (unsigned long)(uintptr)g_frame.cmds[ncmds - 1].src
+                                     : 0UL);
+            }
+        }
+
         {
             // Consuming the frame: the scale, reading the command list and
             // the texture buffers the application core posted.
@@ -490,6 +518,18 @@ extern "C" void SDL2Circle_SplitPresentCore(void)
         done = seq;
         g_frame.ack.store(done, std::memory_order_release);
         publish();
+
+        // TEMPORARY TRACE — remove with the rest.
+        {
+            static unsigned seen = 0;
+            if (seen < 30)
+            {
+                seen++;
+                SDL2Circle_Log("TRACE", SDL2CIRCLE_LOG_NOTICE,
+                               "ACK   seq=%llu DONE READING",
+                               (unsigned long long)done);
+            }
+        }
 
         {
             SDL2CirclePerfScope render(SDL2CIRCLE_PERF_RENDER);
