@@ -1009,7 +1009,8 @@ static bool canvas_surface_ready(void)
     s_canvas_surface_idx = 0;
     s_canvas_surface = s_canvas_surface_buf[0];
     SDL2Circle_Log("sdl2video", SDL2CIRCLE_LOG_NOTICE,
-                   "canvas surface %dx%d allocated: a frame arrived that is not the simple shape",
+                   "canvas surface %dx%d allocated: a frame arrived that has to "
+                   "be composed here before it crosses",
                    s_canvas_w, s_canvas_h);
     return true;
 }
@@ -1827,10 +1828,17 @@ extern "C" SDL_Surface *SDL_GetWindowSurface(SDL_Window *win)
     return s_window_surface;
 }
 
-static void flip_on0(void *)
+static void flip_on0(void *p)
 {
-    SDL2Circle_VideoFlip(0);
+    SDL2Circle_VideoFlip((unsigned)(uintptr)p);
 }
+
+// Which framebuffer half this path draws into next. It alternates only on a
+// grant of two halves, for the reason the renderer alternates only then: on a
+// single-half grant the executor and the flip both work through the shadow
+// and ignore the half entirely, and naming half 1 there would address memory
+// past the grant.
+static unsigned s_window_surface_back = 0;
 
 extern "C" int SDL_UpdateWindowSurfaceRects(SDL_Window *win,
                                             const SDL_Rect *rects, int numrects)
@@ -1838,31 +1846,109 @@ extern "C" int SDL_UpdateWindowSurfaceRects(SDL_Window *win,
     if (!win || !s_window_surface)
         return SDL_SetError("SDL_UpdateWindowSurfaceRects: no window surface");
 
-    // The window surface is put on screen through the same present path
-    // everything else uses, so one route reaches the panel and the core
-    // split holds for this path too.
+    // THE WINDOW SURFACE IS A FRAME LIKE ANY OTHER, and it takes the same
+    // route to the glass: mapped from canvas coordinates onto the fitted
+    // rectangle on the scanout, then handed to the presentation core.
+    //
+    // Both halves of that used to be missing here, and each on its own is
+    // enough to put the picture in the wrong place. The command was built in
+    // CANVAS coordinates and executed unmapped, so a canvas smaller than the
+    // scanout landed at its own size in the corner with the fit — already
+    // computed, already logged — ignored; and it was executed on whichever
+    // core called, so the scale that the presentation core exists to do was
+    // done by the application's core instead. A game that draws through a
+    // renderer never saw either, which is why this survived: the renderer
+    // path does both, a few hundred lines up.
+    //
+    // WHY THE WHOLE CANVAS IS CARRIED ACROSS EACH TIME, and not just the
+    // rectangles the caller named. The surface handed over has to be one the
+    // application cannot write while the presentation core is still reading
+    // it, so the frame is copied into the canvas surface, which is double
+    // buffered exactly for that: this frame goes into the buffer the worker
+    // is not holding. Copying only the named rectangles into that buffer
+    // would leave everything else in it showing the frame BEFORE last, so
+    // what is copied is the whole surface. It buys back far more than it
+    // costs — the scale it moves off this core is the larger picture, at
+    // scanout size, every frame.
+    //
+    // The rectangles are still honoured where they can be: with no canvas
+    // surface to be had this falls back to presenting the named rectangles
+    // straight from the application's own surface, on this core, which is
+    // safe precisely because nothing crosses.
     const SDL_Rect whole = { 0, 0, win->w, win->h };
-    for (int i = 0; i < (rects ? numrects : 1); i++)
-    {
-        SDL_Rect r = rects ? rects[i] : whole;
-        if (!SDL_IntersectRect(&r, &whole, &r))
-            continue;
 
-        SDL2CirclePresentCmd cmd;
-        cmd.op = SDL2CirclePresentCmd::COPY;
-        cmd.dx = r.x;
-        cmd.dy = r.y;
-        cmd.w = r.w;
-        cmd.h = r.h;
-        cmd.color = 0;
-        cmd.src = (u8 *)s_window_surface->pixels
-                + (size_t)r.y * s_window_surface->pitch + (size_t)r.x * 4;
-        cmd.srcpitch = s_window_surface->pitch;
-        cmd.sw = r.w;
-        cmd.sh = r.h;
-        cmd.blend = 0;
-        cmd.alphamod = 255;
-        SDL2Circle_VideoExecCmd(&cmd, 0);
+    SDL2CirclePresentCmd frame;
+    memset(&frame, 0, sizeof(frame));
+    frame.op = SDL2CirclePresentCmd::COPY;
+    frame.alphamod = 255;
+
+    // The window IS the canvas here, so these agree by construction — but
+    // the copy below writes canvas-sized storage from window-sized rows, and
+    // a disagreement would write past the end of it. Tested rather than
+    // assumed, and a disagreement simply takes the other route.
+    const bool bCrossable = win->w == s_canvas_w && win->h == s_canvas_h
+                            && canvas_surface_ready();
+    if (bCrossable)
+    {
+        SDL2CirclePresentCmd in = frame;
+        in.dx = 0; in.dy = 0;
+        in.w = win->w; in.h = win->h;
+        in.sw = win->w; in.sh = win->h;
+        in.src = (u8 *)s_window_surface->pixels;
+        in.srcpitch = s_window_surface->pitch;
+        exec_into(&in, s_canvas_surface, s_canvas_surface_pitch);
+
+        frame.src = s_canvas_surface;
+        frame.srcpitch = (int)s_canvas_surface_pitch;
+        frame.dx = 0; frame.dy = 0;
+        frame.w = win->w; frame.h = win->h;
+        frame.sw = win->w; frame.sh = win->h;
+
+        SDL2CirclePresentCmd placed = frame;
+        if (!place_on_scanout(&placed))
+            return 0;
+        log_copy_geometry(frame, placed, frame.sw, frame.sh);
+
+        if (SDL2Circle_SplitActive() && SDL2Circle_ThisCore() != 0)
+        {
+            SDL2Circle_PresentPost(&placed, 1, s_window_surface_back);
+            if (s_canvas_surface_buf[1])
+            {
+                s_canvas_surface_idx ^= 1;
+                s_canvas_surface = s_canvas_surface_buf[s_canvas_surface_idx];
+            }
+            if (s_fb_halves == 2)
+                s_window_surface_back ^= 1;
+            return 0;
+        }
+
+        SDL2Circle_VideoExecCmd(&placed, s_window_surface_back);
+    }
+    else
+    {
+        for (int i = 0; i < (rects ? numrects : 1); i++)
+        {
+            SDL_Rect r = rects ? rects[i] : whole;
+            if (!SDL_IntersectRect(&r, &whole, &r))
+                continue;
+
+            SDL2CirclePresentCmd cmd = frame;
+            cmd.dx = r.x;
+            cmd.dy = r.y;
+            cmd.w = r.w;
+            cmd.h = r.h;
+            cmd.src = (u8 *)s_window_surface->pixels
+                    + (size_t)r.y * s_window_surface->pitch + (size_t)r.x * 4;
+            cmd.srcpitch = s_window_surface->pitch;
+            cmd.sw = r.w;
+            cmd.sh = r.h;
+
+            SDL2CirclePresentCmd placed = cmd;
+            if (!place_on_scanout(&placed))
+                continue;
+            log_copy_geometry(cmd, placed, placed.sw, placed.sh);
+            SDL2Circle_VideoExecCmd(&placed, s_window_surface_back);
+        }
     }
 
     // The flip asks the firmware, through the VideoCore mailbox, and this
@@ -1870,7 +1956,9 @@ extern "C" int SDL_UpdateWindowSurfaceRects(SDL_Window *win,
     // guarded by one spin lock shared by every core and the wait inside it
     // has no timeout, so the fewer cores that ever reach it the fewer there
     // are to collide. Marshalled to core 0, like every other firmware call.
-    SDL2Circle_CallOn0(flip_on0, nullptr);
+    SDL2Circle_CallOn0(flip_on0, (void *)(uintptr)s_window_surface_back);
+    if (s_fb_halves == 2)
+        s_window_surface_back ^= 1;
     return 0;
 }
 

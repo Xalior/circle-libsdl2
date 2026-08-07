@@ -134,6 +134,28 @@ Which framebuffer the firmware granted no longer influences the choice.
 
 Only the default has been measured against a real workload.
 
+### A game that draws without a renderer now lands in the same rectangle as one that does
+
+SDL offers two ways to put a frame on screen: ask the window for a surface,
+draw into it and say when to show it, or draw through a renderer. Only the
+renderer was mapped onto the screen properly.
+
+The window-surface path built its copy in canvas coordinates and then wrote it
+to the screen unmapped, so a canvas smaller than the display appeared at its
+own size in the top-left corner with the rest of the screen black — with the
+fitted rectangle correctly calculated and logged, and then ignored. It also
+did that work on whichever core called it, rather than handing the frame to
+the presentation core the way every other frame is handed over.
+
+Both are fixed, and the two paths now reach the glass the same way. A window
+surface is copied into the double-buffered canvas surface, which is what makes
+it safe to hand to another core, and crosses as one frame; the `copy src ... ->
+canvas ... -> scanout ...` line that describes every other present now
+describes this one too.
+
+EDuke32 draws this way, because the Build engine's classic renderer has its own
+software rasteriser and wants nothing but somewhere to put the result.
+
 ### The monotonic clock answers every clock a program can ask for
 
 `clock_gettime` is now served by this library, alongside the wall clock it
