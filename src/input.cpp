@@ -10,9 +10,9 @@
 #include "sdl2circle.h"
 #include "shim_internal.h"
 
-#include <circle/interrupt.h>
 #include <circle/timer.h>
 #include <circle/devicenameservice.h>
+#include <circle/usb/usbcontroller.h>
 #include <circle/usb/usbhcidevice.h>
 #include <circle/usb/usbkeyboard.h>
 #include <circle/input/mouse.h>
@@ -23,7 +23,17 @@
 namespace
 {
 
-CUSBHCIDevice *s_usb = nullptr;
+// The host controller this library PUMPS but does not own — see
+// SDL2Circle_InputInit. Held as the generic controller interface because
+// pumping plug-and-play is the only thing done with it, and that is the one
+// method every board's controller has in common.
+CUSBController *s_usb = nullptr;
+
+// The sentinel for "asked, and there is none": distinct from nullptr, which
+// means "not asked yet", so a board with no USB is not searched on every
+// pass for the rest of the run.
+CUSBController *const USB_NONE = (CUSBController *)-1;
+
 CUSBKeyboardDevice *s_keyboard = nullptr;
 
 // IRQ-side snapshot of the latest HID report
@@ -647,24 +657,61 @@ void InjectDispatch(char *line)
 
 } // namespace
 
+// FIND THE HOST CONTROLLER; NEVER BUILD ONE.
+//
+// A USB host controller is a device, and every device on this board belongs
+// to the host kernel — brought up in CKernel::Initialize alongside the serial
+// console, the interrupt system, the timer and the SD card, and brought up
+// there because that is the one place on the machine where a long, blocking,
+// interrupt-driven bring-up is allowed to take as much time as it needs.
+//
+// This library used to construct and initialise one here instead, and because
+// SDL_Init marshals its work to core 0, that construction ran INSIDE the
+// servo's call handler. The servo is the only thing that makes core 0 answer
+// anybody — the console, the scheduler, the log drain, the watchdog and USB
+// itself are all downstream of it — so a bring-up that took a long time took
+// the whole machine with it, silently, with nothing left running to report it.
+// The invariant this library documents is that nothing on the servo's path
+// may block; a host controller constructed on the servo could never honour it.
+//
+// So the kernel builds it and this finds it, which is the same arrangement
+// the serial console already has, in the other direction. Neither side
+// constructs what the other owns.
+//
+// Found through the controller's own static accessor rather than the device
+// name service: a host controller registers no name (its enumerated devices
+// do — "ukbd1", "upad1", "umouse1", which is how the pumps below reach them),
+// but every board's controller class answers IsActive()/Get(). CUSBHCIDevice
+// is Circle's alias for whichever class that is on this board, so one
+// spelling serves the Pi 3's DWHCI, the Pi 4's xHCI and the Pi 5's USB
+// sub-system.
 void SDL2Circle_InputInit(void)
 {
     if (s_usb)
         return;
 
-    s_usb = new CUSBHCIDevice(CInterruptSystem::Get(), CTimer::Get(),
-                              TRUE /* plug-and-play */);
-    if (!s_usb->Initialize())
+    if (CUSBHCIDevice::IsActive())
     {
-        // No USB is not fatal — headless/keyboardless payloads are valid.
-        delete s_usb;
-        s_usb = (CUSBHCIDevice *)-1;   // tried and failed; don't retry
+        s_usb = CUSBHCIDevice::Get();
+        return;
     }
+
+    // No USB is not fatal — headless and keyboardless payloads are valid, and
+    // this library will not stop a board that is running fine without input.
+    // But it is almost never intended, and the reason is not guessable from a
+    // game that simply never responds to a key, so it is said once and it
+    // names the fix.
+    s_usb = USB_NONE;
+    SDL2Circle_Log("input", SDL2CIRCLE_LOG_WARNING,
+                   "no USB host controller on this board: input is off. "
+                   "The host kernel brings USB up (a CUSBHCIDevice member "
+                   "initialised in CKernel::Initialize); this library only "
+                   "finds and pumps it.");
 }
 
 void SDL2Circle_InputPump(void)
 {
-    if (!s_usb || s_usb == (CUSBHCIDevice *)-1)
+    if (!s_usb || s_usb == USB_NONE)
         return;
 
     boolean bChanged = s_usb->UpdatePlugAndPlay();

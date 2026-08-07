@@ -293,10 +293,13 @@ extern "C" int SDL_InitSubSystem(Uint32 flags)
     // subsystem, and every SDL application wants the machine running.
     SDL2Circle_CallOn0(init_hardware_on0, nullptr);
 
-    // Video/window devices come up lazily in SDL_CreateWindow; USB comes up
-    // here so keyboards enumerate while the app is still initializing.
-    // USB (xHCI, interrupts) belongs to core 0: under the core split this
-    // marshals to the servo, otherwise it is a direct call.
+    // Video/window devices come up lazily in SDL_CreateWindow. USB is not
+    // brought up here AT ALL any more: the host kernel owns the controller
+    // and has already initialised it, and this only finds it — see
+    // SDL2Circle_InputInit, which explains why building one here was fatal.
+    // Still marshalled, because what it finds is core 0's, but it is now a
+    // lookup rather than a device bring-up, so the servo's first lap has
+    // nothing in it that can block.
     if (flags & (SDL_INIT_VIDEO | SDL_INIT_EVENTS | SDL_INIT_JOYSTICK
                  | SDL_INIT_GAMECONTROLLER))
         SDL2Circle_CallOn0(init_input_on0, nullptr);
