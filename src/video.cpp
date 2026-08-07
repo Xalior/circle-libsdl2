@@ -826,18 +826,113 @@ static void exec_into(const SDL2CirclePresentCmd *cmd, u8 *dst0, unsigned dpitch
     }
 }
 
+// Canvas coordinates -> scanout coordinates, applied to a command on its way
+// to the glass. THE EXECUTOR BELOW IS THE ONLY CALLER, and that is the whole
+// point of where this sits: every command that reaches the framebuffer goes
+// through one function, so the mapping cannot be forgotten on a path that
+// nobody thought about. SDL never sees it, never asks for it, and has no
+// business knowing the panel is a different size from the canvas.
+//
+// The rectangle it maps into was worked out once, by resolve_placement, at
+// the only moment it can change: when the scanout and the canvas both became
+// known. Nothing here recomputes it.
+//
+// Both edges are mapped independently rather than mapping the origin and
+// scaling the extent, so rectangles that abut in the canvas still abut on the
+// scanout instead of leaving a seam where the two divisions round apart. A
+// COPY keeps its source extent untouched: the executor resamples straight
+// from the source onto this composed destination, so the canvas contributes
+// arithmetic and never an intermediate copy.
+//
+// Returns false when nothing survives the mapping.
+static bool map_onto_scanout(SDL2CirclePresentCmd *cmd)
+{
+    if (cmd->w <= 0 || cmd->h <= 0)
+        return false;
+
+    // A fill of the WHOLE canvas is a clear of the whole display, border
+    // included. The letterbox is outside the canvas, so no canvas rectangle
+    // can ever name it, and mapping this one the ordinary way would leave the
+    // frame before last showing in the margins for as long as the picture
+    // stays where it is.
+    if (cmd->op == SDL2CirclePresentCmd::FILL
+        && cmd->dx == 0 && cmd->dy == 0
+        && cmd->w == s_canvas_w && cmd->h == s_canvas_h)
+    {
+        cmd->dx = 0;
+        cmd->dy = 0;
+        cmd->w = s_fb_w;
+        cmd->h = s_fb_h;
+        return cmd->w > 0 && cmd->h > 0;
+    }
+
+    if (s_place_identity)
+        return true;
+
+    int x0 = s_place_x + (int)(((s64)cmd->dx * s_place_w) / s_canvas_w);
+    int x1 = s_place_x + (int)(((s64)(cmd->dx + cmd->w) * s_place_w) / s_canvas_w);
+    int y0 = s_place_y + (int)(((s64)cmd->dy * s_place_h) / s_canvas_h);
+    int y1 = s_place_y + (int)(((s64)(cmd->dy + cmd->h) * s_place_h) / s_canvas_h);
+    cmd->dx = x0;
+    cmd->dy = y0;
+    cmd->w = x1 - x0;
+    cmd->h = y1 - y0;
+    return cmd->w > 0 && cmd->h > 0;
+}
+
+// The one line that makes the whole geometry chain readable on a serial
+// console: what the application handed over, and what it becomes on the
+// glass. Once per mapping, because a steady stream repeats it every frame.
+static void log_copy_geometry(const SDL2CirclePresentCmd &app,
+                              const SDL2CirclePresentCmd &out, int sw, int sh)
+{
+    static int last_sw = 0, last_sh = 0, last_dw = 0, last_dh = 0;
+    if (sw == last_sw && sh == last_sh && out.w == last_dw && out.h == last_dh)
+        return;
+    last_sw = sw; last_sh = sh; last_dw = out.w; last_dh = out.h;
+
+    const char *how;
+    if (sw == out.w && sh == out.h)
+        how = "1:1 blit";
+    else if (out.w % sw == 0 && out.h % sh == 0)
+        how = "nearest, integer ratio";
+    else
+        how = "nearest";
+    SDL2Circle_Log("sdl2video", SDL2CIRCLE_LOG_NOTICE,
+                          "copy src %dx%d -> canvas %dx%d+%d+%d -> scanout %dx%d+%d+%d (%s)",
+                          sw, sh,
+                          app.w, app.h, app.dx, app.dy,
+                          out.w, out.h, out.dx, out.dy, how);
+}
+
+// Execute one command onto the glass. The command arrives in CANVAS
+// coordinates, whoever posted it and whichever core is running this: the
+// presentation worker under the core split, the application's own core
+// without it. Both go through here, so both get the same picture.
+//
 // The presentation surface: the shadow where the grant is a single screen,
 // otherwise the framebuffer half being drawn into.
 void SDL2Circle_VideoExecCmd(const SDL2CirclePresentCmd *cmd, unsigned half)
 {
     if (!s_fb_base)
         return;
+
+    SDL2CirclePresentCmd placed = *cmd;
+    if (!map_onto_scanout(&placed))
+        return;
+
+    if (placed.op == SDL2CirclePresentCmd::COPY)
+        log_copy_geometry(*cmd, placed,
+                          cmd->sw > 0 ? cmd->sw : cmd->w,
+                          cmd->sh > 0 ? cmd->sh : cmd->h);
+
     if (s_shadow)
-        exec_into(cmd, s_shadow, s_shadow_pitch);
+        exec_into(&placed, s_shadow, s_shadow_pitch);
     else if (s_stage)
-        exec_into(cmd, s_stage, s_stage_pitch);
+        exec_into(&placed, s_stage, s_stage_pitch);
     else
-        exec_into(cmd, s_fb_base + (size_t)half * s_fb_h * s_fb_pitch, s_fb_pitch);
+        exec_into(&placed, s_fb_base + (size_t)half * s_fb_h * s_fb_pitch,
+                  s_fb_pitch);
 }
 
 // Page-flip to a framebuffer half. The firmware mailbox tolerates off-core
@@ -935,58 +1030,6 @@ void SDL2Circle_VideoFlip(unsigned half)
                               "first flip to half %u: SetVirtualOffset %s",
                               half, ok ? "ok" : "REFUSED");
     }
-}
-
-// Canvas coordinates -> scanout coordinates. Both edges are mapped
-// independently rather than mapping the origin and scaling the extent, so
-// rectangles that abut in the canvas still abut on the scanout instead of
-// leaving a seam where the two divisions round apart. A COPY keeps its
-// source extent untouched: the executor resamples straight from the source
-// onto this composed destination, so the canvas contributes arithmetic and
-// never an intermediate copy.
-//
-// Returns false when nothing survives the mapping.
-static bool place_on_scanout(SDL2CirclePresentCmd *cmd)
-{
-    if (cmd->w <= 0 || cmd->h <= 0)
-        return false;
-    if (s_place_identity)
-        return true;
-
-    int x0 = s_place_x + (int)(((s64)cmd->dx * s_place_w) / s_canvas_w);
-    int x1 = s_place_x + (int)(((s64)(cmd->dx + cmd->w) * s_place_w) / s_canvas_w);
-    int y0 = s_place_y + (int)(((s64)cmd->dy * s_place_h) / s_canvas_h);
-    int y1 = s_place_y + (int)(((s64)(cmd->dy + cmd->h) * s_place_h) / s_canvas_h);
-    cmd->dx = x0;
-    cmd->dy = y0;
-    cmd->w = x1 - x0;
-    cmd->h = y1 - y0;
-    return cmd->w > 0 && cmd->h > 0;
-}
-
-// The one line that makes the whole geometry chain readable on a serial
-// console: what the application handed over, and what it becomes on the
-// glass. Once per mapping, because a steady stream repeats it every frame.
-static void log_copy_geometry(const SDL2CirclePresentCmd &app,
-                              const SDL2CirclePresentCmd &out, int sw, int sh)
-{
-    static int last_sw = 0, last_sh = 0, last_dw = 0, last_dh = 0;
-    if (sw == last_sw && sh == last_sh && out.w == last_dw && out.h == last_dh)
-        return;
-    last_sw = sw; last_sh = sh; last_dw = out.w; last_dh = out.h;
-
-    const char *how;
-    if (sw == out.w && sh == out.h)
-        how = "1:1 blit";
-    else if (out.w % sw == 0 && out.h % sh == 0)
-        how = "nearest, integer ratio";
-    else
-        how = "nearest";
-    SDL2Circle_Log("sdl2video", SDL2CIRCLE_LOG_NOTICE,
-                          "copy src %dx%d -> canvas %dx%d+%d+%d -> scanout %dx%d+%d+%d (%s)",
-                          sw, sh,
-                          app.w, app.h, app.dx, app.dy,
-                          out.w, out.h, out.dx, out.dy, how);
 }
 
 // The canvas surface, made the first time a frame needs one.
@@ -1353,10 +1396,12 @@ static void create_window_on0(void *p)
     win->grabbed = SDL_FALSE;
     win->title[0] = '\0';
 
-    // Publish the presentation geometry before the window becomes visible
-    // to the application core or the worker. This side is SCANOUT geometry: every
-    // present command has already been mapped out of canvas coordinates by
-    // the time it reaches the framebuffer.
+    // Publish the presentation geometry before the window becomes visible to
+    // the application core or the worker. This side is SCANOUT geometry, and
+    // it is the executor's alone: a present command is still in canvas
+    // coordinates right up to the moment the executor maps it, and the
+    // placement it maps into was settled by resolve_display_size above, out
+    // of the same two numbers this reads.
     s_fb_base = (u8 *)(uintptr)fb->GetBuffer();
     s_fb_pitch = fb->GetPitch();
     s_fb_w = s_scanout_w;
@@ -1904,14 +1949,9 @@ extern "C" int SDL_UpdateWindowSurfaceRects(SDL_Window *win,
         frame.w = win->w; frame.h = win->h;
         frame.sw = win->w; frame.sh = win->h;
 
-        SDL2CirclePresentCmd placed = frame;
-        if (!place_on_scanout(&placed))
-            return 0;
-        log_copy_geometry(frame, placed, frame.sw, frame.sh);
-
         if (SDL2Circle_SplitActive() && SDL2Circle_ThisCore() != 0)
         {
-            SDL2Circle_PresentPost(&placed, 1, s_window_surface_back);
+            SDL2Circle_PresentPost(&frame, 1, s_window_surface_back);
             if (s_canvas_surface_buf[1])
             {
                 s_canvas_surface_idx ^= 1;
@@ -1922,7 +1962,7 @@ extern "C" int SDL_UpdateWindowSurfaceRects(SDL_Window *win,
             return 0;
         }
 
-        SDL2Circle_VideoExecCmd(&placed, s_window_surface_back);
+        SDL2Circle_VideoExecCmd(&frame, s_window_surface_back);
     }
     else
     {
@@ -1943,11 +1983,7 @@ extern "C" int SDL_UpdateWindowSurfaceRects(SDL_Window *win,
             cmd.sw = r.w;
             cmd.sh = r.h;
 
-            SDL2CirclePresentCmd placed = cmd;
-            if (!place_on_scanout(&placed))
-                continue;
-            log_copy_geometry(cmd, placed, placed.sw, placed.sh);
-            SDL2Circle_VideoExecCmd(&placed, s_window_surface_back);
+            SDL2Circle_VideoExecCmd(&cmd, s_window_surface_back);
         }
     }
 
@@ -3562,11 +3598,14 @@ static void border_if_changed(SDL_Renderer *ren, u32 color,
         return;
     ren->border_repaint--;
 
+    // The WHOLE CANVAS, which is as much of the display as anything on this
+    // side of the library can name. The executor is what knows that clearing
+    // the whole canvas means clearing the whole panel, border and all.
     SDL2CirclePresentCmd fill;
     memset(&fill, 0, sizeof(fill));
     fill.op = SDL2CirclePresentCmd::FILL;
     fill.dx = 0; fill.dy = 0;
-    fill.w = s_fb_w; fill.h = s_fb_h;
+    fill.w = s_canvas_w; fill.h = s_canvas_h;
     fill.color = color;
     out[(*nout)++] = fill;
 }
@@ -3608,13 +3647,11 @@ static unsigned reduce_frame(SDL_Renderer *ren, SDL2CirclePresentCmd *out)
         frame.alphamod = 255;
     }
 
-    SDL2CirclePresentCmd placed = frame;
-    if (!place_on_scanout(&placed))
+    if (frame.w <= 0 || frame.h <= 0)
         return 0;
-    log_copy_geometry(frame, placed, frame.sw, frame.sh);
 
-    border_if_changed(ren, clear_color, placed, out, &nout);
-    out[nout++] = placed;
+    border_if_changed(ren, clear_color, frame, out, &nout);
+    out[nout++] = frame;
     return nout;
 }
 
@@ -3638,14 +3675,9 @@ extern "C" void SDL_RenderPresent(SDL_Renderer *ren)
     if (!ren->rasterizing && ren->ncmds <= (unsigned)SDL2CIRCLE_PRESENT_MAX_CMDS)
     {
         // Composed command by command on the far side. The whole recorded
-        // list travels, because composing IS what this path does.
-        for (unsigned i = 0; i < ren->ncmds; i++)
-        {
-            SDL2CirclePresentCmd as_drawn = ren->cmds[i];
-            place_on_scanout(&ren->cmds[i]);
-            if (ren->cmds[i].op == SDL2CirclePresentCmd::COPY)
-                log_copy_geometry(as_drawn, ren->cmds[i], as_drawn.sw, as_drawn.sh);
-        }
+        // list travels, because composing IS what this path does — in canvas
+        // coordinates exactly as it was recorded, because placing it on the
+        // panel is the far side's job and not this one's.
         if (SDL2Circle_SplitActive() && SDL2Circle_ThisCore() != 0)
         {
             SDL2Circle_PresentPost(ren->cmds, ren->ncmds, ren->back);

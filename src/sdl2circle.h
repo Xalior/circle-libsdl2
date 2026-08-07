@@ -186,13 +186,18 @@ void SDL2Circle_HeartbeatBump(void);
 struct SDL2CirclePresentCmd
 {
     enum { FILL, COPY } op;
-    int dx, dy, w, h;             // destination rectangle, SCANOUT coordinates
+    int dx, dy, w, h;             // destination rectangle, CANVAS coordinates.
+                                  // The panel does not appear here at all: the
+                                  // executor maps the canvas onto it, and it is
+                                  // the only thing that knows the two differ.
     u32 color;                    // FILL
     const u8 *src;                // COPY: pixel buffer (frozen for the frame)
     int srcpitch;
-    int sw, sh;                   // COPY: source extent. Equal to w,h means an
-                                  // unscaled blit; otherwise the executor
-                                  // resamples sw x sh onto w x h, which already
+    int sw, sh;                   // COPY: source extent, in source pixels.
+                                  // Equal to the destination extent AFTER the
+                                  // executor has mapped it means an unscaled
+                                  // blit; otherwise the executor resamples
+                                  // sw x sh onto the mapped extent, which
                                   // composes both geometry hops (application
                                   // frame into the canvas, canvas onto the
                                   // scanout) into ONE pass.
