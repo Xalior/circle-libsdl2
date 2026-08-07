@@ -20,6 +20,30 @@ SDL_APP_LDSCRIPT ?= $(SDL_APP_DIR)sdl-app.ld
 # applications only ever list libSDL2.a.
 LIBS += $(CIRCLEHOME)/lib/sound/libsound.a
 
+# THE C++ THREADING RUNTIME IS THIS LIBRARY'S, NOT circle-stdlib's.
+#
+# circle-stdlib ships liblibcxx-threading.a: libc++'s threading built on
+# Circle's cooperative scheduler, which its own doc/multicore.txt specifies as
+# core 0's alone. This library runs applications on another core, so it
+# supplies that ABI itself (src/libcxxthreading.cpp) — every symbol, futex-
+# shaped, valid on every core. Nothing vendored is edited; the link is simply
+# given one implementation instead of two.
+#
+# The filter belongs HERE and nowhere else. CIRCLE_STDLIB_LIBS comes from the
+# world's Config.mk, which an application includes and must not edit; this
+# fragment is the one piece of build machinery every consumer of this library
+# already includes, and it is included AFTER the application has set LIBS. So
+# one line here settles it for every port, and a port that has never heard of
+# any of this gets a working runtime by changing nothing.
+#
+# Leaving the archive in the list would not usually break the link — an
+# archive member is pulled only to resolve something still undefined, and
+# these symbols are already defined by then — which is exactly why it is
+# taken out rather than left to sit there. Which implementation a program got
+# would depend on the order the libraries happened to be listed in, and that
+# is not a thing to leave to chance in a program that boots a board.
+LIBS := $(filter-out %/liblibcxx-threading.a,$(LIBS))
+
 # LIBS is passed to the linker as it stands, so an application may put linker
 # flags in it — --whole-archive around the shim, say, so that a stale stub in
 # the application cannot silently shadow a symbol the library implements for

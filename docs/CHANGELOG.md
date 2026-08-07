@@ -10,6 +10,49 @@ followed.
 
 ## vPoC3
 
+### The C++ standard library's threading works on the core your application runs on
+
+`std::mutex`, `std::recursive_mutex`, `std::condition_variable`,
+`std::call_once`, `std::thread` and `thread_local` are all usable from the
+core this library puts your application on. They were not before.
+
+Circle's cooperative scheduler is documented as core 0's alone, and
+circle-stdlib builds the C++ threading runtime on it. Neither project is at
+fault: this library is the one that chose to run applications somewhere else,
+so it now supplies that part of the runtime itself. The primitives are built
+from processor atomics, and every wait in them yields to Circle's scheduler on
+core 0 and spins anywhere else.
+
+`std::recursive_mutex` was the visible failure. Locked and unlocked a few
+microseconds apart on the application core, with no second core involved and
+nothing contending, it stopped the board. Two games hit it after everything
+else about them already worked: one through its audio manager, one through a
+logging library that takes such a lock for every line it writes. Behind it were
+quieter faults that reported nothing at all — a contended `std::mutex`, every
+condition variable wait, and every `thread_local` read from the application
+core, which was answering with another thread's storage.
+
+`std::thread` can now be created from any core. A thread runs on core 0 as a
+cooperative task, which is what a service thread wants: it costs no core, and
+it may call Circle. A host kernel that would rather have a thread on a core of
+its own can lend one — see `SDL2Circle_ThreadCoreOffer` and
+`SDL2Circle_ThreadPinNext` in `SDL2/SDL_circle.h` — and this library will never
+place a thread on a core it is already using for the application or for
+presentation.
+
+**Nothing has to be done to get this.** A host kernel already calls
+`SDL2Circle_ArmCoreRuntime` on core 0, and that call now also starts the one
+task the threading runtime needs.
+
+There are limits, and they are stated rather than hidden. A thread on core 0
+is cooperative, so a thread that computes without ever waiting keeps core 0 to
+itself. A lent core runs one thread at a time. A wait occupies the core it
+waits on, off core 0. `thread_local` destructors run when a thread ends, and
+the application core never ends.
+
+`examples/cxxthreads` exercises all of it on a second core and reports what it
+found on the serial console.
+
 ### Applications choose their own display size
 
 An application states the display size it wants and gets exactly that,

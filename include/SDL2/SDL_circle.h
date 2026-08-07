@@ -83,6 +83,53 @@ void SDL2Circle_CallOn0(void (*fn)(void *), void *arg);
 // one binary serve bench and product.
 void SDL2Circle_SetPerfInterval(unsigned nSeconds);
 
+// ---- the C++ threading runtime ----------------------------------------------
+//
+// This library supplies libc++'s threading primitives — std::mutex,
+// std::recursive_mutex, std::condition_variable, std::call_once,
+// std::thread, thread_local — because it runs applications off core 0 and
+// Circle's cooperative scheduler is core 0's alone (doc/multicore.txt). See
+// src/libcxxthreading.cpp for the whole of that reasoning.
+//
+// NOTHING HERE HAS TO BE CALLED. A port gets working C++ threading by
+// linking this library and making the SDL2Circle_ArmCoreRuntime call it
+// already makes. The three calls below are for the host kernel that wants
+// more than the default placement.
+//
+// WHERE A std::thread RUNS, by default: on core 0, as a cooperative Circle
+// scheduler task, wherever it was created from. That is the placement a
+// service thread wants — it costs no core, and it may touch Circle — and a
+// creation issued from another core is passed to core 0 rather than
+// refused. It is cooperative: such a thread runs when core 0 yields, so a
+// thread that computes without ever blocking or sleeping holds core 0, and
+// core 0 is where every device is serviced.
+
+// Lend the CALLING core to the threading runtime as a home for pinned
+// threads, and never return. A host kernel calls this from
+// CMultiCoreSupport::Run on a core it would otherwise have parked.
+//
+// A lent core runs one pinned thread at a time, on its own, with no
+// scheduler — the same terms the application core runs on. Between threads
+// it sleeps.
+void SDL2Circle_ThreadCoreOffer(void);
+
+// Cores that a pinned thread could be put on right now, as a bitmask: those
+// lent by the call above, less any core this library has already spoken for
+// (core 0, the application core, the presentation core) and any that is
+// running a pinned thread. Zero means there is nowhere to pin, which is the
+// answer for every host kernel that has not lent a core.
+unsigned SDL2Circle_ThreadCoresFree(void);
+
+// Run the NEXT std::thread created on the calling core on nCore, rather than
+// on core 0 as a cooperative task. One-shot: it applies to one creation and
+// is then forgotten, so it is set immediately before the thread is
+// constructed.
+//
+// Returns 0 if the request is accepted, and -1 if nCore is not free right
+// now (SDL_GetError says which reason), in which case nothing is changed and
+// the next thread created is an ordinary cooperative one.
+int SDL2Circle_ThreadPinNext(unsigned nCore);
+
 // ---- the virtual display device ---------------------------------------------
 
 // Declare the display device the application is to be given: its bit depth,

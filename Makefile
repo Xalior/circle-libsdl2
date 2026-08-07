@@ -344,7 +344,7 @@ SRCS = src/init.cpp src/error.cpp src/timer.cpp src/hints.cpp src/events.cpp \
        src/split.cpp src/log.cpp src/coreruntime.cpp src/hardware.cpp \
        src/mouse.cpp src/pixels.cpp src/blit.cpp src/bmp.cpp src/rect.cpp \
        src/threads.cpp src/stdinc.cpp src/filesystem.cpp src/clipboard.cpp \
-       src/messagebox.cpp src/keyname.cpp src/platform.cpp src/image.cpp src/audiocvt.cpp src/mixer.cpp src/gl.cpp src/bootargs.cpp src/ctors.cpp src/libcxxmutex.cpp
+       src/messagebox.cpp src/keyname.cpp src/platform.cpp src/image.cpp src/audiocvt.cpp src/mixer.cpp src/gl.cpp src/bootargs.cpp src/ctors.cpp src/libcxxthreading.cpp
 OBJS = $(SRCS:src/%.cpp=$(OBJDIR)/%.o)
 DEPS = $(OBJS:.o=.d)
 
@@ -404,14 +404,13 @@ DEFINE += -DSDL2CIRCLE_PRESENT_MAX_CMDS=$(PRESENT_CMDS)
 
 include $(CIRCLEHOME)/Rules.mk
 
-# libcxxmutex.cpp displaces circle-stdlib's libc++ mutex primitives and must
-# see the private header condvar.cpp shares with them, so that the two cannot
-# hold different ideas of the same storage. Reaching into the world's source
-# tree is deliberate and narrow: a move there breaks this build loudly, which
-# is the outcome to want.
-LIBCXX_THREADING_SRC = $(CIRCLESTDLIBHOME)/libs/libcxx-threading/src
-
-INCLUDE := -I include -I $(LIBCXX_THREADING_SRC) $(CIRCLE_STDLIB_INCLUDES) $(INCLUDE)
+# src/libcxxthreading.cpp implements libc++'s external-threading ABI against
+# the <__external_threading> header the world was built with, which
+# Config.mk's CFLAGS already put on the include path. Nothing private to
+# circle-stdlib's own implementation is needed: this is a second, complete
+# implementation of the same published interface, and sdl-app.mk gives the
+# link exactly one of the two.
+INCLUDE := -I include $(CIRCLE_STDLIB_INCLUDES) $(INCLUDE)
 
 # Per-board compile into $(OBJDIR) (Circle's Rules.mk %.o rule builds in-place;
 # this more-specific rule wins for the board-scoped object paths). Same recipe

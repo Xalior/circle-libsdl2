@@ -70,6 +70,35 @@ unsigned SDL2Circle_ThisCore(void)
 #endif
 }
 
+// ---------------------------------------------------------------------------
+// Which cores are spoken for
+// ---------------------------------------------------------------------------
+//
+// The split hands out roles — core 0 the Circle world, one core the
+// application, one core presentation — and a host kernel parks whatever is
+// left. Something else in this library then wants a core to put a pinned
+// thread on (src/libcxxthreading.cpp), and the one thing it must never do is
+// take a core that already has a job. So the roles are recorded as they are
+// taken, and the answer is asked for rather than assumed.
+//
+// Core 0 is in the set from the start and never leaves it: it is the
+// machine. The other two identify themselves — the presentation worker when
+// it starts, the application core the first time it does either of the two
+// things only the application does, beat the per-frame heartbeat or ask for
+// a thread of its own. Nothing here guesses from a core number: which core
+// runs what is a host kernel's decision, not this library's.
+static std::atomic<unsigned> g_cores_claimed{1};
+
+void SDL2Circle_ClaimCore(unsigned nCore)
+{
+    g_cores_claimed.fetch_or(1u << nCore, std::memory_order_release);
+}
+
+unsigned SDL2Circle_ClaimedCores(void)
+{
+    return g_cores_claimed.load(std::memory_order_acquire);
+}
+
 // Idle appropriate to the calling core: core 0 must keep its cooperative
 // world alive; other cores nap in WFE.
 static inline void idle_wait(void)
@@ -449,6 +478,10 @@ extern "C" void SDL2Circle_SplitPresentCore(void)
     // did loses nothing: the second call returns.
     SDL2Circle_ArmCoreRuntime();
 
+    // And it is spoken for from here to the end of the run, which is what
+    // stops a pinned thread being put on top of it.
+    SDL2Circle_ClaimCore(SDL2Circle_ThisCore());
+
     u64 done = 0;
     for (;;)
     {
@@ -546,6 +579,13 @@ static std::atomic<u64> g_heartbeat{0};
 void SDL2Circle_HeartbeatBump(void)
 {
     g_heartbeat.fetch_add(1, std::memory_order_relaxed);
+
+    // Whoever beats this is the application, so whichever core it beats from
+    // is the application core. That is the only place in this library that
+    // learns it, and it costs one test against a word already in cache.
+    const unsigned nCore = SDL2Circle_ThisCore();
+    if (!(SDL2Circle_ClaimedCores() & (1u << nCore)))
+        SDL2Circle_ClaimCore(nCore);
 }
 
 // ---------------------------------------------------------------------------
@@ -989,6 +1029,12 @@ extern "C" void SDL2Circle_SplitInit(void)
 
     new CSplitServoTask;      // CTask registers itself with the scheduler
     new CSplitWatchdogTask;
+
+    // The C++ threading runtime's creator task, on the same terms. It is
+    // started from SDL2Circle_ArmCoreRuntime too, and does nothing without a
+    // scheduler; this is the call that catches the host kernel which armed
+    // core 0 before it had one, because the line above guarantees one now.
+    SDL2Circle_ThreadRuntimeInit();
 
     g_split.store(true, std::memory_order_release);
     publish();

@@ -1,5 +1,5 @@
 //
-// kernel.h — circle-libsdl2 recursive-mutex test
+// kernel.h — circle-libsdl2 C++ threading test
 //
 #ifndef _kernel_h
 #define _kernel_h
@@ -15,6 +15,7 @@
 #include <circle/types.h>
 #include <circle/multicore.h>
 #include <circle/memory.h>
+#include <circle/sched/scheduler.h>
 
 enum TShutdownMode
 {
@@ -24,8 +25,8 @@ enum TShutdownMode
 };
 
 // The secondary cores. Core 1 stands in for the application core every port
-// runs its game on: no scheduler, and until now no usable
-// std::recursive_mutex either.
+// runs its game on: no scheduler there, and until this library supplied one,
+// no usable C++ threading runtime either.
 class CTestCores : public CMultiCoreSupport
 {
 public:
@@ -42,7 +43,7 @@ public:
     TShutdownMode Run(void);
 
 private:
-    // no CScreenDevice: the SDL window owns the display
+    // no CScreenDevice: this is a test of the C++ runtime, not of the picture
     CActLED             m_ActLED;
     CKernelOptions      m_Options;
     CDeviceNameService  m_DeviceNameService;
@@ -51,6 +52,12 @@ private:
     CInterruptSystem    m_Interrupt;
     CTimer              m_Timer;
     CLogger             m_Logger;
+
+    // Declared before the cores are started, so it exists by the time core 0
+    // is armed: arming core 0 is what starts the threading runtime's creator
+    // task, and a task needs a scheduler to register with.
+    CScheduler          m_Scheduler;
+
     CTestCores          m_Cores;
 };
 

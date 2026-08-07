@@ -52,39 +52,74 @@ extern "C" u8 __tdata_start, __tdata_end, __tbss_end;
 // a leak — and so the block outlives the call, which is the whole point.
 static u8 *s_block[CORERUNTIME_MAX_CORES];
 
+void *SDL2Circle_AllocTLSBlock(void)
+{
+    size_t nData  = (size_t)(&__tdata_end - &__tdata_start);
+    size_t nTotal = (size_t)(&__tbss_end  - &__tdata_start);
+
+    u8 *p = new u8[TLS_TCB_BYTES + nTotal];
+    if (!p)
+        return nullptr;
+    memset(p, 0, TLS_TCB_BYTES + nTotal);
+    if (nData)
+        memcpy(p + TLS_TCB_BYTES, &__tdata_start, nData);
+
+    return p;
+}
+
+void SDL2Circle_FreeTLSBlock(void *pBlock)
+{
+    delete[] (u8 *)pBlock;
+}
+
+void SDL2Circle_SetThreadPointer(void *pBlock)
+{
+    // The register is per core, which is why this must execute ON the core
+    // — or, for a scheduler task, inside the task — whose pointer it sets.
+    asm volatile("msr tpidr_el0, %0" ::"r"(pBlock) : "memory");
+}
+
+void *SDL2Circle_GetThreadPointer(void)
+{
+    void *p;
+    asm volatile("mrs %0, tpidr_el0" : "=r"(p));
+    return p;
+}
+
 extern "C" void SDL2Circle_ArmCoreRuntime(void)
 {
     unsigned core = SDL2Circle_ThisCore() % CORERUNTIME_MAX_CORES;
     if (s_block[core])
         return;
 
-    size_t nData  = (size_t)(&__tdata_end - &__tdata_start);
-    size_t nTotal = (size_t)(&__tbss_end  - &__tdata_start);
-
-    u8 *p = new u8[TLS_TCB_BYTES + nTotal];
+    u8 *p = (u8 *)SDL2Circle_AllocTLSBlock();
     if (!p)
         return;
-    memset(p, 0, TLS_TCB_BYTES + nTotal);
-    if (nData)
-        memcpy(p + TLS_TCB_BYTES, &__tdata_start, nData);
 
     s_block[core] = p;
+    SDL2Circle_SetThreadPointer(p);
 
-    // The register is per core, which is why this must execute ON the core
-    // it arms.
-    asm volatile("msr tpidr_el0, %0" ::"r"(p) : "memory");
-
-    // The application's own static constructors, held back by
-    // sdl-app-init.ld until the kernel exists. Core 0 only, and after the
-    // runtime above rather than before it: a deferred constructor may use
-    // thread_local storage, and that is what was just armed.
-    //
-    // Hung off this call deliberately. An application already makes it, on
-    // core 0, at the point in its start-up where everything a constructor
-    // could reach is up — so adopting the deferral costs it nothing and
-    // there is no second call to forget.
     if (core == 0)
+    {
+        // The application's own static constructors, held back by
+        // sdl-app-init.ld until the kernel exists. Core 0 only, and after
+        // the runtime above rather than before it: a deferred constructor
+        // may use thread_local storage, and that is what was just armed.
+        //
+        // Hung off this call deliberately. An application already makes it,
+        // on core 0, at the point in its start-up where everything a
+        // constructor could reach is up — so adopting the deferral costs it
+        // nothing and there is no second call to forget.
         SDL2Circle_RunDeferredConstructors();
+
+        // The C++ threading runtime's creator task, for the same reason and
+        // on the same terms: this call is the one point every host kernel
+        // already makes on core 0 with its world up, so a port adopts
+        // std::thread by doing nothing. It needs a live scheduler and does
+        // nothing without one; SDL2Circle_SplitInit, which guarantees one,
+        // calls it again.
+        SDL2Circle_ThreadRuntimeInit();
+    }
 }
 
 #else

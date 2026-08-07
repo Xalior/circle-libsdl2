@@ -59,6 +59,37 @@ void SDL2Circle_ReadBootArgs(void);
 void SDL2Circle_RunDeferredConstructors(void);
 bool SDL2Circle_DebugUartArmed(void);
 
+// ---- hardware thread-local storage (src/coreruntime.cpp) -------------------
+//
+// One block of the shape AArch64 expects: a 16-byte thread control block,
+// then a copy of the image's initialised thread-local data, then the
+// zero-initialised remainder. TPIDR_EL0 addresses the block, and every
+// thread_local variable in the program is reached as an offset from it.
+//
+// Each core gets one (SDL2Circle_ArmCoreRuntime) and each std::thread gets
+// one of its own (src/libcxxthreading.cpp), which is what makes a
+// thread_local per-thread rather than per-image. The bounds come from the
+// linker script — sdl-app.ld and every script derived from it — so there is
+// exactly one place in this library that knows the layout, and this is it.
+void *SDL2Circle_AllocTLSBlock(void);
+void  SDL2Circle_FreeTLSBlock(void *pBlock);
+void  SDL2Circle_SetThreadPointer(void *pBlock);
+void *SDL2Circle_GetThreadPointer(void);
+
+// Start the C++ threading runtime's core-0 creator task (src/libcxxthreading.cpp).
+// Idempotent, core 0 only, and a no-op until a scheduler exists. Called from
+// SDL2Circle_ArmCoreRuntime and again from SDL2Circle_SplitInit, because a
+// host kernel may arm core 0 before it has a scheduler and the split makes
+// one where there is none.
+void SDL2Circle_ThreadRuntimeInit(void);
+
+// Cores this library has spoken for, as a bitmask (src/split.cpp): core 0 —
+// the Circle world — always, plus the presentation core and the application
+// core once each has identified itself. It is what stops the C++ threading
+// runtime pinning a thread onto a core the split is already using.
+void     SDL2Circle_ClaimCore(unsigned nCore);
+unsigned SDL2Circle_ClaimedCores(void);
+
 // ---- core split internals (src/split.cpp) ----------------------------------
 //
 // The split's moving parts, shared between the shim's translation units.

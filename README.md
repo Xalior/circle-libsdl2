@@ -41,6 +41,7 @@ core that never touches a device.
 | Files: an I/O service callable from any core | FatFs on core 0, marshalled (`SDL2Circle_IO*`) — for applications whose own file layer must not touch the SD card directly |
 | Surfaces and pixel formats: `SDL_CreateRGBSurface*`, `SDL_ConvertSurface`, `SDL_ConvertSurfaceFormat`, `SDL_MapRGB`/`SDL_MapRGBA`, `SDL_GetRGB`/`SDL_GetRGBA`, palettes and `SDL_SetPaletteColors`, `SDL_FillRect`, blitting, `SDL_SetColorKey`, lock/unlock, `SDL_ConvertPixels` | in memory. 8-bit paletted surfaces are first-class: a game that renders through a palette does so here without converting anything itself |
 | Threads and synchronisation: `SDL_CreateThread`, mutexes, condition variables, semaphores, atomics, thread-local storage | Circle's scheduler and the AArch64 atomics |
+| C++ standard library threading: `std::mutex`, `std::recursive_mutex`, `std::condition_variable`, `std::call_once`, `std::thread`, `thread_local` | this library's own implementation of the interface libc++ asks its platform for, built from processor atomics so it is valid on every core. See [C++ threading](#c-threading) |
 | Timers: `SDL_AddTimer`/`SDL_RemoveTimer` | the system timer, serviced from the frame's service point |
 | `SDL_image`: `IMG_Load` and its family | PNG decoded here — a DEFLATE decompressor and a PNG reader, because there is no libpng and no zlib. BMP goes to `SDL_LoadBMP_RW` |
 | `SDL_mixer`: several sounds at once, channels, volumes, panning, music | above the audio device, mixing into it. Chunks are converted at load, never in the callback |
@@ -688,7 +689,9 @@ steps 3 and 4 are calls into this library.
    leftover value is zero the read goes to mapped low memory and the throw
    appears to work — which is why omitting this call works on one board and
    takes a data abort on the next, on an ordinary throw, looking exactly like
-   a hardware fault. It is one call and it is not optional.
+   a hardware fault. It is one call and it is not optional. On core 0 it also
+   starts the C++ threading runtime, which is why that needs nothing of its
+   own; see [C++ threading](#c-threading).
 4. **Call `SDL2Circle_SplitInit` once, on core 0.** It creates the servo and
    the watchdog. Until it has returned, no other core may call `SDL_*`: the
    mailboxes are not armed and the call would run on the wrong core.
@@ -777,6 +780,74 @@ What makes this work, and all of it matters:
 Descriptors 0, 1 and 2 are the console rather than files, so they have no
 route through the I/O service. Send those to core 0 with
 `SDL2Circle_CallOn0` and let the original implementation run there.
+
+### C++ threading
+
+`std::mutex`, `std::recursive_mutex`, `std::condition_variable`,
+`std::call_once`, `std::thread` and `thread_local` all work on whichever core
+your application was placed on, and nothing has to be done to get that.
+
+They need saying about because the ordinary answer does not apply here.
+Circle's cooperative scheduler is documented as belonging to core 0 alone, and
+circle-stdlib builds the C++ threading runtime on top of it — correctly, for
+the core it was written for. This library is the one that runs applications
+somewhere else, so it supplies that part of the runtime itself: the primitives
+are built from processor atomics, and every wait in them yields to Circle's
+scheduler on core 0 and spins on any other core.
+
+The build fragment `sdl-app.mk`, which your kernel's Makefile already
+includes, is what selects this implementation instead of circle-stdlib's.
+Nothing in circle-stdlib is modified.
+
+**Where a `std::thread` runs.** By default, on core 0, as a cooperative Circle
+task — wherever it was created from. That is what a service thread wants: it
+costs no core, and it may reach Circle. A creation issued from another core is
+passed to core 0 rather than refused.
+
+Being cooperative has a consequence worth knowing. Such a thread runs when
+core 0 gives up control, which it does constantly, but a thread that computes
+without ever waiting or sleeping holds core 0 — and core 0 is where every
+device on the board is serviced.
+
+**Giving a thread a core of its own.** A host kernel that has a spare core can
+lend it:
+
+```c
+void CMyCores::Run(unsigned nCore)
+{
+    SDL2Circle_ArmCoreRuntime();
+
+    switch (nCore)
+    {
+    case 1:  RunTheApplication();          break;
+    case 2:  SDL2Circle_SplitPresentCore(); break;
+    default: SDL2Circle_ThreadCoreOffer();  break;   // never returns
+    }
+}
+```
+
+The application then asks for the next thread it creates to go there:
+
+```c
+if (SDL2Circle_ThreadPinNext(3) == 0)
+    std::thread worker(...);        // runs alone on core 3
+```
+
+`SDL2Circle_ThreadCoresFree` answers with the cores that are available right
+now, as a bitmask. A core the application or the presentation worker is using
+is never in it, and neither is one already running a thread: this library
+tracks which cores it has spoken for, so a request for a busy core is refused
+rather than granted on top of what is already there. A lent core runs one
+thread at a time.
+
+**The limits.** A wait occupies the core it waits on, off core 0, for the same
+reason `SDL_Delay` does. A timed wait off core 0 polls the system counter
+rather than sleeping to the deadline. `thread_local` destructors run when a
+thread ends, so a `thread_local` belonging to the application core — which
+never ends — is never destroyed.
+
+`examples/cxxthreads` runs all of this on a second core and reports what it
+found on the serial console.
 
 ## Logging from any core
 
@@ -1156,6 +1227,12 @@ templates, and the way a change is proven before it ships:
   firmware reports about the attached display, and what Circle's framebuffer
   returns for a series of allocation requests. It is where the raw numbers
   behind the presentation geometry come from
+- `examples/cxxthreads` — the C++ standard library's threading, run on core 1
+  where an application runs and where none of it used to work: recursive
+  mutexes, a condition variable woken by a thread the application core
+  created, per-thread `thread_local` storage and its destructors, a timed wait
+  that runs out, and `call_once`. It reports each result by name on the serial
+  console, so a board with no display still says what happened (C++ runtime)
 
 ## License
 

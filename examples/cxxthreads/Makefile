@@ -1,5 +1,5 @@
 #
-# circle-libsdl2 recursive-mutex test — std::recursive_mutex off core 0
+# circle-libsdl2 C++ threading test — libc++ threading off core 0
 #
 # Each board has its own configured world and its own archive, so name the
 # board to build against a different one:
