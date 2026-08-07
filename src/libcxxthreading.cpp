@@ -565,11 +565,18 @@ void StartCooperativeThread(ThreadRecord *pRecord)
 // task does the constructing. One request outstanding at a time, which is
 // ample: creating a thread is a rare event, and the wait for the answer is
 // the ordinary one.
+//
+// BOTH threading surfaces come through here — std::thread from this file and
+// SDL_CreateThread from src/threads.cpp — because there is one reason to need
+// core 0 and it is the same for both. What is posted is a plain function and
+// its argument, so the box knows nothing about either surface's idea of a
+// thread.
 struct alignas(64) CreateBox
 {
     std::atomic<u64> m_nRequested{0};
     std::atomic<u64> m_nServed{0};
-    ThreadRecord    *m_pRecord;
+    void           (*m_pFn)(void *);
+    void            *m_pArg;
 };
 
 CreateBox g_Create;
@@ -579,7 +586,7 @@ std::atomic<unsigned> g_bCreatorUp{0};
 class CLibCXXCreatorTask : public CTask
 {
 public:
-    CLibCXXCreatorTask(void) : CTask(TASK_STACK_SIZE) { SetName("libcxx-create"); }
+    CLibCXXCreatorTask(void) : CTask(TASK_STACK_SIZE) { SetName("thread-create"); }
 
     void Run(void) override
     {
@@ -588,13 +595,38 @@ public:
             const u64 nRequested = g_Create.m_nRequested.load(std::memory_order_acquire);
             if (nRequested > g_Create.m_nServed.load(std::memory_order_relaxed))
             {
-                StartCooperativeThread(g_Create.m_pRecord);
+                g_Create.m_pFn(g_Create.m_pArg);
                 g_Create.m_nServed.store(nRequested, std::memory_order_release);
             }
             CScheduler::Get()->Yield();
         }
     }
 };
+
+// Post one request and wait for it. The wait is SDL2Circle_ThreadWaitSpin, so
+// on the calling core it costs what every other wait in this library costs;
+// the creator, meanwhile, is a scheduler task like any other and the servo
+// keeps its own lap running beside it.
+void PostToCreator(void (*pFn)(void *), void *pArg)
+{
+    g_CreateLock.Acquire();
+
+    g_Create.m_pFn  = pFn;
+    g_Create.m_pArg = pArg;
+    const u64 nSeq = g_Create.m_nRequested.load(std::memory_order_relaxed) + 1;
+    g_Create.m_nRequested.store(nSeq, std::memory_order_release);
+
+    while (g_Create.m_nServed.load(std::memory_order_acquire) < nSeq)
+        WaitABit();
+
+    g_CreateLock.Release();
+}
+
+// What the creator does for a std::thread.
+void create_std_thread(void *pArg)
+{
+    StartCooperativeThread((ThreadRecord *)pArg);
+}
 
 // Core placement. One pending pin request per core, because two cores may
 // each be about to create a thread and neither should be able to take the
@@ -822,7 +854,12 @@ int __libcpp_thread_create(__libcpp_thread_t *__t, void *(*__func)(void *),
         // Off core 0: post the record and let the creator task build the
         // scheduler task. Refusing instead would make std::thread unusable
         // from the very core this library exists to put applications on.
-        if (!g_bCreatorUp.load(std::memory_order_acquire))
+        //
+        // The caller's core is running the application, by definition of who
+        // is making this call, so nothing may be pinned onto it later.
+        SDL2Circle_ClaimCore(SDL2Circle_ThisCore());
+
+        if (!SDL2Circle_ThreadCreateOn0(create_std_thread, pRecord))
         {
             delete pRecord;
             SDL2Circle_Log(From, SDL2CIRCLE_LOG_ERROR,
@@ -831,21 +868,6 @@ int __libcpp_thread_create(__libcpp_thread_t *__t, void *(*__func)(void *),
                            SDL2Circle_ThisCore());
             return EAGAIN;
         }
-
-        // The caller's core is running the application, by definition of who
-        // is making this call, so nothing may be pinned onto it later.
-        SDL2Circle_ClaimCore(SDL2Circle_ThisCore());
-
-        g_CreateLock.Acquire();
-
-        g_Create.m_pRecord = pRecord;
-        const u64 nSeq = g_Create.m_nRequested.load(std::memory_order_relaxed) + 1;
-        g_Create.m_nRequested.store(nSeq, std::memory_order_release);
-
-        while (g_Create.m_nServed.load(std::memory_order_acquire) < nSeq)
-            WaitABit();
-
-        g_CreateLock.Release();
     }
     else
     {
@@ -988,6 +1010,24 @@ void SDL2Circle_ThreadRuntimeInit(void)
 
     new CLibCXXCreatorTask;    // a CTask registers itself with the scheduler
     g_bCreatorUp.store(1, std::memory_order_release);
+}
+
+bool SDL2Circle_ThreadCreateOn0(void (*pFn)(void *), void *pArg)
+{
+    // Already on the core the scheduler belongs to: nothing to post to, and
+    // posting anyway would be a request the caller then waits for the creator
+    // to serve — from inside the very core the creator has to run on.
+    if (SDL2Circle_ThisCore() == 0)
+    {
+        pFn(pArg);
+        return true;
+    }
+
+    if (!g_bCreatorUp.load(std::memory_order_acquire))
+        return false;
+
+    PostToCreator(pFn, pArg);
+    return true;
 }
 
 extern "C" unsigned SDL2Circle_ThreadCoresFree(void)

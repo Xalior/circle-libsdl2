@@ -92,12 +92,33 @@ void  SDL2Circle_FreeTLSBlock(void *pBlock);
 void  SDL2Circle_SetThreadPointer(void *pBlock);
 void *SDL2Circle_GetThreadPointer(void);
 
-// Start the C++ threading runtime's core-0 creator task (src/libcxxthreading.cpp).
-// Idempotent, core 0 only, and a no-op until a scheduler exists. Called from
+// Start the core-0 creator task (src/libcxxthreading.cpp). Idempotent, core 0
+// only, and a no-op until a scheduler exists. Called from
 // SDL2Circle_ArmCoreRuntime and again from SDL2Circle_SplitInit, because a
 // host kernel may arm core 0 before it has a scheduler and the split makes
 // one where there is none.
 void SDL2Circle_ThreadRuntimeInit(void);
+
+// Run fn(arg) on core 0 and wait for it, on the CREATOR TASK rather than on
+// the split's servo (src/libcxxthreading.cpp). Both threading surfaces —
+// std::thread and SDL_CreateThread — start a thread through it, because
+// starting one means constructing a CTask and a CTask registers itself with
+// the scheduler, which belongs to core 0.
+//
+// WHY NOT SDL2Circle_CallOn0, which also runs work on core 0. That mailbox is
+// served by the servo, and the servo is the loop that drains every other
+// core's log ring, pumps USB, feeds the sound device and ticks the hardware.
+// Work handed to it is work core 0 does INSTEAD of all of that, so nothing on
+// its path may block — and the first thing an application does with a new
+// thread is wait for it. The creator is an ordinary scheduler task with one
+// job, so a request that takes its time, or a caller that waits for one, costs
+// the machine nothing.
+//
+// Returns false when there is no creator task — a system with no scheduler,
+// or a host kernel that never armed core 0 — in which case fn has not run. On
+// core 0 it simply calls fn, so one call site serves every core. One request
+// is served at a time; callers queue on a lock of their own.
+bool SDL2Circle_ThreadCreateOn0(void (*fn)(void *), void *arg);
 
 // Cores this library has spoken for, as a bitmask (src/split.cpp): core 0 —
 // the Circle world — always, plus the presentation core and the application

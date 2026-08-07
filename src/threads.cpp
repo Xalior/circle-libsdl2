@@ -21,9 +21,11 @@
 //
 //   Threads                  Circle scheduler tasks. A task is a cooperative
 //                            thread and that is exactly what an application's
-//                            helper thread wants — but the scheduler runs on
-//                            the hardware core only, so a thread can only be
-//                            started from there.
+//                            helper thread wants — but a task registers itself
+//                            with the scheduler while it is being built, so
+//                            the BUILDING has to happen on the hardware core.
+//                            A request from anywhere else is handed to the
+//                            core-0 creator task and waited for.
 //
 // WHAT AN APPLICATION CAN RELY ON.
 //
@@ -36,19 +38,21 @@
 //   core. Waits are for handing work between parties that are really running,
 //   not for idling.
 //
-//   SDL_CreateThread SUCCEEDS ONLY ON THE HARDWARE CORE, and only where a
-//   CScheduler exists. Off it — which is where the application runs when the
-//   host kernel has armed the core split — it fails, sets the error and says
-//   so on the log, because Circle's scheduler may not be touched from another
-//   core and a thread that silently never ran would be worse than one that
-//   never started. An application that needs helper threads either runs on the
-//   hardware core, or does the work in its own main loop.
+//   SDL_CreateThread WORKS FROM ANY CORE, and so do SDL_WaitThread,
+//   SDL_DetachThread and SDL_GetThreadID on what it returns. That matters
+//   because an application that creates its main game thread through SDL — and
+//   several do — runs on the application core by the time it gets there, which
+//   is never core 0 under the split. What it needs is a CScheduler somewhere in
+//   the system; without one there is nothing anywhere for a thread to run on
+//   and the call fails, sets the error and says so on the log.
 //
-//   A thread that does start is cooperative. It runs when something gives up
-//   the core, which the application's per-frame pump and SDL_Delay both do. A
-//   thread that computes without ever calling into SDL or sleeping keeps the
-//   hardware core to itself, and the hardware core is also where the device
-//   servicing lives.
+//   A thread that does start is cooperative AND IT RUNS ON CORE 0, whichever
+//   core asked for it. It runs when something gives up that core, which the
+//   servo's every lap, every wait in this file and SDL_Delay all do. A thread
+//   that computes without ever calling into SDL or sleeping keeps the hardware
+//   core to itself, and the hardware core is also where the device servicing
+//   lives — so a long-running worker created this way is a decision about core
+//   0's time, not free parallelism.
 //
 //   Thread priorities do not exist. Circle's scheduler is round-robin without
 //   them, so SDL_SetThreadPriority reports that it cannot do what was asked
@@ -668,14 +672,30 @@ extern "C" void SDL_TLSCleanup(void)
 // Threads
 // ---------------------------------------------------------------------------
 
+// THE HANDLE, AND WHO FREES IT. The thread runs on core 0 and whoever waits
+// for it or detaches it may be on another core, so the two sides are really
+// concurrent and the handle needs an owner at every instant.
+//
+// One word decides it. Each side sets its own bit — the thread when it ends,
+// the application when it detaches — and reads back what the other side had
+// already set. Whichever side finds the other's bit already there is the last
+// one out and frees the handle. A side that does NOT find it has just handed
+// ownership over and must not touch the handle again, not even to unlock
+// something: on a second core the other side can be inside free() by the next
+// instruction.
+//
+// SDL_WaitThread is the third case and needs no bit. Waiting says the handle
+// is not detached, so the ending thread hands it to the waiter and leaves; the
+// waiter reads the status and frees.
+static const int THREAD_FINISHED = 1;
+static const int THREAD_DETACHED = 2;
+
 struct SDL_Thread
 {
-    SDL_SpinLock       lock;        // guards finished and detached
+    int                state;       // THREAD_*, atomic
     SDL_ThreadFunction fn;
     void              *data;
-    int                status;
-    int                finished;
-    int                detached;
+    int                status;      // written before FINISHED is published
     SDL_threadID       id;
     char               name[64];
 };
@@ -705,21 +725,51 @@ public:
 
         SDL2Circle_TLSRelease((unsigned long)pThread->id);
 
-        SDL_AtomicLock(&pThread->lock);
-        pThread->status   = status;
-        pThread->finished = 1;
-        const int detached = pThread->detached;
-        SDL_AtomicUnlock(&pThread->lock);
+        // The status has to be in memory before the flag that publishes it,
+        // and the release below is what orders the two for a reader on
+        // another core.
+        pThread->status = status;
 
-        // Whoever arrives last frees it: a detached thread has nobody left to
-        // wait for it, so ending is the last event in its life.
-        if (detached)
-            free(pThread);
+        const int prev = __atomic_fetch_or(&pThread->state, THREAD_FINISHED,
+                                           __ATOMIC_ACQ_REL);
+        if (prev & THREAD_DETACHED)
+            free(pThread);          // nobody is waiting; this is the last exit
     }
 
 private:
     SDL_Thread *m_pThread;
 };
+
+// What the core-0 creator task does for an SDL thread: build the task, settle
+// the handle's identity, release it. Nothing here waits, so nothing here can
+// hold the creator up.
+struct SpawnRequest
+{
+    SDL_Thread *thread;
+    unsigned    stack;
+    bool        ok;
+};
+
+void spawn_on0(void *p)
+{
+    SpawnRequest *req = (SpawnRequest *)p;
+
+    CSDLThreadTask *task = new CSDLThreadTask(req->thread, req->stack);
+    if (task == nullptr)
+    {
+        req->ok = false;
+        return;
+    }
+
+    // The task's identity is its object address, which is what SDL_ThreadID
+    // will report from inside it. Setting it before the task is released is
+    // what makes SDL_GetThreadID answer correctly from the very first call —
+    // and setting it here, before the creator publishes the answer, is what
+    // makes that true for a caller on another core too.
+    req->thread->id = (SDL_threadID)(uintptr_t)task;
+    task->Start();
+    req->ok = true;
+}
 
 }   // namespace
 
@@ -736,24 +786,10 @@ extern "C" SDL_Thread *SDL_CreateThreadWithStackSize(SDL_ThreadFunction fn,
 
     const char *label = name != nullptr ? name : "SDLThread";
 
-    // A thread is a Circle scheduler task, and the scheduler belongs to the
-    // hardware core. Saying so is the whole of the honest answer: creating a
-    // task from another core would corrupt the scheduler's own state, and
-    // running the function inline instead would run it before the caller
-    // rather than beside it, which is a different program.
-    if (SDL2Circle_ThisCore() != 0)
-    {
-        SDL2Circle_Log(From, SDL2CIRCLE_LOG_ERROR,
-                       "SDL_CreateThread(\"%s\") refused on core %u: threads "
-                       "are scheduler tasks and the scheduler runs on core 0",
-                       label, SDL2Circle_ThisCore());
-        SDL_SetError("SDL_CreateThread: a thread is a Circle scheduler task "
-                     "and the scheduler runs on the hardware core only; "
-                     "\"%s\" cannot be started from core %u",
-                     label, SDL2Circle_ThisCore());
-        return nullptr;
-    }
-
+    // A thread is a Circle scheduler task, so the system needs a scheduler —
+    // wherever the asking is done from. This is the one refusal left: without
+    // one there is nothing anywhere for the thread to run on, and saying so is
+    // better than a thread that silently never ran.
     if (!CScheduler::IsActive())
     {
         SDL2Circle_Log(From, SDL2CIRCLE_LOG_ERROR,
@@ -777,24 +813,49 @@ extern "C" SDL_Thread *SDL_CreateThreadWithStackSize(SDL_ThreadFunction fn,
     thread->data = data;
     strncpy(thread->name, label, sizeof(thread->name) - 1);
 
-    size_t stack = stacksize != 0 ? stacksize : (size_t)TASK_STACK_SIZE;
+    // HOW BIG A THREAD NOBODY SIZED IS. SDL_CreateThread carries no stack
+    // size, so what an application gets for one is entirely this
+    // implementation's choice, and on every platform SDL normally runs on that
+    // choice is megabytes. Circle's TASK_STACK_SIZE is 32 KB, which is the
+    // right size for a Circle helper task and nowhere near the right size for
+    // application code: the thread an application creates through SDL is
+    // frequently its MAIN thread — the whole game, all its locals and every
+    // library it calls — and a game's own core stack in this project had to be
+    // measured in megabytes for exactly that reason. A megabyte is cheap on
+    // these boards and an application that knows better says so through
+    // SDL_CreateThreadWithStackSize, which is what that entry point is for.
+    const size_t DefaultStack = 0x100000;
+
+    size_t stack = stacksize != 0 ? stacksize : DefaultStack;
     if (stack < (size_t)TASK_STACK_SIZE)
         stack = (size_t)TASK_STACK_SIZE;
     stack = (stack + 15) & ~(size_t)15;
 
-    CSDLThreadTask *task = new CSDLThreadTask(thread, (unsigned)stack);
-    if (task == nullptr)
+    // Constructing the task is what registers it with the scheduler, and the
+    // scheduler is core 0's. On core 0 this builds it here and now; anywhere
+    // else the core-0 creator task builds it and this returns once it has.
+    // Either way the handle is complete before the call returns.
+    SpawnRequest req{thread, (unsigned)stack, false};
+    if (!SDL2Circle_ThreadCreateOn0(spawn_on0, &req))
+    {
+        free(thread);
+        SDL2Circle_Log(From, SDL2CIRCLE_LOG_ERROR,
+                       "SDL_CreateThread(\"%s\") from core %u: the core-0 "
+                       "creator task is not running, so this kernel never "
+                       "armed core 0", label, SDL2Circle_ThisCore());
+        SDL_SetError("SDL_CreateThread: \"%s\" was asked for from core %u and "
+                     "the core-0 creator task that builds threads is not "
+                     "running; the host kernel calls SDL2Circle_ArmCoreRuntime "
+                     "on core 0", label, SDL2Circle_ThisCore());
+        return nullptr;
+    }
+
+    if (!req.ok)
     {
         free(thread);
         SDL_SetError("Out of memory");
         return nullptr;
     }
-
-    // The task's identity is its object address, which is what SDL_ThreadID
-    // will report from inside it. Setting it before the task is released is
-    // what makes SDL_GetThreadID answer correctly from the very first call.
-    thread->id = (SDL_threadID)(uintptr_t)task;
-    task->Start();
 
     return thread;
 }
@@ -810,16 +871,11 @@ extern "C" void SDL_WaitThread(SDL_Thread *thread, int *status)
     if (thread == nullptr)
         return;
 
-    for (;;)
-    {
-        SDL_AtomicLock(&thread->lock);
-        const int finished = thread->finished;
-        SDL_AtomicUnlock(&thread->lock);
-        if (finished)
-            break;
-
+    // Valid on every core. The thread being waited for runs on core 0, so on
+    // core 0 this wait yields to it and elsewhere it spins while core 0 gets
+    // on with it.
+    while (!(__atomic_load_n(&thread->state, __ATOMIC_ACQUIRE) & THREAD_FINISHED))
         SDL2Circle_ThreadWaitSpin();
-    }
 
     if (status != nullptr)
         *status = thread->status;
@@ -832,13 +888,10 @@ extern "C" void SDL_DetachThread(SDL_Thread *thread)
     if (thread == nullptr)
         return;
 
-    SDL_AtomicLock(&thread->lock);
-    const int finished = thread->finished;
-    thread->detached = 1;
-    SDL_AtomicUnlock(&thread->lock);
-
-    if (finished)
-        free(thread);
+    const int prev = __atomic_fetch_or(&thread->state, THREAD_DETACHED,
+                                       __ATOMIC_ACQ_REL);
+    if (prev & THREAD_FINISHED)
+        free(thread);           // it ended first; this is the last exit
 }
 
 extern "C" SDL_threadID SDL_GetThreadID(SDL_Thread *thread)
