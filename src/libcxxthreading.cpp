@@ -590,6 +590,11 @@ public:
 
     void Run(void) override
     {
+        // Circle hands a new task a null thread pointer (see the note in
+        // split.cpp's servo). This task serves thread creation for every
+        // other core and must never be the one that falls over.
+        SDL2Circle_SetThreadPointer(SDL2Circle_AllocTLSBlock());
+
         for (;;)
         {
             const u64 nRequested = g_Create.m_nRequested.load(std::memory_order_acquire);

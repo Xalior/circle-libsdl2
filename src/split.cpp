@@ -856,10 +856,24 @@ extern "C" void SDL2Circle_IOCloseDir(intptr_t dir)
 class CSplitServoTask : public CTask
 {
 public:
-    CSplitServoTask(void) : CTask(TASK_STACK_SIZE * 4) {}
+    CSplitServoTask(void) : CTask(TASK_STACK_SIZE * 4) { SetName("sdl-servo"); }
 
     void Run(void) override
     {
+        // ARM THE THREAD POINTER FIRST, BEFORE ANYTHING ELSE.
+        //
+        // Circle starts every task with TPIDR_EL0 at zero: InitializeRegs
+        // clears the whole register block and never sets it, and the task
+        // switch loads it back verbatim. So until this line runs, every
+        // thread_local this task can reach — newlib's errno among them, which
+        // is on the path of any log line — resolves through a null pointer.
+        // Reading it does not fault reliably; it aliases low memory shared
+        // with every other unarmed task, so it corrupts quietly and stops the
+        // board somewhere else entirely.
+        //
+        // This task never ends, so the block it takes is never given back.
+        SDL2Circle_SetThreadPointer(SDL2Circle_AllocTLSBlock());
+
         for (;;)
         {
             // One lap. Counted before any of the work, so the count says the
@@ -938,10 +952,13 @@ public:
 class CSplitWatchdogTask : public CTask
 {
 public:
-    CSplitWatchdogTask(void) : CTask(TASK_STACK_SIZE) {}
+    CSplitWatchdogTask(void) : CTask(TASK_STACK_SIZE) { SetName("sdl-watchdog"); }
 
     void Run(void) override
     {
+        // Same as the servo: Circle hands a new task a null thread pointer.
+        SDL2Circle_SetThreadPointer(SDL2Circle_AllocTLSBlock());
+
         u64 lastBeat = 0;
         u64 lastChange = CTimer::GetClockTicks64();
         bool dumped = false;
