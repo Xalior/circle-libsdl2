@@ -751,7 +751,26 @@ public:
     {
         SDL_Thread *pThread = m_pThread;
 
+        // EVERY CIRCLE TASK STARTS WITH NO THREAD POINTER. CTask's constructor
+        // memsets the saved register block and the task switch restores
+        // TPIDR_EL0 from it, so a task's first instruction runs with that
+        // register at zero. Unarmed, the first `throw` in this thread reads
+        // the exception globals through a null pointer, and every
+        // thread_local it touches aliases low memory shared with every other
+        // unarmed task — which is mapped on this hardware, so it appears to
+        // work and corrupts instead of faulting.
+        //
+        // std::thread has always been armed here (RunThreadBody in
+        // libcxxthreading.cpp); a thread made through SDL's own API was not,
+        // and an application cannot tell the difference from the outside.
+        void *pPrevious = SDL2Circle_GetThreadPointer();
+        void *pBlock = SDL2Circle_AllocTLSBlock();
+        SDL2Circle_SetThreadPointer(pBlock);
+
         const int status = pThread->fn(pThread->data);
+
+        SDL2Circle_SetThreadPointer(pPrevious);
+        SDL2Circle_FreeTLSBlock(pBlock);
 
         SDL2Circle_TLSRelease((unsigned long)pThread->id);
 
