@@ -1112,38 +1112,35 @@ builds, it links, and it is wrong on hardware.
 So it is not a tuning choice. A world without it does not satisfy this
 library's requirements, whatever else it is configured with.
 
-### The world must give every core a stack a game can use
+### Choosing the stack every core gets
 
-`make deps` configures `KERNEL_STACK_SIZE=0x200000` — 2 MB for each of the
-four cores. Circle's own default is 128 KB.
+The world takes Circle's own default, 128 KB a core. If your application
+needs more, ask for it:
 
-The application core needs it. A software-rendering game engine of the era
-this library exists to run keeps its per-frame working set on the stack:
-TyrQuake's renderer allocates its edge and surface arrays with `alloca` on
-every frame it draws, and its source says plainly that it needs at least a
-megabyte of stack to do so. That figure was written for 32-bit pointers, and
-the same arrays are around 1.7 times the size once every pointer in them is
-eight bytes. At Circle's default the very first frame of real world geometry
-uses more stack than the core owns.
+```sh
+make world CIRCLE_KERNEL_STACK_SIZE=0x200000
+```
 
-Nothing on the machine catches the shortfall. Circle lays the four core
-stacks out one after another with no guard page between them, so a core that
-runs past the bottom of its stack writes into the stack of the core below —
-which, for the application core, is core 0's. A Circle kernel object is a
+How much stack an application needs is the application's to know, and this
+library does not raise it on anyone's behalf.
+
+What is worth knowing when deciding. Circle lays the four core stacks out one
+after another with no guard page between them, so a core that runs past the
+bottom of its stack writes into the stack of the core below — which, for the
+application core under the split, is core 0's. A Circle kernel object is a
 local of `main()`, so it sits at the very top of core 0's stack and is the
-first thing an overflowing application reaches. What you see is a picture
-that corrupts for a frame or two and then a data abort inside a device
-interrupt handler, pointing at code that did nothing wrong.
+first thing an overflow reaches. What you see is a picture that corrupts for
+a frame or two and then a data abort inside a device interrupt handler,
+pointing at code that did nothing wrong.
 
-2 MB a core is that documented megabyte with 64-bit pointers accounted for.
-Four cores costs 8 MB out of the 256 MB reserved below the heap. Raising it
-further is free in the same sense; lowering it is how the fault above comes
-back.
+An engine that keeps its per-frame working set on the stack is the case to
+watch: `alloca` of an array sized for 32-bit pointers grows by about
+1.7 times when every pointer in it is eight bytes.
 
-**A world configured before this was set must be reconfigured and rebuilt.**
-The value is fixed into `Config.mk` at configure time and compiled into the
-world's own startup code, so an existing world keeps the old stacks however
-recently the library was rebuilt against it.
+**A world already configured keeps the stacks it was configured with.** The
+value is fixed into `Config.mk` at configure time and compiled into the
+world's startup code, so changing it means reconfiguring and rebuilding that
+world, however recently the library was rebuilt against it.
 
 ### Choosing the crossing count
 

@@ -10,26 +10,27 @@ followed.
 
 ## vPoC3
 
-### Every core gets a 2 MB stack
+### The stack a world gives each core can be asked for
 
-**Consumers must act.** `make deps` now configures a world with
-`KERNEL_STACK_SIZE=0x200000` instead of leaving Circle's 128 KB default in
-place. The value is fixed into the world at configure time, so a world
-configured before this change keeps the old stacks no matter how recently the
-library was rebuilt against it: reconfigure the world and rebuild it.
+`make world CIRCLE_KERNEL_STACK_SIZE=<bytes>` configures it. The default is
+Circle's own 128 KB and this library does not raise it for anybody — how much
+stack an application needs is the application's to know.
 
-128 KB is not enough to run a game. A software-rendering engine of the era
-this library targets keeps its per-frame working set on the stack — TyrQuake
-allocates its edge and surface arrays with `alloca` on every frame it draws,
-and needs more than 128 KB to do it before any other consideration.
-
-The failure it produced is worth knowing, because nothing about it points at
-a stack. Circle's four core stacks sit next to each other with no guard page,
-so the application core ran off the bottom of its own and into core 0's,
+The failure that motivates the knob is worth knowing, because nothing about
+it points at a stack. Circle's four core stacks sit next to each other with
+no guard page, so a core that runs off the bottom of its own writes into the
+next one down — under the split, the application core's neighbour is core 0,
 where the host kernel object lives as a local of `main()`. The picture
-corrupted for a frame or two, then a DMA interrupt handler on core 0
-dereferenced a pointer the game had written over, and the board took a data
-abort in Circle code that had done nothing wrong.
+corrupts for a frame or two, then a device interrupt handler on core 0
+dereferences a pointer the application overwrote, and the board takes a data
+abort in Circle code that did nothing wrong.
+
+An engine that `alloca`s its per-frame working set is the case to watch: an
+array sized for 32-bit pointers is around 1.7 times larger when every pointer
+in it is eight bytes.
+
+The value is fixed into the world at configure time, so changing it means
+reconfiguring and rebuilding that world.
 
 ### SDL has one framebuffer, and every frame is drawn into it
 
