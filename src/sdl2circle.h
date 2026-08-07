@@ -151,35 +151,23 @@ void SDL2Circle_HeartbeatBump(void);
 // Presentation: SDL_RenderPresent posts a frame (command list + target
 // framebuffer half); the presentation worker executes it and flips.
 //
-// TWO DIFFERENT LIMITS, and keeping them apart is the whole of how the
-// crossing is tuned.
+// TWO NUMBERS, one a fixed capacity and one the knob.
 //
-//   RECORD_MAX_CMDS   how many draw calls the recorder can hold before it
-//                     gives up and paints instead. It is a property of the
-//                     recorder and never changes. Recording is also what
-//                     lets a finished frame be RECOGNISED — a clear plus one
-//                     opaque blit is the whole picture already, sitting in
-//                     the application's own texture, and spotting that is
-//                     what saves painting it again. Recognising needs a
-//                     couple of recorded commands, nothing like this many.
+//   RECORD_MAX_CMDS   how many commands the frame mailbox holds. It is the
+//                     size of a fixed array in coherent memory that both
+//                     cores read, so it is a build constant and the hard
+//                     ceiling on the knob below.
 //
 //   PRESENT_MAX_CMDS  how many commands may CROSS to the presentation core
 //                     as a list. This is the knob. A frame whose draw list
 //                     fits within it crosses as a list and is composed on
-//                     the far side; a frame that does not fit crosses as a
-//                     finished picture instead.
+//                     the far side; a frame that does not fit is composed
+//                     into the virtual framebuffer instead, and that
+//                     framebuffer is what crosses.
 //
-// ZERO IS THE INTERESTING END and it is the default: every frame crosses as
-// a picture. It costs nothing extra, because recording still happens and the
-// simple shape is still recognised — the frame that crosses is the
-// application's texture exactly where it already sits, and nothing is
-// painted. Raising the knob moves composition across to the presentation
-// core, frame by frame, up to the recorder's own capacity.
-//
-// They were one value, so a low count starved the recogniser as well as the
-// crossing: at zero the recorder gave up on the first draw call, the simple
-// shape could never be seen, and every frame paid for a full canvas paint it
-// did not need. That is why the knob could only usefully be set high.
+// ZERO IS THE DEFAULT: every frame is composed here and crosses as a
+// picture. Raising the knob moves composition across to the presentation
+// core, frame by frame, up to the mailbox's capacity.
 //
 // Set the knob with `make PRESENT_CMDS=n`. It is baked into the archive and
 // is not part of any installed header, so a consumer's own translation units
