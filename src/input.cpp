@@ -227,9 +227,8 @@ bool InReport(const RawReport &r, unsigned char key)
 // --- Debug UART key injection ------------------------------------------------
 // Active only when --rapi-debug-uart is stamped into the boot argument block;
 // the serial device it reads is the library's own to find. A serial console
-// drives the emulated
-// keyboard so the bench can dismiss a +3 Loader, type a C64 LOAD"...", or
-// unlock MAME's UI (Scroll Lock) and open its menu (Tab).
+// drives the emulated keyboard so the bench can dismiss a +3 Loader, type a
+// C64 LOAD"...", or unlock MAME's UI (Scroll Lock) and open its menu (Tab).
 //
 // The wire format is a LINE-ORIENTED macro language (one command per '\n'):
 //
@@ -270,6 +269,7 @@ bool InReport(const RawReport &r, unsigned char key)
 // keyboard's for the same reason: a click that a per-frame scan can miss is
 // worse than no click at all, so tap goes through the hold queue while
 // down/up post immediately.
+//
 // The device injection reads from: whatever the library found for itself, or
 // whatever a kernel lent it through SDL2Circle_SetInjectSerial.
 CSerialDevice *s_injectSerial = nullptr;
