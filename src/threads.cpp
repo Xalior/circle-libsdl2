@@ -186,6 +186,14 @@ extern "C" void *SDL_AtomicGetPtr(void **a)
 
 void SDL2Circle_ThreadWaitSpin(void)
 {
+    // Core 0 pumps too, and it must. Without the split there is no servo to
+    // feed the device silence, so the ONLY thing that ever feeds it is
+    // SDL_PumpEvents — and a wait on core 0 is a wait with the application's
+    // own loop stopped. The pump decides who may produce and returns at once
+    // on a core that may not, so this costs a comparison where it does not
+    // apply and prevents a deadlock where it does.
+    SDL2Circle_AudioPump();
+
     if (SDL2Circle_ThisCore() == 0 && CScheduler::IsActive())
     {
         SDL2CirclePerfScope perf(SDL2CIRCLE_PERF_YIELD);
@@ -767,7 +775,24 @@ public:
         void *pBlock = SDL2Circle_AllocTLSBlock();
         SDL2Circle_SetThreadPointer(pBlock);
 
-        const int status = pThread->fn(pThread->data);
+        // A THREAD THAT THROWS STILL HAS TO FINISH. Nothing but this task can
+        // publish THREAD_FINISHED, so an exception escaping here would leave
+        // SDL_WaitThread spinning for the life of the board, and the board
+        // would look hung with no fault reported anywhere. Whoever waits gets
+        // the thread back with a failing status instead.
+        int status;
+        try
+        {
+            status = pThread->fn(pThread->data);
+        }
+        catch (...)
+        {
+            SDL2Circle_Log("sdl2thread", SDL2CIRCLE_LOG_ERROR,
+                           "thread \"%s\" ended by an exception it did not "
+                           "catch; SDL_WaitThread will report -1",
+                           pThread->name[0] ? pThread->name : "?");
+            status = -1;
+        }
 
         SDL2Circle_SetThreadPointer(pPrevious);
         SDL2Circle_FreeTLSBlock(pBlock);
@@ -923,8 +948,31 @@ extern "C" void SDL_WaitThread(SDL_Thread *thread, int *status)
     // Valid on every core. The thread being waited for runs on core 0, so on
     // core 0 this wait yields to it and elsewhere it spins while core 0 gets
     // on with it.
+    //
+    // AND IT SAYS SO WHEN IT DOES NOT END. This wait can only be ended by the
+    // thread task publishing THREAD_FINISHED, and nothing else in the system
+    // can do it — so if that thread never finishes, this spins for the life of
+    // the board in perfect silence. Every other cross-core wait in this
+    // library names what it is waiting for after a few seconds; this one used
+    // to be the exception, and an unexplained board is exactly the cost of
+    // that. Once, not repeatedly: the point is to name the wait, not to fill
+    // the console with it.
+    const u64 started = CTimer::GetClockTicks64();
+    bool reported = false;
     while (!(__atomic_load_n(&thread->state, __ATOMIC_ACQUIRE) & THREAD_FINISHED))
+    {
+        if (!reported && CTimer::GetClockTicks64() - started >= 5000000)
+        {
+            reported = true;
+            SDL2Circle_Log("sdl2thread", SDL2CIRCLE_LOG_ERROR,
+                           "SDL_WaitThread(\"%s\") has waited 5s on core %u — "
+                           "that thread runs on core 0 and has not finished; "
+                           "if it threw, it never will",
+                           thread->name[0] ? thread->name : "?",
+                           SDL2Circle_ThisCore());
+        }
         SDL2Circle_ThreadWaitSpin();
+    }
 
     if (status != nullptr)
         *status = thread->status;
