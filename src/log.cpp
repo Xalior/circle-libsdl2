@@ -108,10 +108,15 @@ LogRing g_rings[LOG_MAX_CORES];
 
 // Partial output waiting for its end of line, one per core. Only ever
 // touched by the core it belongs to.
+//
+// The text is one byte longer than the longest line it may hold. A line that
+// reaches LOG_LINE_MAX characters without a newline is flushed by length, and
+// terminating it writes at index LOG_LINE_MAX — which without the extra byte
+// is one past the end, landing in the next core's buffer.
 struct LineBuffer
 {
     unsigned len;
-    char text[LOG_LINE_MAX];
+    char text[LOG_LINE_MAX + 1];
 };
 
 LineBuffer g_lines[LOG_MAX_CORES];
