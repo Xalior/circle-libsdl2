@@ -3297,8 +3297,20 @@ extern "C" SDL_Texture *SDL_CreateTextureFromSurface(SDL_Renderer *ren,
 
     // SDL carries the surface's blending across to the texture, so a surface
     // that blended goes on blending once it is one.
+    //
+    // A COLOUR KEY OVERRIDES THAT, and it has to. A key is not a blend mode:
+    // a surface may carry one while its own blend mode says NONE, which is
+    // what SDL_SetColorKey leaves behind and what an image loaded from a
+    // paletted file therefore has. The key became per-pixel alpha in the
+    // conversion above, and a texture drawn with blending off would put those
+    // transparent pixels on screen as opaque black — a sprite in a black box,
+    // erasing whatever it was meant to sit in front of. So a keyed surface
+    // makes a blending texture, as SDL2 does.
     SDL_BlendMode blend = SDL_BLENDMODE_NONE;
-    SDL_GetSurfaceBlendMode(surf, &blend);
+    if (SDL_HasColorKey(surf) == SDL_TRUE)
+        blend = SDL_BLENDMODE_BLEND;
+    else
+        SDL_GetSurfaceBlendMode(surf, &blend);
     SDL_SetTextureBlendMode(tex, blend);
 
     Uint8 alpha = 255;

@@ -16,11 +16,19 @@
 // in this library produces or consumes them, and describing them here would
 // be describing something no code path can act on.
 //
-// Format records are shared and reference-counted, exactly as SDL2 does it:
-// SDL_AllocFormat returns the one record for a given format enum with its
-// count raised, and SDL_FreeFormat lowers it. Surfaces therefore cost no
-// format storage of their own, and an application that allocates the same
-// format in a loop is not allocating anything.
+// Format records for the PACKED formats are shared and reference-counted,
+// exactly as SDL2 does it: SDL_AllocFormat returns the one record for a
+// given format enum with its count raised, and SDL_FreeFormat lowers it.
+// Surfaces therefore cost no format storage of their own, and an
+// application that allocates the same format in a loop is not allocating
+// anything.
+//
+// AN INDEXED FORMAT IS NEVER SHARED, because the palette lives in the format
+// record and a palette belongs to ONE picture. Two 8-bit surfaces sharing a
+// record share a palette, so making the second one — which installs a fresh
+// palette of its own — silently repaints the first in whatever colours the
+// new palette holds. Nothing warns and nothing fails; the picture simply
+// comes out in the wrong colours, or in none at all.
 //
 #include "pixels.h"
 #include "sdl2circle.h"
@@ -323,12 +331,22 @@ static SDL_PixelFormat *s_format_list = nullptr;
 
 extern "C" SDL_PixelFormat *SDL_AllocFormat(Uint32 pixel_format)
 {
-    for (SDL_PixelFormat *f = s_format_list; f != nullptr; f = f->next)
+    // An indexed format carries a palette, and a palette describes one
+    // picture. Handing two surfaces the same record would hand them the same
+    // palette: creating the second surface installs a new palette in the
+    // record they share, and the first surface's colours are gone. So an
+    // indexed caller gets a private record, and it never joins the list —
+    // which is what SDL2 does too, as any program holding two paletted
+    // surfaces at once demonstrates.
+    if (!SDL_ISPIXELFORMAT_INDEXED(pixel_format))
     {
-        if (f->format == pixel_format)
+        for (SDL_PixelFormat *f = s_format_list; f != nullptr; f = f->next)
         {
-            f->refcount++;
-            return f;
+            if (f->format == pixel_format)
+            {
+                f->refcount++;
+                return f;
+            }
         }
     }
 
@@ -343,8 +361,13 @@ extern "C" SDL_PixelFormat *SDL_AllocFormat(Uint32 pixel_format)
         free(format);
         return nullptr;
     }
-    format->next  = s_format_list;
-    s_format_list = format;
+    // Only a shareable record goes on the list, so a later caller asking for
+    // the same indexed format never finds this one.
+    if (!SDL_ISPIXELFORMAT_INDEXED(pixel_format))
+    {
+        format->next  = s_format_list;
+        s_format_list = format;
+    }
     return format;
 }
 
@@ -358,6 +381,8 @@ extern "C" void SDL_FreeFormat(SDL_PixelFormat *format)
     if (--format->refcount > 0)
         return;
 
+    // A private indexed record was never listed, so this walk simply finds
+    // nothing and the record is freed on its own.
     SDL_PixelFormat **link = &s_format_list;
     while (*link != nullptr)
     {
