@@ -368,6 +368,50 @@ void SDL2Circle_PresentPost(const SDL2CirclePresentCmd *cmds, unsigned ncmds,
     publish();
 }
 
+// ---------------------------------------------------------------------------
+// Which posted frame the worker has finished READING
+//
+// A texture's pixel store is handed to the worker as a raw pointer inside a
+// posted command, so the store cannot be written again until the worker has
+// read the last frame that pointed at it. These two numbers are what makes
+// that decidable from the application core:
+//
+//   posted  the sequence of the last frame handed over
+//   acked   the sequence of the last frame the worker has finished reading
+//
+// The worker publishes `ack` immediately after the scale and before any
+// output work, so it means exactly "everything the poster owns has been
+// read" — which is the question a store needs answered, and no more.
+//
+// A store recorded into the frame still being BUILT carries the sequence
+// that frame will get once it is posted, which is greater than `posted`.
+// Nothing is reading that store, and the comparison in texture_write_buffer
+// relies on being able to tell those two states apart.
+// ---------------------------------------------------------------------------
+
+u64 SDL2Circle_PresentPostedSeq(void)
+{
+    return g_frame.seq.load(std::memory_order_relaxed);
+}
+
+u64 SDL2Circle_PresentAckedSeq(void)
+{
+    return g_frame.ack.load(std::memory_order_acquire);
+}
+
+void SDL2Circle_PresentWaitAck(u64 seq)
+{
+    if (!g_split.load(std::memory_order_acquire))
+        return;
+    SDL2CirclePerfScope wait(SDL2CIRCLE_PERF_WAIT);
+    StallWatch watch("the presentation core to release a texture buffer");
+    while (g_frame.ack.load(std::memory_order_acquire) < seq)
+    {
+        wfe();
+        watch.tick();
+    }
+}
+
 void SDL2Circle_PresentQuiesce(void)
 {
     if (!g_split.load(std::memory_order_acquire))

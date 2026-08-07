@@ -151,7 +151,18 @@ struct SDL_Texture
                        // renders into one buffer while the presentation
                        // worker still reads the frame in flight
     u8 widx;           // buffer the app writes next
-    u8 posted;         // buffer referenced by the last recorded COPY (0xFF none)
+
+    // WHICH FRAME EACH STORE IS SPOKEN FOR BY.
+    //
+    // A recorded copy hands the presentation core a RAW POINTER into one of
+    // these stores, so the store must not be written again until that core
+    // has finished reading the frame holding the pointer. busy_seq[i] is the
+    // frame sequence of the copy that last referenced store i; 0 means never.
+    //
+    // Tracking the buffer that was last POSTED is not the same question and
+    // is what went wrong before: it says where the writer went, not what the
+    // reader still holds.
+    u64 busy_seq[2];
     int pitch;         // stored pitch, always w * 4
 
     // Only for a texture whose format is not the stored one.
@@ -172,44 +183,6 @@ struct SDL_Texture
     SDL_ScaleMode scale_mode;
     void *userdata;
 };
-
-// TEMPORARY DIAGNOSTIC — remove once the stride question is settled.
-//
-// A cheap fingerprint of a pixel store: one word from the start of sixteen
-// evenly spaced rows. Taken on the writing core after a conversion and again
-// on the presenting core before the scale, it answers whether the two are
-// looking at the same bytes — which pointer equality alone cannot, because
-// the same address can hold different data on two cores if a write has not
-// become visible.
-static u32 diag_fingerprint(const u8 *base, int pitch, int rows)
-{
-    if (!base || pitch <= 0 || rows <= 0)
-        return 0;
-    u32 f = 2166136261u;
-    for (int k = 0; k < 16; k++)
-    {
-        const int y = (int)(((s64)k * rows) / 16);
-        u32 w;
-        memcpy(&w, base + (size_t)y * pitch, sizeof(w));
-        f = (f ^ w) * 16777619u;
-    }
-    return f;
-}
-
-static void diag_tex(const char *what, const SDL_Texture *t, int extra_pitch)
-{
-    static unsigned seen = 0;
-    if (seen >= 16)
-        return;
-    seen++;
-    SDL2Circle_Log("STRIDE", SDL2CIRCLE_LOG_NOTICE,
-                   "%s: tex %dx%d fmt=0x%08x store_pitch=%d app_bpp=%d "
-                   "staging_pitch=%d native=%d | pitch_in_out=%d",
-                   what, t->w, t->h, (unsigned)t->format, t->pitch,
-                   t->app_bpp, t->staging_pitch,
-                   t->format == SDL_PIXELFORMAT_ARGB8888 ? 1 : 0,
-                   extra_pitch);
-}
 
 // The one fullscreen window (ID 1). Display-mode queries answer with its
 // size once it exists, and with the panel default before that.
@@ -694,21 +667,6 @@ static void scale_copy(const SDL2CirclePresentCmd *cmd, u8 *dst, unsigned dpitch
     if (dw > SCALE_MAP_MAX || dh > SCALE_MAP_MAX)
         return;                          // beyond any real scanout
     build_scale_maps(sw, sh, dw, dh);
-    {
-        static unsigned seen = 0;
-        if (seen < 3)
-        {
-            seen++;
-            SDL2Circle_Log("STRIDE2", SDL2CIRCLE_LOG_NOTICE,
-                           "scale: src %dx%d srcpitch=%d -> dst %dx%d at +%d+%d "
-                           "dpitch=%u xrep=%d | xmap[0]=%d xmap[%d]=%d "
-                           "ymap[0]=%d ymap[%d]=%d",
-                           sw, sh, cmd->srcpitch, dw, dh, cmd->dx, cmd->dy,
-                           dpitch, (dw % sw == 0) ? dw / sw : 0,
-                           (int)s_xmap[0], dw - 1, (int)s_xmap[dw - 1],
-                           (int)s_ymap[0], dh - 1, (int)s_ymap[dh - 1]);
-        }
-    }
 
     // An integer horizontal ratio replicates each source pixel a fixed
     // number of times, which needs no table lookup at all — the common
@@ -824,24 +782,6 @@ static void exec_into(const SDL2CirclePresentCmd *cmd, u8 *dst0, unsigned dpitch
     // extents are the unscaled blit below, unchanged to the byte.
     const int sw = cmd->sw > 0 ? cmd->sw : cmd->w;
     const int sh = cmd->sh > 0 ? cmd->sh : cmd->h;
-    {
-        static unsigned seen = 0;
-        if (seen < 6)
-        {
-            seen++;
-            SDL2Circle_Log("STRIDE2", SDL2CIRCLE_LOG_NOTICE,
-                           "exec COPY: cmd sw/sh=%d/%d w/h=%d/%d at +%d+%d "
-                           "srcpitch=%d dpitch=%u src=%lx -> %s",
-                           cmd->sw, cmd->sh, cmd->w, cmd->h, cmd->dx, cmd->dy,
-                           cmd->srcpitch, dpitch,
-                           (unsigned long)(uintptr)cmd->src,
-                           (sw != cmd->w || sh != cmd->h) ? "SCALE" : "1:1 rowcopy");
-            SDL2Circle_Log("STRIDE2", SDL2CIRCLE_LOG_NOTICE,
-                           "exec COPY fp=%08x (over %d rows of %d)",
-                           (unsigned)diag_fingerprint(cmd->src, cmd->srcpitch, sh),
-                           sh, cmd->srcpitch);
-        }
-    }
     if (sw != cmd->w || sh != cmd->h)
     {
         scale_copy(cmd, dst, dpitch, sw, sh);
@@ -892,21 +832,6 @@ void SDL2Circle_VideoExecCmd(const SDL2CirclePresentCmd *cmd, unsigned half)
 {
     if (!s_fb_base)
         return;
-    {
-        static unsigned seen = 0;
-        if (seen < 2)
-        {
-            seen++;
-            SDL2Circle_Log("STRIDE2", SDL2CIRCLE_LOG_NOTICE,
-                           "present target: shadow=%d shadow_pitch=%u "
-                           "shadow_bytes=%u stage=%d stage_pitch=%u "
-                           "fb_pitch=%u fb %dx%d halves=%u half=%u",
-                           s_shadow ? 1 : 0, s_shadow_pitch,
-                           (unsigned)s_shadow_bytes, s_stage ? 1 : 0,
-                           s_stage_pitch, s_fb_pitch, s_fb_w, s_fb_h,
-                           s_fb_halves, half);
-        }
-    }
     if (s_shadow)
         exec_into(cmd, s_shadow, s_shadow_pitch);
     else if (s_stage)
@@ -1876,12 +1801,6 @@ extern "C" SDL_Surface *SDL_GetWindowSurface(SDL_Window *win)
     SDL_FreeSurface(s_window_surface);
     s_window_surface = SDL_CreateRGBSurfaceWithFormat(0, win->w, win->h, 32,
                                                       SDL_PIXELFORMAT_ARGB8888);
-    if (s_window_surface)
-        SDL2Circle_Log("STRIDE", SDL2CIRCLE_LOG_NOTICE,
-                       "GetWindowSurface: %dx%d fmt=0x%08x pitch=%d",
-                       s_window_surface->w, s_window_surface->h,
-                       (unsigned)s_window_surface->format->format,
-                       s_window_surface->pitch);
     return s_window_surface;
 }
 
@@ -2254,7 +2173,7 @@ extern "C" SDL_Texture *SDL_CreateTexture(SDL_Renderer *, Uint32 format,
     tex->pixels[0] = (u8 *)malloc((size_t)tex->pitch * h);
     tex->pixels[1] = nullptr;   // allocated on first split-mode reuse
     tex->widx = 0;
-    tex->posted = 0xFF;
+    tex->busy_seq[0] = tex->busy_seq[1] = 0;
     tex->app_bpp = app_bpp;
     tex->staging = nullptr;
     tex->staging_pitch = 0;
@@ -2265,7 +2184,6 @@ extern "C" SDL_Texture *SDL_CreateTexture(SDL_Renderer *, Uint32 format,
     tex->colormod_r = tex->colormod_g = tex->colormod_b = 255;
     tex->scale_mode = SDL_ScaleModeNearest;
     tex->userdata = nullptr;
-    diag_tex("CreateTexture", tex, -1);
 
     if (tex->pixels[0] == nullptr)
     {
@@ -2291,18 +2209,54 @@ static inline bool texture_is_native(const SDL_Texture *tex)
 // provably enough. MAME's software path redraws the full texture each
 // frame; the partial-update path still copies the stable content across
 // first.
+// Whether the presentation core may still be reading a store.
+//
+// Busy means the store was referenced by a frame that HAS been posted and
+// has NOT yet been acknowledged. A store recorded into the frame still being
+// built carries a sequence above the posted one: nothing is reading it, and
+// treating it as busy would deadlock an application that draws to the same
+// texture twice before presenting.
+static bool texture_store_busy(const SDL_Texture *tex, u8 i)
+{
+    const u64 b = tex->busy_seq[i];
+    if (b == 0)
+        return false;
+    return b > SDL2Circle_PresentAckedSeq() && b <= SDL2Circle_PresentPostedSeq();
+}
+
+// Hand back a store the application may write. Under the core split a posted
+// frame holds a raw pointer into one of these, and the worker reads it for as
+// long as its scale runs — so the one thing this must never do is return the
+// store that frame is reading. It used to, whenever the two-value flip
+// disagreed with what was actually in flight, and the result was a frame torn
+// between two pictures: every pitch correct, every pixel real, in the wrong
+// places.
 static u8 *texture_write_buffer(SDL_Texture *tex, bool preserve)
 {
-    if (SDL2Circle_SplitActive() && tex->posted == tex->widx)
+    if (!SDL2Circle_SplitActive())
+        return tex->pixels[tex->widx];
+
+    if (!texture_store_busy(tex, tex->widx))
+        return tex->pixels[tex->widx];      // still ours; no copy needed
+
+    const u8 next = tex->widx ^ 1;
+    if (!tex->pixels[next])
+        tex->pixels[next] = (u8 *)malloc((size_t)tex->pitch * tex->h);
+
+    // The second store may not exist — it is allocated on first need, and the
+    // earliest frames run before there is one — and it may itself be spoken
+    // for. Either way the answer is to WAIT for the worker to release the
+    // store rather than write into what is being read.
+    if (!tex->pixels[next] || texture_store_busy(tex, next))
     {
-        u8 next = tex->widx ^ 1;
-        if (!tex->pixels[next])
-            tex->pixels[next] = (u8 *)malloc((size_t)tex->pitch * tex->h);
-        if (preserve)
-            memcpy(tex->pixels[next], tex->pixels[tex->widx],
-                   (size_t)tex->pitch * tex->h);
-        tex->widx = next;
+        SDL2Circle_PresentWaitAck(tex->busy_seq[tex->widx]);
+        return tex->pixels[tex->widx];
     }
+
+    if (preserve)
+        memcpy(tex->pixels[next], tex->pixels[tex->widx],
+               (size_t)tex->pitch * tex->h);
+    tex->widx = next;
     return tex->pixels[tex->widx];
 }
 
@@ -2336,28 +2290,9 @@ extern "C" int SDL_UpdateTexture(SDL_Texture *tex, const SDL_Rect *rect,
     if (w == 0 || h == 0)
         return 0;
 
-    diag_tex("UpdateTexture", tex, pitch);
-
     bool partial = (x != 0) || (y != 0) || (w != tex->w) || (h != tex->h);
-    const u8 prev_widx = tex->widx;
-    const u8 prev_posted = tex->posted;
     u8 *dst = texture_write_buffer(tex, partial)
               + (size_t)y * tex->pitch + (size_t)x * 4;
-    {
-        static unsigned seen = 0;
-        if (seen < 4)
-        {
-            seen++;
-            SDL2Circle_Log("STRIDE2", SDL2CIRCLE_LOG_NOTICE,
-                           "UpdateTexture buf: partial=%d widx %d->%d posted=%d "
-                           "p0=%lx p1=%lx dst=%lx rect=%dx%d+%d+%d",
-                           partial ? 1 : 0, (int)prev_widx, (int)tex->widx,
-                           (int)prev_posted,
-                           (unsigned long)(uintptr)tex->pixels[0],
-                           (unsigned long)(uintptr)tex->pixels[1],
-                           (unsigned long)(uintptr)dst, w, h, x, y);
-        }
-    }
 
     if (texture_is_native(tex))
     {
@@ -2371,21 +2306,8 @@ extern "C" int SDL_UpdateTexture(SDL_Texture *tex, const SDL_Rect *rect,
         return 0;
     }
 
-    const int rc = SDL_ConvertPixels(w, h, tex->format, pixels, pitch,
-                                     SDL_PIXELFORMAT_ARGB8888, dst, tex->pitch);
-    {
-        static unsigned seen = 0;
-        if (seen < 4)
-        {
-            seen++;
-            SDL2Circle_Log("STRIDE2", SDL2CIRCLE_LOG_NOTICE,
-                           "UpdateTexture done: rc=%d store=%lx fp=%08x",
-                           rc, (unsigned long)(uintptr)tex->pixels[tex->widx],
-                           (unsigned)diag_fingerprint(tex->pixels[tex->widx],
-                                                      tex->pitch, tex->h));
-        }
-    }
-    return rc;
+    return SDL_ConvertPixels(w, h, tex->format, pixels, pitch,
+                             SDL_PIXELFORMAT_ARGB8888, dst, tex->pitch);
 }
 
 extern "C" int SDL_UpdateYUVTexture(SDL_Texture *, const SDL_Rect *,
@@ -2521,7 +2443,6 @@ extern "C" int SDL_LockTexture(SDL_Texture *tex, const SDL_Rect *rect,
     {
         *pixels = buf + (size_t)area.y * tex->pitch + (size_t)area.x * 4;
         *pitch  = tex->pitch;
-        diag_tex("LockTexture(native)", tex, *pitch);
         tex->locked_rect = area;
         tex->locked = true;
         return 0;
@@ -2544,7 +2465,6 @@ extern "C" int SDL_LockTexture(SDL_Texture *tex, const SDL_Rect *rect,
     *pixels = tex->staging + (size_t)area.y * tex->staging_pitch
             + (size_t)area.x * tex->app_bpp;
     *pitch  = tex->staging_pitch;
-    diag_tex("LockTexture(staging)", tex, *pitch);
     tex->locked_rect = area;
     tex->locked = true;
     return 0;
@@ -2670,27 +2590,12 @@ extern "C" int SDL_RenderCopy(SDL_Renderer *ren, SDL_Texture *tex,
     cmd.sh = sh;
     cmd.blend = (tex->blend == SDL_BLENDMODE_BLEND) ? 1 : 0;
     cmd.alphamod = tex->alphamod;
-    {
-        static unsigned seen = 0;
-        if (seen < 4)
-        {
-            seen++;
-            SDL2Circle_Log("STRIDE", SDL2CIRCLE_LOG_NOTICE,
-                           "RenderCopy cmd: src=%dx%d srcpitch=%d dst=%dx%d "
-                           "tex fmt=0x%08x store_pitch=%d | widx=%d src=%lx "
-                           "p0=%lx p1=%lx",
-                           cmd.sw, cmd.sh, cmd.srcpitch, cmd.w, cmd.h,
-                           (unsigned)tex->format, tex->pitch,
-                           (int)tex->widx, (unsigned long)(uintptr)cmd.src,
-                           (unsigned long)(uintptr)tex->pixels[0],
-                           (unsigned long)(uintptr)tex->pixels[1]);
-        }
-    }
     emit_cmd(ren, cmd);
 
-    // This buffer now belongs to the frame being assembled; the next write
-    // to the texture switches buffers while it is (or may be) in flight.
-    tex->posted = tex->widx;
+    // This store is now spoken for by the frame being assembled, which will
+    // be posted as the next sequence. Until the worker acknowledges that
+    // frame, nothing may write here.
+    tex->busy_seq[tex->widx] = SDL2Circle_PresentPostedSeq() + 1;
     return 0;
 }
 

@@ -176,6 +176,12 @@ void SDL2Circle_PresentPost(const SDL2CirclePresentCmd *cmds, unsigned ncmds,
 // first. A no-op without the split, where presentation is in-band anyway.
 void SDL2Circle_PresentQuiesce(void);
 
+// Frame sequences, for deciding when a posted texture store may be written
+// again. See the comment above their definitions in split.cpp.
+u64 SDL2Circle_PresentPostedSeq(void);
+u64 SDL2Circle_PresentAckedSeq(void);
+void SDL2Circle_PresentWaitAck(u64 seq);
+
 // video.cpp services for the worker: execute one command into a framebuffer
 // half; page-flip to a half.
 void SDL2Circle_VideoExecCmd(const SDL2CirclePresentCmd *cmd, unsigned half);

@@ -28,24 +28,6 @@
 #include <cstdlib>
 #include <cstring>
 
-// ---------------------------------------------------------------------------
-// TEMPORARY DIAGNOSTIC — remove once the stride question is settled.
-//
-// Reports the real numbers the first few times a surface is made, so a
-// pitch that disagrees with a format can be seen rather than reasoned about.
-// ---------------------------------------------------------------------------
-static void diag_surface(const char *what, int w, int h, Uint32 fmt,
-                         int bpp, int pitch)
-{
-    static unsigned seen = 0;
-    if (seen >= 12)
-        return;
-    seen++;
-    SDL2Circle_Log("STRIDE", SDL2CIRCLE_LOG_NOTICE,
-                   "%s: %dx%d fmt=0x%08x bpp=%d pitch=%d (w*bpp=%d)",
-                   what, w, h, (unsigned)fmt, bpp, pitch, w * bpp);
-}
-
 static SDL_Surface *surface_alloc(int width, int height, SDL_PixelFormat *format,
                                   void *pixels, int pitch, bool owns_pixels)
 {
@@ -126,7 +108,6 @@ extern "C" SDL_Surface *SDL_CreateRGBSurfaceWithFormat(Uint32 flags, int width,
         free(pixels);
         return nullptr;
     }
-    diag_surface("CreateRGBSurfaceWithFormat", width, height, format_enum, bpp, pitch);
 
     // An indexed surface gets a palette of its own straight away, as SDL2
     // does, so an application may set colours without allocating one first.
@@ -203,8 +184,6 @@ extern "C" SDL_Surface *SDL_CreateRGBSurfaceWithFormatFrom(void *pixels, int wid
     SDL_Surface *surface = surface_alloc(width, height, format, pixels, pitch, false);
     if (surface == nullptr)
         return nullptr;
-    diag_surface("CreateRGBSurfaceWithFormatFrom", width, height, format_enum,
-                 bpp, pitch);
 
     if (format->BitsPerPixel <= 8 && format->Rmask == 0)
     {
