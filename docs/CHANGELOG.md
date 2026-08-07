@@ -134,6 +134,30 @@ Which framebuffer the firmware granted no longer influences the choice.
 
 Only the default has been measured against a real workload.
 
+### The monotonic clock answers every clock a program can ask for
+
+`clock_gettime` is now served by this library, alongside the wall clock it
+already served.
+
+The C library underneath answers `CLOCK_REALTIME` and `CLOCK_MONOTONIC` and
+refuses every other clock — and its refusal returns without writing the
+timespec it was given. Most callers do not check the return, because a
+monotonic clock is not expected to fail, so they read whatever their own
+stack held; asked twice from the same place, the clock gives the same answer
+both times and appears to have stopped. A loop that waits for the clock to
+advance then never leaves, on whichever core it is on, printing nothing.
+
+The header this library is built against defines `CLOCK_MONOTONIC_RAW`, so
+portable code selects the refused clock in preference to the working one.
+EDuke32's timer calibration does exactly that, and hung its application core
+one line after it announced SDL.
+
+Every clock this board can answer meaningfully now gets an answer: the
+monotonic family and the two CPU-time clocks all read the free-running system
+counter, which nothing here adjusts, slews or suspends. A clock outside that
+set is still refused, but the timespec is zeroed first, so a caller that
+ignores the return reads a defined value instead of its own stack.
+
 ## vPoC2
 
 ### Joysticks and game controllers
