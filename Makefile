@@ -255,22 +255,31 @@ world-fetch: llvm-cache
 	@[ -f $(CIRCLE_STDLIB)/libs/llvm-project/runtimes/CMakeLists.txt ] || \
 		ln -sfn $(CIRCLE_LLVM) $(CIRCLE_STDLIB)/libs/llvm-project
 
-# Every core's stack, including the one an application runs on. Circle's own
-# default, unless a consumer asks for more:
+# Every core's stack, including the one an application runs on: 2 MB, four
+# cores, 8 MB of a board's memory. A consumer that needs more says so:
 #
-#   make world CIRCLE_KERNEL_STACK_SIZE=0x200000
+#   make world CIRCLE_KERNEL_STACK_SIZE=0x400000
 #
-# How much stack an application needs is the application's to know, so the
-# default here is Circle's and this library does not raise it for anybody.
+# 2 MB RATHER THAN CIRCLE'S 128 KB, AND THE SAME FOR EVERY CONSUMER.
 #
-# What is worth knowing when deciding: the stacks are laid out one after
-# another with no guard page between them, so a core that runs off the bottom
-# of its stack writes into the core below's — and under this library's core
-# split that means the application core writing over core 0's, where the host
-# kernel object itself lives, a Circle kernel being a local of main(). The
-# picture corrupts and then a device handler dereferences something the
-# application overwrote, a fault nowhere near the code that caused it.
-CIRCLE_KERNEL_STACK_SIZE ?= 0x20000
+# The stacks are laid out one after another WITH NO GUARD PAGE BETWEEN THEM.
+# A core that runs off the bottom of its stack does not fault: it writes into
+# the core below's. Under this library's core split that is the application
+# core writing over core 0's, where the host kernel object itself lives — a
+# Circle kernel being a local of main(). What is seen is the picture
+# corrupting for a frame, and then a device handler on core 0 dereferencing
+# something the application overwrote, a fault nowhere near the code that
+# caused it and on a core that did nothing wrong.
+#
+# That is why this is not left to each consumer to discover. A too-small
+# stack does not report itself; it reports as a fault somewhere else, days
+# later, in someone else's code. TyrQuake's software renderer allocas its
+# edge and surface arrays every frame — about 198 KB at the engine's own
+# minimum limits on a 64-bit target, and its source says it expects at least
+# a megabyte — so the first frame of real geometry ran a core off the bottom
+# of 128 KB. Nothing about that is exotic; it is an ordinary renderer written
+# for machines with megabytes of stack, which is most of them.
+CIRCLE_KERNEL_STACK_SIZE ?= 0x200000
 
 # COMPILE (isolated per world, safe to run in parallel across boards). Idempotent:
 # skips re-configure when Config.mk is already present.

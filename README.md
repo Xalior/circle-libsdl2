@@ -1112,19 +1112,21 @@ builds, it links, and it is wrong on hardware.
 So it is not a tuning choice. A world without it does not satisfy this
 library's requirements, whatever else it is configured with.
 
-### Choosing the stack every core gets
+### The stack every core gets
 
-The world takes Circle's own default, 128 KB a core. If your application
-needs more, ask for it:
+**Every core gets 2 MB.** Four cores, so 8 MB of the board's memory, and the
+same for every application that uses this library. Circle's own default is
+128 KB a core; this library configures its worlds at 2 MB instead.
+
+If your application needs more than that, ask for it:
 
 ```sh
-make world CIRCLE_KERNEL_STACK_SIZE=0x200000
+make world CIRCLE_KERNEL_STACK_SIZE=0x400000
 ```
 
-How much stack an application needs is the application's to know, and this
-library does not raise it on anyone's behalf.
-
-What is worth knowing when deciding. Circle lays the four core stacks out one
+The reason it is standardised rather than left to each application to
+discover is that **a stack that is too small does not report itself.** Circle
+lays the four core stacks out one
 after another with no guard page between them, so a core that runs past the
 bottom of its stack writes into the stack of the core below — which, for the
 application core under the split, is core 0's. A Circle kernel object is a
@@ -1134,8 +1136,13 @@ a frame or two and then a data abort inside a device interrupt handler,
 pointing at code that did nothing wrong.
 
 An engine that keeps its per-frame working set on the stack is the case to
-watch: `alloca` of an array sized for 32-bit pointers grows by about
-1.7 times when every pointer in it is eight bytes.
+watch, and it is not an exotic one — most renderers written before memory was
+cheap do it. TyrQuake's `alloca`s its edge and surface arrays on every frame
+it draws: about 198 KB at the engine's own minimum limits on a 64-bit target,
+and its source says it expects at least a megabyte. On 128 KB the first frame
+of real geometry ran a core off the bottom of its stack. `alloca` of an array
+sized for 32-bit pointers also grows by about 1.7 times when every pointer in
+it is eight bytes.
 
 **A world already configured keeps the stacks it was configured with.** The
 value is fixed into `Config.mk` at configure time and compiled into the

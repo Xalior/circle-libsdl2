@@ -10,14 +10,16 @@ followed.
 
 ## vPoC3
 
-### The stack a world gives each core can be asked for
+### Every core gets a 2 MB stack
 
-`make world CIRCLE_KERNEL_STACK_SIZE=<bytes>` configures it. The default is
-Circle's own 128 KB and this library does not raise it for anybody — how much
-stack an application needs is the application's to know.
+Circle's own default is 128 KB a core. This library configures its worlds at
+2 MB — four cores, 8 MB of the board's memory — and the same for every
+application that uses it. `make world CIRCLE_KERNEL_STACK_SIZE=<bytes>` still
+sets it, for an application that needs more.
 
-The failure that motivates the knob is worth knowing, because nothing about
-it points at a stack. Circle's four core stacks sit next to each other with
+It is standardised rather than left to each application to ask for because a
+stack that is too small does not report itself, and nothing about how it
+fails points at a stack. Circle's four core stacks sit next to each other with
 no guard page, so a core that runs off the bottom of its own writes into the
 next one down — under the split, the application core's neighbour is core 0,
 where the host kernel object lives as a local of `main()`. The picture
@@ -25,9 +27,12 @@ corrupts for a frame or two, then a device interrupt handler on core 0
 dereferences a pointer the application overwrote, and the board takes a data
 abort in Circle code that did nothing wrong.
 
-An engine that `alloca`s its per-frame working set is the case to watch: an
-array sized for 32-bit pointers is around 1.7 times larger when every pointer
-in it is eight bytes.
+An engine that `alloca`s its per-frame working set is the case to watch, and
+it is a common one. TyrQuake's renderer does it on every frame — about 198 KB
+at the engine's own minimum limits on a 64-bit target, and its source says it
+expects at least a megabyte — so on 128 KB the first frame of real geometry
+ran a core off the bottom of its stack. An array sized for 32-bit pointers is
+also around 1.7 times larger when every pointer in it is eight bytes.
 
 The value is fixed into the world at configure time, so changing it means
 reconfiguring and rebuilding that world.
