@@ -45,10 +45,14 @@
 // ---------------------------------------------------------------------------
 namespace
 {
+// A row holds only what the format enum cannot say for itself: the channel
+// masks and the name. WIDTH IS NEVER WRITTEN HERE. Both widths a format has —
+// its significant bits and the bytes one pixel occupies — are encoded in the
+// enum value and are read back out of it below, so a row cannot disagree with
+// the format it names.
 struct FormatDesc
 {
     Uint32 format;
-    int    bpp;          // BITS per pixel
     Uint32 rmask, gmask, bmask, amask;
     const char *name;
 };
@@ -58,43 +62,43 @@ struct FormatDesc
 // byte first", which reads back as mask 0x0000FF, while the 32-bit rows name
 // a whole word and are endianness-independent as written.
 const FormatDesc s_formats[] = {
-    { SDL_PIXELFORMAT_INDEX1LSB,  1,  0,0,0,0,                                     "SDL_PIXELFORMAT_INDEX1LSB"  },
-    { SDL_PIXELFORMAT_INDEX1MSB,  1,  0,0,0,0,                                     "SDL_PIXELFORMAT_INDEX1MSB"  },
-    { SDL_PIXELFORMAT_INDEX4LSB,  4,  0,0,0,0,                                     "SDL_PIXELFORMAT_INDEX4LSB"  },
-    { SDL_PIXELFORMAT_INDEX4MSB,  4,  0,0,0,0,                                     "SDL_PIXELFORMAT_INDEX4MSB"  },
-    { SDL_PIXELFORMAT_INDEX8,     8,  0,0,0,0,                                     "SDL_PIXELFORMAT_INDEX8"     },
-    { SDL_PIXELFORMAT_RGB332,     8,  0xE0,0x1C,0x03,0x00,                         "SDL_PIXELFORMAT_RGB332"     },
+    { SDL_PIXELFORMAT_INDEX1LSB,  0,0,0,0,                                     "SDL_PIXELFORMAT_INDEX1LSB"  },
+    { SDL_PIXELFORMAT_INDEX1MSB,  0,0,0,0,                                     "SDL_PIXELFORMAT_INDEX1MSB"  },
+    { SDL_PIXELFORMAT_INDEX4LSB,  0,0,0,0,                                     "SDL_PIXELFORMAT_INDEX4LSB"  },
+    { SDL_PIXELFORMAT_INDEX4MSB,  0,0,0,0,                                     "SDL_PIXELFORMAT_INDEX4MSB"  },
+    { SDL_PIXELFORMAT_INDEX8,     0,0,0,0,                                     "SDL_PIXELFORMAT_INDEX8"     },
+    { SDL_PIXELFORMAT_RGB332,     0xE0,0x1C,0x03,0x00,                         "SDL_PIXELFORMAT_RGB332"     },
 
-    { SDL_PIXELFORMAT_XRGB4444,  16,  0x0F00,0x00F0,0x000F,0x0000,                 "SDL_PIXELFORMAT_RGB444"     },
-    { SDL_PIXELFORMAT_XBGR4444,  16,  0x000F,0x00F0,0x0F00,0x0000,                 "SDL_PIXELFORMAT_BGR444"     },
-    { SDL_PIXELFORMAT_ARGB4444,  16,  0x0F00,0x00F0,0x000F,0xF000,                 "SDL_PIXELFORMAT_ARGB4444"   },
-    { SDL_PIXELFORMAT_RGBA4444,  16,  0xF000,0x0F00,0x00F0,0x000F,                 "SDL_PIXELFORMAT_RGBA4444"   },
-    { SDL_PIXELFORMAT_ABGR4444,  16,  0x000F,0x00F0,0x0F00,0xF000,                 "SDL_PIXELFORMAT_ABGR4444"   },
-    { SDL_PIXELFORMAT_BGRA4444,  16,  0x00F0,0x0F00,0xF000,0x000F,                 "SDL_PIXELFORMAT_BGRA4444"   },
+    { SDL_PIXELFORMAT_XRGB4444,   0x0F00,0x00F0,0x000F,0x0000,                 "SDL_PIXELFORMAT_RGB444"     },
+    { SDL_PIXELFORMAT_XBGR4444,   0x000F,0x00F0,0x0F00,0x0000,                 "SDL_PIXELFORMAT_BGR444"     },
+    { SDL_PIXELFORMAT_ARGB4444,   0x0F00,0x00F0,0x000F,0xF000,                 "SDL_PIXELFORMAT_ARGB4444"   },
+    { SDL_PIXELFORMAT_RGBA4444,   0xF000,0x0F00,0x00F0,0x000F,                 "SDL_PIXELFORMAT_RGBA4444"   },
+    { SDL_PIXELFORMAT_ABGR4444,   0x000F,0x00F0,0x0F00,0xF000,                 "SDL_PIXELFORMAT_ABGR4444"   },
+    { SDL_PIXELFORMAT_BGRA4444,   0x00F0,0x0F00,0xF000,0x000F,                 "SDL_PIXELFORMAT_BGRA4444"   },
 
-    { SDL_PIXELFORMAT_XRGB1555,  15,  0x7C00,0x03E0,0x001F,0x0000,                 "SDL_PIXELFORMAT_RGB555"     },
-    { SDL_PIXELFORMAT_XBGR1555,  15,  0x001F,0x03E0,0x7C00,0x0000,                 "SDL_PIXELFORMAT_BGR555"     },
-    { SDL_PIXELFORMAT_ARGB1555,  16,  0x7C00,0x03E0,0x001F,0x8000,                 "SDL_PIXELFORMAT_ARGB1555"   },
-    { SDL_PIXELFORMAT_RGBA5551,  16,  0xF800,0x07C0,0x003E,0x0001,                 "SDL_PIXELFORMAT_RGBA5551"   },
-    { SDL_PIXELFORMAT_ABGR1555,  16,  0x001F,0x03E0,0x7C00,0x8000,                 "SDL_PIXELFORMAT_ABGR1555"   },
-    { SDL_PIXELFORMAT_BGRA5551,  16,  0x003E,0x07C0,0xF800,0x0001,                 "SDL_PIXELFORMAT_BGRA5551"   },
+    { SDL_PIXELFORMAT_XRGB1555,   0x7C00,0x03E0,0x001F,0x0000,                 "SDL_PIXELFORMAT_RGB555"     },
+    { SDL_PIXELFORMAT_XBGR1555,   0x001F,0x03E0,0x7C00,0x0000,                 "SDL_PIXELFORMAT_BGR555"     },
+    { SDL_PIXELFORMAT_ARGB1555,   0x7C00,0x03E0,0x001F,0x8000,                 "SDL_PIXELFORMAT_ARGB1555"   },
+    { SDL_PIXELFORMAT_RGBA5551,   0xF800,0x07C0,0x003E,0x0001,                 "SDL_PIXELFORMAT_RGBA5551"   },
+    { SDL_PIXELFORMAT_ABGR1555,   0x001F,0x03E0,0x7C00,0x8000,                 "SDL_PIXELFORMAT_ABGR1555"   },
+    { SDL_PIXELFORMAT_BGRA5551,   0x003E,0x07C0,0xF800,0x0001,                 "SDL_PIXELFORMAT_BGRA5551"   },
 
-    { SDL_PIXELFORMAT_RGB565,    16,  0xF800,0x07E0,0x001F,0x0000,                 "SDL_PIXELFORMAT_RGB565"     },
-    { SDL_PIXELFORMAT_BGR565,    16,  0x001F,0x07E0,0xF800,0x0000,                 "SDL_PIXELFORMAT_BGR565"     },
+    { SDL_PIXELFORMAT_RGB565,     0xF800,0x07E0,0x001F,0x0000,                 "SDL_PIXELFORMAT_RGB565"     },
+    { SDL_PIXELFORMAT_BGR565,     0x001F,0x07E0,0xF800,0x0000,                 "SDL_PIXELFORMAT_BGR565"     },
 
-    { SDL_PIXELFORMAT_RGB24,     24,  0x0000FF,0x00FF00,0xFF0000,0x000000,         "SDL_PIXELFORMAT_RGB24"      },
-    { SDL_PIXELFORMAT_BGR24,     24,  0xFF0000,0x00FF00,0x0000FF,0x000000,         "SDL_PIXELFORMAT_BGR24"      },
+    { SDL_PIXELFORMAT_RGB24,      0x0000FF,0x00FF00,0xFF0000,0x000000,         "SDL_PIXELFORMAT_RGB24"      },
+    { SDL_PIXELFORMAT_BGR24,      0xFF0000,0x00FF00,0x0000FF,0x000000,         "SDL_PIXELFORMAT_BGR24"      },
 
-    { SDL_PIXELFORMAT_XRGB8888,  24,  0x00FF0000,0x0000FF00,0x000000FF,0x00000000, "SDL_PIXELFORMAT_RGB888"     },
-    { SDL_PIXELFORMAT_RGBX8888,  24,  0xFF000000,0x00FF0000,0x0000FF00,0x00000000, "SDL_PIXELFORMAT_RGBX8888"   },
-    { SDL_PIXELFORMAT_XBGR8888,  24,  0x000000FF,0x0000FF00,0x00FF0000,0x00000000, "SDL_PIXELFORMAT_BGR888"     },
-    { SDL_PIXELFORMAT_BGRX8888,  24,  0x0000FF00,0x00FF0000,0xFF000000,0x00000000, "SDL_PIXELFORMAT_BGRX8888"   },
-    { SDL_PIXELFORMAT_ARGB8888,  32,  0x00FF0000,0x0000FF00,0x000000FF,0xFF000000, "SDL_PIXELFORMAT_ARGB8888"   },
-    { SDL_PIXELFORMAT_RGBA8888,  32,  0xFF000000,0x00FF0000,0x0000FF00,0x000000FF, "SDL_PIXELFORMAT_RGBA8888"   },
-    { SDL_PIXELFORMAT_ABGR8888,  32,  0x000000FF,0x0000FF00,0x00FF0000,0xFF000000, "SDL_PIXELFORMAT_ABGR8888"   },
-    { SDL_PIXELFORMAT_BGRA8888,  32,  0x0000FF00,0x00FF0000,0xFF000000,0x000000FF, "SDL_PIXELFORMAT_BGRA8888"   },
+    { SDL_PIXELFORMAT_XRGB8888,   0x00FF0000,0x0000FF00,0x000000FF,0x00000000, "SDL_PIXELFORMAT_RGB888"     },
+    { SDL_PIXELFORMAT_RGBX8888,   0xFF000000,0x00FF0000,0x0000FF00,0x00000000, "SDL_PIXELFORMAT_RGBX8888"   },
+    { SDL_PIXELFORMAT_XBGR8888,   0x000000FF,0x0000FF00,0x00FF0000,0x00000000, "SDL_PIXELFORMAT_BGR888"     },
+    { SDL_PIXELFORMAT_BGRX8888,   0x0000FF00,0x00FF0000,0xFF000000,0x00000000, "SDL_PIXELFORMAT_BGRX8888"   },
+    { SDL_PIXELFORMAT_ARGB8888,   0x00FF0000,0x0000FF00,0x000000FF,0xFF000000, "SDL_PIXELFORMAT_ARGB8888"   },
+    { SDL_PIXELFORMAT_RGBA8888,   0xFF000000,0x00FF0000,0x0000FF00,0x000000FF, "SDL_PIXELFORMAT_RGBA8888"   },
+    { SDL_PIXELFORMAT_ABGR8888,   0x000000FF,0x0000FF00,0x00FF0000,0xFF000000, "SDL_PIXELFORMAT_ABGR8888"   },
+    { SDL_PIXELFORMAT_BGRA8888,   0x0000FF00,0x00FF0000,0xFF000000,0x000000FF, "SDL_PIXELFORMAT_BGRA8888"   },
 
-    { SDL_PIXELFORMAT_ARGB2101010, 32, 0x3FF00000,0x000FFC00,0x000003FF,0xC0000000,"SDL_PIXELFORMAT_ARGB2101010"},
+    { SDL_PIXELFORMAT_ARGB2101010, 0x3FF00000,0x000FFC00,0x000003FF,0xC0000000,"SDL_PIXELFORMAT_ARGB2101010"},
 };
 
 const FormatDesc *find_desc(Uint32 format)
@@ -103,6 +107,38 @@ const FormatDesc *find_desc(Uint32 format)
         if (d.format == format)
             return &d;
     return nullptr;
+}
+
+// THE BITS A FORMAT REPORTS, which is not always the bits it stores.
+//
+// SDL2's rule, from its own SDL_PixelFormatEnumToMasks: a format one or two
+// bytes wide reports its significant bits; anything wider reports its BYTES
+// times eight. The X-channel four-byte formats are where that matters.
+// SDL_PIXELFORMAT_RGB888 and its three siblings hold twenty-four significant
+// bits — the fourth byte carries nothing, so SDL_BITSPERPIXEL says 24 — but
+// a pixel still occupies four bytes, so SDL2 calls them 32-bit formats and
+// every buffer, pitch and offset for them is four bytes to the pixel.
+//
+// Reading 24 as the pixel width is a silent heap overrun: a row sized at
+// three bytes a pixel is a quarter short of what an application writing whole
+// words puts into it, and nothing reports the overflow.
+int format_bits(Uint32 format)
+{
+    const int bytes = (int)SDL_BYTESPERPIXEL(format);
+    return bytes > 2 ? bytes * 8 : (int)SDL_BITSPERPIXEL(format);
+}
+
+// SDL2 answers a mask lookup by depth CLASS, not by exact equality: its own
+// SDL_MasksToPixelFormatEnum takes 12, 15 and 16 in a single arm, because any
+// of the three names a two-byte pixel. XRGB4444 reports twelve bits and
+// applications routinely ask for it at sixteen.
+bool depth_matches(int want, int have)
+{
+    if (want == have)
+        return true;
+    const bool want_two_byte = (want == 12 || want == 15 || want == 16);
+    const bool have_two_byte = (have == 12 || have == 15 || have == 16);
+    return want_two_byte && have_two_byte;
 }
 
 // Derive shift and loss from a channel mask, the way SDL2's own
@@ -130,14 +166,21 @@ void mask_to_shift_loss(Uint32 mask, Uint8 *shift, Uint8 *loss)
 }
 } // namespace
 
+// The STRIDE of one pixel: what a pointer walking a row steps by, and what
+// every buffer this library allocates is sized from. It comes straight out of
+// the format enum, which is the only place that knows it — deriving it from
+// the significant bits gets the X-channel formats wrong by a whole byte.
+//
+// Zero for a sub-byte indexed format, because there is no whole byte to step
+// by, and zero for a format this library cannot describe. Callers test for
+// zero and refuse the surface or the texture. Note that the FORMAT RECORD's
+// BytesPerPixel is a different number for those same formats — it rounds up
+// to one, as SDL2's does — because it answers a different question.
 int SDL2Circle_BytesPerPixel(Uint32 pixel_format)
 {
-    const FormatDesc *d = find_desc(pixel_format);
-    if (d == nullptr)
+    if (find_desc(pixel_format) == nullptr)
         return 0;
-    if (d->bpp < 8)
-        return 0;               // sub-byte indexed: no addressable pixel
-    return (d->bpp + 7) / 8;
+    return (int)SDL_BYTESPERPIXEL(pixel_format);
 }
 
 int SDL2Circle_InitFormat(SDL_PixelFormat *format, Uint32 pixel_format)
@@ -146,11 +189,13 @@ int SDL2Circle_InitFormat(SDL_PixelFormat *format, Uint32 pixel_format)
     if (d == nullptr)
         return SDL_SetError("unknown pixel format 0x%08x", (unsigned)pixel_format);
 
+    const int bits = format_bits(pixel_format);
+
     memset(format, 0, sizeof(*format));
     format->format        = pixel_format;
     format->palette       = nullptr;
-    format->BitsPerPixel  = (Uint8)d->bpp;
-    format->BytesPerPixel = (Uint8)((d->bpp + 7) / 8);
+    format->BitsPerPixel  = (Uint8)bits;
+    format->BytesPerPixel = (Uint8)((bits + 7) / 8);
     format->Rmask         = d->rmask;
     format->Gmask         = d->gmask;
     format->Bmask         = d->bmask;
@@ -242,7 +287,7 @@ extern "C" SDL_bool SDL_PixelFormatEnumToMasks(Uint32 format, int *bpp,
         SDL_SetError("unsupported pixel format 0x%08x", (unsigned)format);
         return SDL_FALSE;
     }
-    if (bpp)   *bpp   = d->bpp;
+    if (bpp)   *bpp   = format_bits(format);
     if (Rmask) *Rmask = d->rmask;
     if (Gmask) *Gmask = d->gmask;
     if (Bmask) *Bmask = d->bmask;
@@ -268,18 +313,12 @@ extern "C" Uint32 SDL_MasksToPixelFormatEnum(int bpp, Uint32 Rmask, Uint32 Gmask
         case 16: return SDL_PIXELFORMAT_RGB565;
         case 24: return SDL_PIXELFORMAT_RGB24;
 
-        // ARGB8888 AND NOT RGB888, and the difference is not cosmetic.
-        // SDL2's RGB888 is an X-channel format: it occupies four bytes but
-        // reports TWENTY-FOUR significant bits, because the fourth byte
-        // carries nothing. So a caller that asks for depth 32 and reads
-        // format->BitsPerPixel back gets 24, which is not what it asked for
-        // and not a depth it is prepared to handle — one game asserts
-        // outright on a surface that reports neither 32 nor 8, which is
-        // exactly how this was found.
-        //
-        // ARGB8888 reports 32, which is the number the caller named. It is
-        // also the format the display already works in, so a surface made
-        // this way reaches the glass without a conversion.
+        // ARGB8888 AND NOT RGB888, which is what SDL2 itself answers for a
+        // depth of 32 with no masks. Both are four bytes wide and both
+        // report 32 bits, so either would fit the caller's request; ARGB8888
+        // is the one that carries an alpha channel, and it is the format the
+        // display already works in, so a surface made this way reaches the
+        // glass without a conversion.
         case 32: return SDL_PIXELFORMAT_ARGB8888;
 
         default: return SDL_PIXELFORMAT_UNKNOWN;
@@ -288,29 +327,11 @@ extern "C" Uint32 SDL_MasksToPixelFormatEnum(int bpp, Uint32 Rmask, Uint32 Gmask
 
     for (const FormatDesc &d : s_formats)
     {
-        if (d.bpp != bpp)
+        if (!depth_matches(bpp, format_bits(d.format)))
             continue;
-        // The 8888-family rows are 24 or 32 bits wide by SDL2's own
-        // reckoning (an X-channel format reports 24 significant bits while
-        // occupying four bytes), so compare on the masks and let a caller
-        // asking for 32 with XRGB masks land on RGB888 as SDL2 does.
         if (d.rmask == Rmask && d.gmask == Gmask &&
             d.bmask == Bmask && d.amask == Amask)
             return d.format;
-    }
-    // Second pass for the four-byte formats, where the caller says 32 and
-    // the table says 24.
-    if (bpp == 32)
-    {
-        for (const FormatDesc &d : s_formats)
-        {
-            if (d.bpp != 24 || d.format == SDL_PIXELFORMAT_RGB24 ||
-                d.format == SDL_PIXELFORMAT_BGR24)
-                continue;
-            if (d.rmask == Rmask && d.gmask == Gmask &&
-                d.bmask == Bmask && d.amask == Amask)
-                return d.format;
-        }
     }
     return SDL_PIXELFORMAT_UNKNOWN;
 }
