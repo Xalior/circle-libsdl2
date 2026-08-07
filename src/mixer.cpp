@@ -161,9 +161,8 @@ void RunPost(Uint8 *stream, int len)
 }
 
 // A channel has stopped, for whatever reason. Everything that wanted telling
-// gets told from here, so the three places a channel can stop — its sound
-// running out, its time limit arriving, and Mix_HaltChannel — all say the
-// same thing in the same order.
+// gets told from here, so a sound running out, a time limit arriving and
+// Mix_HaltChannel all say the same thing in the same order.
 void ChannelDone(int c)
 {
     RunEffectsDone(s_channel_effect[c], c);
