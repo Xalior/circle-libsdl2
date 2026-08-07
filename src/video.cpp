@@ -173,6 +173,22 @@ struct SDL_Texture
     void *userdata;
 };
 
+// TEMPORARY DIAGNOSTIC — remove once the stride question is settled.
+static void diag_tex(const char *what, const SDL_Texture *t, int extra_pitch)
+{
+    static unsigned seen = 0;
+    if (seen >= 16)
+        return;
+    seen++;
+    SDL2Circle_Log("STRIDE", SDL2CIRCLE_LOG_NOTICE,
+                   "%s: tex %dx%d fmt=0x%08x store_pitch=%d app_bpp=%d "
+                   "staging_pitch=%d native=%d | pitch_in_out=%d",
+                   what, t->w, t->h, (unsigned)t->format, t->pitch,
+                   t->app_bpp, t->staging_pitch,
+                   t->format == SDL_PIXELFORMAT_ARGB8888 ? 1 : 0,
+                   extra_pitch);
+}
+
 // The one fullscreen window (ID 1). Display-mode queries answer with its
 // size once it exists, and with the panel default before that.
 static SDL_Window *s_window = nullptr;
@@ -1790,6 +1806,12 @@ extern "C" SDL_Surface *SDL_GetWindowSurface(SDL_Window *win)
     SDL_FreeSurface(s_window_surface);
     s_window_surface = SDL_CreateRGBSurfaceWithFormat(0, win->w, win->h, 32,
                                                       SDL_PIXELFORMAT_ARGB8888);
+    if (s_window_surface)
+        SDL2Circle_Log("STRIDE", SDL2CIRCLE_LOG_NOTICE,
+                       "GetWindowSurface: %dx%d fmt=0x%08x pitch=%d",
+                       s_window_surface->w, s_window_surface->h,
+                       (unsigned)s_window_surface->format->format,
+                       s_window_surface->pitch);
     return s_window_surface;
 }
 
@@ -2173,6 +2195,7 @@ extern "C" SDL_Texture *SDL_CreateTexture(SDL_Renderer *, Uint32 format,
     tex->colormod_r = tex->colormod_g = tex->colormod_b = 255;
     tex->scale_mode = SDL_ScaleModeNearest;
     tex->userdata = nullptr;
+    diag_tex("CreateTexture", tex, -1);
 
     if (tex->pixels[0] == nullptr)
     {
@@ -2242,6 +2265,8 @@ extern "C" int SDL_UpdateTexture(SDL_Texture *tex, const SDL_Rect *rect,
         return SDL_SetError("update rectangle lies outside the texture");
     if (w == 0 || h == 0)
         return 0;
+
+    diag_tex("UpdateTexture", tex, pitch);
 
     bool partial = (x != 0) || (y != 0) || (w != tex->w) || (h != tex->h);
     u8 *dst = texture_write_buffer(tex, partial)
@@ -2396,6 +2421,7 @@ extern "C" int SDL_LockTexture(SDL_Texture *tex, const SDL_Rect *rect,
     {
         *pixels = buf + (size_t)area.y * tex->pitch + (size_t)area.x * 4;
         *pitch  = tex->pitch;
+        diag_tex("LockTexture(native)", tex, *pitch);
         tex->locked_rect = area;
         tex->locked = true;
         return 0;
@@ -2418,6 +2444,7 @@ extern "C" int SDL_LockTexture(SDL_Texture *tex, const SDL_Rect *rect,
     *pixels = tex->staging + (size_t)area.y * tex->staging_pitch
             + (size_t)area.x * tex->app_bpp;
     *pitch  = tex->staging_pitch;
+    diag_tex("LockTexture(staging)", tex, *pitch);
     tex->locked_rect = area;
     tex->locked = true;
     return 0;
@@ -2543,6 +2570,18 @@ extern "C" int SDL_RenderCopy(SDL_Renderer *ren, SDL_Texture *tex,
     cmd.sh = sh;
     cmd.blend = (tex->blend == SDL_BLENDMODE_BLEND) ? 1 : 0;
     cmd.alphamod = tex->alphamod;
+    {
+        static unsigned seen = 0;
+        if (seen < 4)
+        {
+            seen++;
+            SDL2Circle_Log("STRIDE", SDL2CIRCLE_LOG_NOTICE,
+                           "RenderCopy cmd: src=%dx%d srcpitch=%d dst=%dx%d "
+                           "tex fmt=0x%08x store_pitch=%d",
+                           cmd.sw, cmd.sh, cmd.srcpitch, cmd.w, cmd.h,
+                           (unsigned)tex->format, tex->pitch);
+        }
+    }
     emit_cmd(ren, cmd);
 
     // This buffer now belongs to the frame being assembled; the next write
