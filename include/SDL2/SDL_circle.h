@@ -60,6 +60,38 @@ void SDL2Circle_SplitPresentCore(void);
 // Non-zero once SDL2Circle_SplitInit has run.
 int SDL2Circle_SplitActive(void);
 
+// Say, on the console, what the hardware core's servo is about to do.
+//
+// THE ONE FAILURE NOTHING ELSE CAN REPORT. Every handler the servo runs is
+// another core's work being done on core 0, and core 0 is the machine: the
+// console, USB, video, the system timer, the scheduler and the watchdog are
+// all its. A handler that never returns therefore takes the whole board with
+// it and leaves nobody running to say so. From the bench it looks exactly
+// like a board that died at the moment the split was armed — no output, no
+// exception, no watchdog line, on every core at once.
+//
+// This is the servo describing itself, BEFORE each step rather than after,
+// through core 0's own logger straight to the device core 0 owns. So the
+// last line on the wire names the step that never returned, and a marshalled
+// call is named by its handler's ADDRESS, which the image's map file turns
+// back into a function.
+//
+// nLaps is how many complete laps to describe in full. Marshalled calls are
+// described for as long as the trace is armed at all, because that is the
+// step a stall is nearly always in and it is rare enough not to drown the
+// console. Zero — the default — disables everything and costs one relaxed
+// load per lap.
+//
+// It is an INSTRUMENT, and it changes what it measures: at 115200 baud a
+// described lap takes tens of milliseconds, so an armed trace makes core 0
+// far slower than it really is. It is for finding a board that has stopped,
+// not for watching one that is running.
+//
+// Like SDL2Circle_SetPerfInterval, this call is the only way in: how a host
+// decides to make it — a switch of its own, a build option, never — is the
+// host's design.
+void SDL2Circle_SplitTraceServo(unsigned nLaps);
+
 // Run fn(arg) on core 0 and block until it has finished. This is the same
 // one-deep mailbox the library marshals its own platform calls through, and
 // it is offered here for the one thing the library cannot do for a host

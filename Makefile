@@ -255,6 +255,29 @@ world-fetch: llvm-cache
 	@[ -f $(CIRCLE_STDLIB)/libs/llvm-project/runtimes/CMakeLists.txt ] || \
 		ln -sfn $(CIRCLE_LLVM) $(CIRCLE_STDLIB)/libs/llvm-project
 
+# Every core's stack, including the one an application runs on.
+#
+# Circle's own default is 128 KB, which is generous for a bare-metal kernel
+# and far too small for a game. A game engine of the era this library exists
+# to run puts its per-frame working set on the stack: TyrQuake's software
+# renderer allocates its edge and surface arrays with alloca every frame and
+# its own source says it needs at least a megabyte of stack to do it, and
+# that figure was written for 32-bit pointers — the same arrays are around
+# 1.7 times the size when every pointer in them is eight bytes.
+#
+# Nothing catches the shortfall. The stacks are laid out one after another
+# with no guard page between them, so a core that runs off the bottom of its
+# stack writes into the core below's, and on this library's core split that
+# means the application core writing over core 0's stack — where the host
+# kernel object itself lives, because a Circle kernel is a local of main().
+# The picture corrupts and then a device handler dereferences something an
+# application overwrote, which is a fault nowhere near the code that caused
+# it.
+#
+# 2 MB a core is that documented megabyte with 64-bit pointers accounted
+# for. Four cores costs 8 MB out of the 256 MB reserved below the heap.
+CIRCLE_KERNEL_STACK_SIZE = 0x200000
+
 # COMPILE (isolated per world, safe to run in parallel across boards). Idempotent:
 # skips re-configure when Config.mk is already present.
 .PHONY: world-build
@@ -262,7 +285,8 @@ world-build:
 	+@$(NOT_DRY_RUN)
 	@[ -f $(CIRCLE_STDLIB)/Config.mk ] || \
 		( cd $(CIRCLE_STDLIB) && bash ./configure -r $(RASPPI_$(BOARD)) -p aarch64-none-elf- \
-			--libcxx-repo --kernel-max-size 256 -o ARM_ALLOW_MULTI_CORE && $(MAKE) MAKEINFO=true )
+			--libcxx-repo --kernel-max-size 256 -o ARM_ALLOW_MULTI_CORE \
+			-o KERNEL_STACK_SIZE=$(CIRCLE_KERNEL_STACK_SIZE) && $(MAKE) MAKEINFO=true )
 
 # Convenience: fetch then build one board's world.
 .PHONY: world
