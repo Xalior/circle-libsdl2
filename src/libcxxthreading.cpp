@@ -326,11 +326,17 @@ inline CondvarImpl *AsCondvar(std::__libcpp_condvar_t *__cv)
 // same clock has to be read here or the difference is meaningless. The RESULT
 // is then held against the free-running counter, which needs no lock and is
 // the clock every other timed wait in this library uses.
+//
+// The calendar read goes through SDL2Circle_KernelTimeUTC, which puts it on
+// core 0: the timer object is a device, and every caller of this is a thread
+// waiting on some other core. A clock the kernel cannot give — a wait issued
+// before SDL_Init — leaves the reading at zero, which makes the deadline the
+// caller's whole absolute time and the wait a long one rather than a hang.
 u64 DeadlineFromAbsolute(const std::__libcpp_timespec_t *__ts)
 {
     unsigned nSeconds = 0;
     unsigned nMicros  = 0;
-    CTimer::Get()->GetUniversalTime(&nSeconds, &nMicros);
+    SDL2Circle_KernelTimeUTC(&nSeconds, &nMicros);
 
     const long long nWanted = (long long)__ts->tv_sec * 1000000LL
                             + (long long)__ts->tv_nsec / 1000LL;

@@ -189,6 +189,17 @@ extern "C" void SDL_PumpEvents(void)
         return;
     }
 
+    // Everything below this line is core 0's: the scheduler, the kernel
+    // timer, the USB host controller, the serial port, the sound device and
+    // the CPU throttle's firmware mailbox. There is exactly one other way to
+    // arrive here off core 0 — a pinned thread on a core a host kernel lent
+    // (SDL2Circle_ThreadCoreOffer) with the split never activated — and it
+    // has to stop here rather than reach any of them. Such a caller has no
+    // pumping to do anyway: the timers above are serviced, and the devices
+    // belong to the core that owns them.
+    if (SDL2Circle_ThisCore() != 0)
+        return;
+
     // The shim's cooperative heartbeat: called every frame by any SDL app
     // (via SDL_PollEvent), it services USB plug-and-play, translates HID
     // reports, and yields so cooperative std::threads make progress.

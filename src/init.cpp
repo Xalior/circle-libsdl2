@@ -83,17 +83,54 @@ static unsigned BuildEpoch(void)
 // is safe from then on. Before that, Get() itself may assert.
 static bool s_bKernelTimerUp = false;
 
+namespace
+{
+
+struct KernelTimeArgs
+{
+    unsigned seconds;
+    unsigned micros;
+    bool     ok;
+};
+
+// Core 0's half of the calendar read: the object, its lock and the interrupt
+// that advances it all belong here.
+void read_kernel_time_on0(void *p)
+{
+    auto *a = (KernelTimeArgs *)p;
+    a->ok = CTimer::Get()->GetUniversalTime(&a->seconds, &a->micros) != FALSE;
+}
+
+}   // namespace
+
+bool SDL2Circle_KernelTimeUTC(unsigned *pSeconds, unsigned *pMicroSeconds)
+{
+    if (!s_bKernelTimerUp)
+        return false;
+
+    KernelTimeArgs a{0, 0, false};
+    SDL2Circle_CallOn0(read_kernel_time_on0, &a);
+    if (!a.ok)
+        return false;
+
+    if (pSeconds)
+        *pSeconds = a.seconds;
+    if (pMicroSeconds)
+        *pMicroSeconds = a.micros;
+    return true;
+}
+
 extern "C" int _gettimeofday(struct timeval *ptimeval, void *ptimezone)
 {
     (void) ptimezone;
 
     // Delegate to the kernel's clock once it exists and has a plausible
     // time. A day of slack covers a host kernel image built shortly before
-    // this library.
-    if (s_bKernelTimerUp)
+    // this library. The read itself happens on core 0 — see
+    // SDL2Circle_KernelTimeUTC — because the clock is a device.
     {
-        unsigned nSeconds, nMicroSeconds;
-        if (CTimer::Get()->GetUniversalTime(&nSeconds, &nMicroSeconds)
+        unsigned nSeconds = 0, nMicroSeconds = 0;
+        if (SDL2Circle_KernelTimeUTC(&nSeconds, &nMicroSeconds)
             && nSeconds + 86400 >= BuildEpoch())
         {
             ptimeval->tv_sec  = (time_t) nSeconds;

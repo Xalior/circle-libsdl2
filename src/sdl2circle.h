@@ -48,6 +48,22 @@ class CSerialDevice;
 void SDL2Circle_SetInjectSerial(CSerialDevice *pSerial);
 void SDL2Circle_InjectPump(void);
 
+// ---- the kernel's calendar clock (src/init.cpp) -----------------------------
+//
+// The wall-clock time the host kernel's CTimer holds, read ON CORE 0 and
+// handed back to the caller.
+//
+// CTimer is a device: its calendar time is advanced by the timer interrupt
+// and read under a lock the interrupt also takes, so the object belongs to
+// the core that owns the interrupt. Every caller here is on another core by
+// construction — the application core asks for it through time() and through
+// C++'s system_clock — so the read is marshalled through the call mailbox
+// like every other device access.
+//
+// False when the kernel has no clock to give (before SDL_Init, or a clock the
+// kernel has never set); the outputs are then untouched.
+bool SDL2Circle_KernelTimeUTC(unsigned *pSeconds, unsigned *pMicroSeconds);
+
 // ---- boot argument block (src/bootargs.cpp) --------------------------------
 //
 // The library's own switches, found by the library rather than forwarded to
