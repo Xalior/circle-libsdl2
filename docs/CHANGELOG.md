@@ -10,6 +10,27 @@ followed.
 
 ## vPoC3
 
+### Every core gets a 2 MB stack
+
+**Consumers must act.** `make deps` now configures a world with
+`KERNEL_STACK_SIZE=0x200000` instead of leaving Circle's 128 KB default in
+place. The value is fixed into the world at configure time, so a world
+configured before this change keeps the old stacks no matter how recently the
+library was rebuilt against it: reconfigure the world and rebuild it.
+
+128 KB is not enough to run a game. A software-rendering engine of the era
+this library targets keeps its per-frame working set on the stack — TyrQuake
+allocates its edge and surface arrays with `alloca` on every frame it draws,
+and needs more than 128 KB to do it before any other consideration.
+
+The failure it produced is worth knowing, because nothing about it points at
+a stack. Circle's four core stacks sit next to each other with no guard page,
+so the application core ran off the bottom of its own and into core 0's,
+where the host kernel object lives as a local of `main()`. The picture
+corrupted for a frame or two, then a DMA interrupt handler on core 0
+dereferenced a pointer the game had written over, and the board took a data
+abort in Circle code that had done nothing wrong.
+
 ### SDL has one framebuffer, and every frame is drawn into it
 
 A frame is no longer sent to the presentation core as a pointer into the

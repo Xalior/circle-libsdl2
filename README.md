@@ -1089,9 +1089,9 @@ board is not usable on another:
 including libc++ from an immutable LLVM tag, because Codeberg regenerates its
 archives and downloading the tarball fails its hash check on a clean build —
 then configures that world (`-r <board> -p aarch64-none-elf- --libcxx-repo
---kernel-max-size 256 -o ARM_ALLOW_MULTI_CORE`) and builds it, and finally
-builds this library against each. The first build is long: newlib and libc++
-are compiled from source, once per board.
+--kernel-max-size 256 -o ARM_ALLOW_MULTI_CORE -o KERNEL_STACK_SIZE=0x200000`)
+and builds it, and finally builds this library against each. The first build
+is long: newlib and libc++ are compiled from source, once per board.
 
 Afterwards, a plain `make` rebuilds one board's archive — `BOARD` selects
 which, and defaults to `rpi4`:
@@ -1154,6 +1154,39 @@ builds, it links, and it is wrong on hardware.
 
 So it is not a tuning choice. A world without it does not satisfy this
 library's requirements, whatever else it is configured with.
+
+### The world must give every core a stack a game can use
+
+`make deps` configures `KERNEL_STACK_SIZE=0x200000` — 2 MB for each of the
+four cores. Circle's own default is 128 KB.
+
+The application core needs it. A software-rendering game engine of the era
+this library exists to run keeps its per-frame working set on the stack:
+TyrQuake's renderer allocates its edge and surface arrays with `alloca` on
+every frame it draws, and its source says plainly that it needs at least a
+megabyte of stack to do so. That figure was written for 32-bit pointers, and
+the same arrays are around 1.7 times the size once every pointer in them is
+eight bytes. At Circle's default the very first frame of real world geometry
+uses more stack than the core owns.
+
+Nothing on the machine catches the shortfall. Circle lays the four core
+stacks out one after another with no guard page between them, so a core that
+runs past the bottom of its stack writes into the stack of the core below —
+which, for the application core, is core 0's. A Circle kernel object is a
+local of `main()`, so it sits at the very top of core 0's stack and is the
+first thing an overflowing application reaches. What you see is a picture
+that corrupts for a frame or two and then a data abort inside a device
+interrupt handler, pointing at code that did nothing wrong.
+
+2 MB a core is that documented megabyte with 64-bit pointers accounted for.
+Four cores costs 8 MB out of the 256 MB reserved below the heap. Raising it
+further is free in the same sense; lowering it is how the fault above comes
+back.
+
+**A world configured before this was set must be reconfigured and rebuilt.**
+The value is fixed into `Config.mk` at configure time and compiled into the
+world's own startup code, so an existing world keeps the old stacks however
+recently the library was rebuilt against it.
 
 ### Choosing the crossing count
 
