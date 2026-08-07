@@ -733,8 +733,27 @@ void SDL2Circle_SetInjectSerial(CSerialDevice *pSerial)
 
 void SDL2Circle_InjectPump(void)
 {
-    if (!s_injectSerial || !SDL2Circle_DebugUartArmed())
+    if (!SDL2Circle_DebugUartArmed())
         return;
+
+    // Armed, but no kernel ever lent a serial device. Injection cannot work,
+    // and without this it says so nowhere: the boot log carries "serial key
+    // injection armed" from the switch, and then every command sent from the
+    // bench disappears with the machine looking healthy — a game that draws,
+    // animates and answers nothing. Said once, because this runs every pass.
+    if (!s_injectSerial)
+    {
+        static bool bComplained = false;
+        if (!bComplained)
+        {
+            bComplained = true;
+            SDL2Circle_Log("input", SDL2CIRCLE_LOG_WARNING,
+                           "--rapi-debug-uart is armed but no serial device was "
+                           "lent (SDL2Circle_SetInjectSerial): nothing sent to "
+                           "the console can reach the application");
+        }
+        return;
+    }
 
     // Drain serial RX, accumulating command lines; dispatch on each newline.
     char buf[64];
