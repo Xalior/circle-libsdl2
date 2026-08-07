@@ -171,9 +171,9 @@ void SDL2Circle_ReadBootArgs(void)
     }
 }
 
-// Whether serial key injection was asked for. The injection path stays inert
-// until this is true AND a serial device has been handed over, so neither
-// half can turn it on by itself.
+// Whether serial key injection was asked for. This is the whole switch: the
+// injection path finds its own serial device (src/input.cpp), so nothing else
+// has to be arranged for a stamped boot to accept typing from the console.
 bool SDL2Circle_DebugUartArmed(void)
 {
     SDL2Circle_ReadBootArgs();

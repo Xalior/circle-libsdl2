@@ -31,19 +31,20 @@ void SDL2Circle_AudioPump(void);   // run app audio callback into the queue
 // own.
 void SDL2Circle_HardwareTick(void);
 
-// Debug UART key injection: the host kernel hands us its serial device, and
-// the pump then types serial-RX bytes into the machine as SDL key events.
+// Debug UART key injection: the pump reads serial-RX bytes and types them
+// into the machine as SDL key events.
 //
-// THE KERNEL HANDS THE DEVICE OVER UNCONDITIONALLY. Whether injection is
-// wanted is decided by --rapi-debug-uart, which THIS LIBRARY reads for
-// itself out of the boot argument block (src/bootargs.cpp) — a kernel that
-// has never heard of the switch still gets it working, and cannot gate the
-// device handover on a switch it does not know about. Injection needs both
-// halves: the device, and the switch.
+// THE LIBRARY FINDS THE SERIAL DEVICE ITSELF, and whether it injects through
+// it is decided by --rapi-debug-uart, which it reads out of the boot argument
+// block (src/bootargs.cpp). Both halves are the library's, so a kernel that
+// has never heard of any of this gets injection working by doing nothing at
+// all — the whole point, because the half a kernel used to own was the half
+// that could be forgotten, silently, with everything still looking healthy.
 //
-// A kernel must not construct a serial device to hand over. It lends the one
-// it already owns; a second device on the same slot halts the board in its
-// constructor.
+// SDL2Circle_SetInjectSerial is the OVERRIDE, for a kernel that wants to lend
+// a DIFFERENT device from the console UART the library would find. It must
+// lend a device it already owns and never construct one to hand over: a
+// second device on the same slot halts the board in its constructor.
 class CSerialDevice;
 void SDL2Circle_SetInjectSerial(CSerialDevice *pSerial);
 void SDL2Circle_InjectPump(void);
