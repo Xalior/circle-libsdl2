@@ -37,7 +37,7 @@ core that never touches a device.
 |---|---|
 | Video: fullscreen window, software `SDL_Renderer`, streaming ARGB8888 textures, alpha blending, scaled `SDL_RenderCopy` | `CBcmFrameBuffer` — double-buffered, vsync page flip. Where the firmware grants one screen instead of two, the finished frame is scaled onto it, on a core of the host's choosing |
 | Display/renderer queries (modes, bounds, formats, masks) | single HDMI panel, or the virtual device the application declared for itself |
-| Keyboard → SDL events, `SDL_GetKeyboardState`, modifiers | Circle USB HID (raw reports; SDL scancodes *are* USB usage codes). Off core 0: USB stays on core 0, events cross by ring |
+| Keyboard → SDL events, `SDL_GetKeyboardState`, modifiers | Circle USB HID (raw reports; SDL scancodes *are* USB usage codes). Scancodes are physical positions and do not move with the keyboard layout. Off core 0: USB stays on core 0, events cross by ring |
 | Mouse → SDL events, `SDL_GetMouseState`, relative mode, warping | Circle USB mouse (raw reports — no Circle-drawn cursor). A mouse says how far it moved and never where it is, so the library keeps the position itself and clamps it to the window. Off core 0: USB and event synthesis stay on core 0; the position and buttons are held in memory both cores see |
 | Joysticks, gamepads and wheels: enumeration, hot-plug, axes, hats, buttons, GUIDs, coarse rumble | Circle's USB gamepad drivers — the generic HID one and the console-specific ones. Off core 0: USB and event synthesis stay on core 0; the readings are held in memory both cores see |
 | Game controllers: `gamecontrollerdb.txt` mappings, `SDL_IsGameController`, mapped axes and buttons, controller events | the mapping text is read the way SDL2 reads it, and found by the same joystick GUID SDL2 builds |
@@ -55,7 +55,7 @@ core that never touches a device.
 | Audio conversion: `SDL_BuildAudioCVT`, `SDL_ConvertAudio`, `SDL_LoadWAV_RW`, `SDL_MixAudioFormat` | in memory, through float — every width, either byte order, one or two channels, any rate ratio |
 | `SDL_Log` and its family, message boxes | the same ring every other line takes, so an application's own diagnostics are safe to write from its own core |
 | `SDL_GetBasePath` / `SDL_GetPrefPath`, clipboard, key names, `SDL_stdinc` strings and maths | in memory, and the card. See "Declaring the base path" |
-| Typed text: `SDL_TEXTINPUT` events, `SDL_StartTextInput`/`SDL_StopTextInput`/`SDL_IsTextInputActive` | the same USB keyboard, mapped through the modifier state to the character a US layout would produce. A key press sends the key event first and the text second, as SDL does |
+| Typed text: `SDL_TEXTINPUT` events, `SDL_StartTextInput`/`SDL_StopTextInput`/`SDL_IsTextInputActive` | the same USB keyboard, read through Circle's keyboard layout — the one the board's `cmdline.txt` names with `keymap=`. A key press sends the key event first and the text second, as SDL does. See [Keyboard layout](#keyboard-layout) |
 | Init/error/version/hints | — |
 
 **The framebuffer is 32-bit; the formats an application works in are its
@@ -399,6 +399,52 @@ Anything that decides how the KERNEL starts stays with the kernel, and
 `rapi-split` is the example: it chooses whether the core split is set up at
 all, which means choosing which cores are started. That happens before this
 library exists, and it is read from `cmdline.txt` rather than from the block.
+
+## Keyboard layout
+
+A keyboard reports POSITIONS, and what is printed on the key at a position
+depends on which country the keyboard was sold in. SDL keeps those two things
+apart and so does this library.
+
+**A scancode is a position, and it never moves with the layout.** The
+scancodes in `SDL_KEYDOWN` and `SDL_KEYUP`, and the array
+`SDL_GetKeyboardState` returns, are USB HID usage codes exactly as the
+keyboard sent them. A game that binds the key to the left of Z gets the same
+key on a British keyboard, a German one and an American one. This is what
+makes a set of controls portable between boards.
+
+**Typed text is the layout's business, and comes from Circle's.** The
+`SDL_TEXTINPUT` event carries the character the key actually prints, read
+through the layout the board's `cmdline.txt` selects:
+
+```
+keymap=uk
+```
+
+Circle carries `us`, `uk`, `de`, `es`, `fr`, `it` and `dv`, and `us` is the
+default. So on a board set to `uk`, shift-2 types `"`, shift-3 types `£` and
+the key beside Enter types `#`; on `de`, the Y and Z positions swap the
+letters they print. The text is UTF-8, as SDL requires — a character outside
+ASCII, such as `£`, arrives as the several bytes UTF-8 spells it with.
+
+**AltGr types; the other modifiers do not.** A key held with control, with
+the left alt, or with a GUI key is a command rather than text, and produces
+no `SDL_TEXTINPUT` — SDL's own behaviour. The right alt is AltGr, which on
+the European layouts is a third level holding characters of its own rather
+than a command modifier, so it produces text where the layout defines some.
+The US layout defines none, so on a US board AltGr types nothing.
+
+**The keycode (`keysym.sym`) does not follow the layout**, although desktop
+SDL's does. It stays what a US keyboard would report, for the same reason
+scancodes stay physical: applications bind their actions to keycodes, out of
+configuration files and out of compiled-in defaults, and a keycode that moved
+with `keymap=` would silently rebind a game's controls on any board not set
+to `us`. `SDL_GetKeyFromScancode` and `SDL_GetScancodeFromKey` answer
+accordingly, and remain each other's inverse.
+
+**The keypad types its digits and operators whatever the layout says.** Every
+layout prints the same characters on it, and Circle's tables gate the digits
+behind num lock, which nothing here turns on.
 
 ## Joysticks and game controllers
 

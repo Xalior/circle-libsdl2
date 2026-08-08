@@ -6,6 +6,14 @@
 // handler can run in IRQ context: it only snapshots the report. Diffing and
 // event synthesis happen in SDL2Circle_InputPump() on the main loop.
 //
+// A KEY EVENT IS PHYSICAL, TYPED TEXT IS NOT. SDL keeps those two apart and
+// so does this file. A scancode names a POSITION on the keyboard and never
+// changes with the layout, so a game that binds the key left of Z gets the
+// same key on every board; SDL_TEXTINPUT carries what the key PRINTS, which
+// is exactly what the layout decides. So the scancode path below is raw HID
+// throughout, and only the text path consults the layout — Circle's own
+// CKeyMap, chosen by the cmdline.txt "keymap=" option.
+//
 #include <SDL2/SDL.h>
 #include "sdl2circle.h"
 #include "shim_internal.h"
@@ -16,10 +24,13 @@
 #include <circle/usb/usbhcidevice.h>
 #include <circle/usb/usbkeyboard.h>
 #include <circle/input/mouse.h>
+#include <circle/input/keymap.h>
+#include <circle/input/keyboardbehaviour.h>
 #include <circle/serial.h>
 #include <circle/atomic.h>
 #include <circle/sched/scheduler.h>
 #include <cstring>
+#include <new>
 
 namespace
 {
@@ -76,6 +87,24 @@ void KeyboardRemovedHandler(CDevice *, void *)
     AtomicIncrement((volatile int *)&s_reportSeq);
 }
 
+// The SDL keycode (sym) a key reports. DELIBERATELY NOT LAYOUT-DEPENDENT,
+// though desktop SDL's is, and the reasons are worth stating because the
+// question comes up every time somebody reads the keymap code below.
+//
+// A sym is what applications BIND ACTIONS TO. Games here read their controls
+// out of configuration files and out of defaults compiled in years ago, all
+// of them written against a US keyboard; a sym that moved with "keymap="
+// would silently rebind those controls on any board not set to "us", and a
+// key configuration saved on one board would mean something else on the
+// next. The scancode is what stays fixed across layouts, and this keeps the
+// sym fixed alongside it.
+//
+// There is also no side-effect-free way to ask Circle the question.
+// CKeyMap::Translate is a state machine, not a lookup: it TOGGLES caps, num
+// and scroll lock as it goes. SDL_GetKeyFromScancode is a pure query an
+// application may call at any time and in any number — SDL_GetScancodeFromKey
+// below answers by calling it once per scancode — so routing it through
+// Translate would flip the lock state hundreds of times per lookup.
 SDL_Keycode KeycodeFor(SDL_Scancode sc)
 {
     if (sc >= SDL_SCANCODE_A && sc <= SDL_SCANCODE_Z)
@@ -120,84 +149,156 @@ const SDL_Scancode ModScancode[8] = {
 // without having asked for anything.
 bool s_textInputActive = true;
 
-// The character a printable key produces under the modifiers in force, on a
-// US layout. Returns 0 for a key that types nothing.
+// The keyboard layout, and the only place in this file that has one.
 //
-// This is the forward direction of AsciiToKey below, and the two describe
-// the same keyboard: that one turns a byte into the key that would produce
-// it, this one turns a key press back into the byte a person would see.
-char TypedCharacter(SDL_Scancode sc, Uint16 mod)
+// It is Circle's, chosen at boot by the cmdline.txt "keymap=" option that
+// CKernelOptions reads — us, uk, de, es, fr, it or dv — so a board says what
+// is printed on its keys in the same place it says everything else about
+// itself, and this library does not carry a second copy of seven layouts.
+//
+// Built on first use rather than as a static object, because the constructor
+// reads the kernel options and a static is constructed before the kernel
+// exists. Placement new into fixed storage: there is exactly one, and it
+// lives as long as the machine does.
+alignas(CKeyMap) u8 s_KeyMapStore[sizeof(CKeyMap)];
+CKeyMap *s_pKeyMap = nullptr;
+
+CKeyMap *KeyMap(void)
 {
-    // A key held with control or a GUI key is a command, not text, and SDL
-    // sends no SDL_TEXTINPUT for one. Alt is left out for the same reason.
-    if (mod & (KMOD_CTRL | KMOD_ALT | KMOD_GUI))
-        return 0;
-
-    const bool shift = (mod & KMOD_SHIFT) != 0;
-    const bool caps = (mod & KMOD_CAPS) != 0;
-
-    if (sc >= SDL_SCANCODE_A && sc <= SDL_SCANCODE_Z)
-    {
-        const char base = (char)('a' + (sc - SDL_SCANCODE_A));
-        // Caps lock and shift each invert the case, so both together give
-        // lower case again — which is what a keyboard does.
-        return (shift != caps) ? (char)(base - 32) : base;
-    }
-
-    if (sc >= SDL_SCANCODE_1 && sc <= SDL_SCANCODE_9)
-    {
-        const char digit = (char)('1' + (sc - SDL_SCANCODE_1));
-        if (!shift)
-            return digit;
-        static const char shifted[9] = { '!', '@', '#', '$', '%', '^', '&', '*', '(' };
-        return shifted[sc - SDL_SCANCODE_1];
-    }
-
-    switch (sc)
-    {
-    case SDL_SCANCODE_0:            return shift ? ')' : '0';
-    case SDL_SCANCODE_SPACE:        return ' ';
-    case SDL_SCANCODE_MINUS:        return shift ? '_' : '-';
-    case SDL_SCANCODE_EQUALS:       return shift ? '+' : '=';
-    case SDL_SCANCODE_LEFTBRACKET:  return shift ? '{' : '[';
-    case SDL_SCANCODE_RIGHTBRACKET: return shift ? '}' : ']';
-    case SDL_SCANCODE_BACKSLASH:    return shift ? '|' : '\\';
-    case SDL_SCANCODE_SEMICOLON:    return shift ? ':' : ';';
-    case SDL_SCANCODE_APOSTROPHE:   return shift ? '"' : '\'';
-    case SDL_SCANCODE_GRAVE:        return shift ? '~' : '`';
-    case SDL_SCANCODE_COMMA:        return shift ? '<' : ',';
-    case SDL_SCANCODE_PERIOD:       return shift ? '>' : '.';
-    case SDL_SCANCODE_SLASH:        return shift ? '?' : '/';
-
-    // The keypad types its digits and operators regardless of shift; num
-    // lock is not tracked, and a keypad that navigates instead would send
-    // its own scancodes.
-    case SDL_SCANCODE_KP_DIVIDE:   return '/';
-    case SDL_SCANCODE_KP_MULTIPLY: return '*';
-    case SDL_SCANCODE_KP_MINUS:    return '-';
-    case SDL_SCANCODE_KP_PLUS:     return '+';
-    case SDL_SCANCODE_KP_PERIOD:   return '.';
-    case SDL_SCANCODE_KP_0:        return '0';
-    case SDL_SCANCODE_KP_1: case SDL_SCANCODE_KP_2: case SDL_SCANCODE_KP_3:
-    case SDL_SCANCODE_KP_4: case SDL_SCANCODE_KP_5: case SDL_SCANCODE_KP_6:
-    case SDL_SCANCODE_KP_7: case SDL_SCANCODE_KP_8: case SDL_SCANCODE_KP_9:
-        return (char)('1' + (sc - SDL_SCANCODE_KP_1));
-
-    default:
-        return 0;
-    }
+    if (!s_pKeyMap)
+        s_pKeyMap = new (s_KeyMapStore) CKeyMap;
+    return s_pKeyMap;
 }
 
-// Return, tab, backspace and escape have ASCII codes but are NOT text: SDL
-// delivers them as key events only, and an application that inserted them as
-// characters would put a control byte in its text field.
+// SDL's modifier word in the form Circle's keymap expects. Circle separates
+// the two Alt keys by meaning rather than by side: the LEFT one is Alt, the
+// RIGHT one is AltGr, the level shift that European layouts put their extra
+// characters behind.
+u8 CircleModifiers(Uint16 mod)
+{
+    u8 m = 0;
+    if (mod & KMOD_LSHIFT) m |= KEY_LSHIFT_MASK;
+    if (mod & KMOD_RSHIFT) m |= KEY_RSHIFT_MASK;
+    if (mod & KMOD_LALT)   m |= KEY_ALT_MASK;
+    if (mod & KMOD_RALT)   m |= KEY_ALTGR_MASK;
+    if (mod & KMOD_LGUI)   m |= KEY_LWIN_MASK;
+    if (mod & KMOD_RGUI)   m |= KEY_RWIN_MASK;
+    return m;
+}
+
+// SDL_TEXTINPUT carries UTF-8 and Circle's keymaps hold Latin-1, in which
+// every value IS its own Unicode code point — so the pound sign the UK
+// layout puts on shift-3, 0xA3, is code point U+00A3 and goes out as the two
+// bytes UTF-8 spells it with. Written as one byte it would be an invalid
+// sequence, and an application that draws its text would show a replacement
+// glyph or nothing at all.
+int Utf8FromLatin1(unsigned cp, char *out)
+{
+    if (cp < 0x80)
+    {
+        out[0] = (char)cp;
+        return 1;
+    }
+    out[0] = (char)(0xC0 | (cp >> 6));
+    out[1] = (char)(0x80 | (cp & 0x3F));
+    return 2;
+}
+
+// The text a key press produces under the modifiers in force, as the board's
+// layout prints it. Returns false for a key that types nothing, and writes a
+// NUL-terminated UTF-8 string otherwise.
+bool TypedText(SDL_Scancode sc, Uint16 mod, char *out)
+{
+    // A key held with control, the left alt or a GUI key is a command, not
+    // text, and SDL sends no SDL_TEXTINPUT for one.
+    //
+    // AltGr — the right alt — is the exception, and it is why the two alts
+    // are told apart here at all. On the European layouts it is a third
+    // level rather than a command modifier, and the characters behind it are
+    // ordinary text: the pipe on a UK keyboard, the braces and the backslash
+    // a German keyboard has nowhere else. The US layout defines nothing
+    // behind it, so on a US board this costs nothing and changes nothing.
+    if (mod & (KMOD_CTRL | KMOD_LALT | KMOD_GUI))
+        return false;
+
+    const bool altgr = (mod & KMOD_RALT) != 0;
+
+    // THE KEYPAD IS NOT ROUTED THROUGH THE LAYOUT, on purpose. Its printable
+    // keys carry the same characters in every layout Circle ships, so there
+    // is nothing for a layout to say about them; and Circle gates the digits
+    // on num lock, which starts off and which nothing here ever turns on, so
+    // asking the layout would stop the keypad typing digits at all. A keypad
+    // being navigated instead sends its own scancodes.
+    if (!altgr)
+    {
+        switch (sc)
+        {
+        case SDL_SCANCODE_KP_DIVIDE:   out[0] = '/'; out[1] = 0; return true;
+        case SDL_SCANCODE_KP_MULTIPLY: out[0] = '*'; out[1] = 0; return true;
+        case SDL_SCANCODE_KP_MINUS:    out[0] = '-'; out[1] = 0; return true;
+        case SDL_SCANCODE_KP_PLUS:     out[0] = '+'; out[1] = 0; return true;
+        case SDL_SCANCODE_KP_PERIOD:   out[0] = '.'; out[1] = 0; return true;
+        case SDL_SCANCODE_KP_0:        out[0] = '0'; out[1] = 0; return true;
+        case SDL_SCANCODE_KP_1: case SDL_SCANCODE_KP_2: case SDL_SCANCODE_KP_3:
+        case SDL_SCANCODE_KP_4: case SDL_SCANCODE_KP_5: case SDL_SCANCODE_KP_6:
+        case SDL_SCANCODE_KP_7: case SDL_SCANCODE_KP_8: case SDL_SCANCODE_KP_9:
+            out[0] = (char)('1' + (sc - SDL_SCANCODE_KP_1));
+            out[1] = 0;
+            return true;
+        default:
+            break;
+        }
+    }
+
+    // A scancode IS a USB HID usage code and so is Circle's physical code,
+    // which makes this the identity — within the table's range. The bounds
+    // test is not decoration: SDL has scancodes above 255 for keys no HID
+    // keyboard reports, and the u8 the keymap takes would fold one of those
+    // onto a letter.
+    if (sc <= SDL_SCANCODE_UNKNOWN || sc > PHY_MAX_CODE)
+        return false;
+
+    // Translate is a state machine as much as a lookup — it is what advances
+    // caps, num and scroll lock — so it is asked once per key press and its
+    // answer used for everything.
+    const u16 nCode = KeyMap()->Translate((u8)sc, CircleModifiers(mod));
+
+    // What came back is a character, one of Circle's named keys, or one of
+    // its console actions. Only two of those are text: an ordinary character,
+    // and the space bar.
+    //
+    // The named keys are the trap. Return, tab, backspace and escape all have
+    // strings in Circle's table because that table also drives a terminal,
+    // and so do the arrow keys, whose "text" is an escape sequence. SDL
+    // delivers every one of them as a key event only; an application that
+    // inserted them as characters would put control bytes in its text field.
+    if (nCode != KeySpace && (nCode <= ' ' || nCode >= KeySpace))
+        return false;
+
+    // Modifiers are passed as none because the one thing GetString does with
+    // them is fold control-held letters into control characters, and control
+    // never reaches here. What it does do is apply caps lock — which inverts
+    // the case, as shift already did by selecting the shifted table, so the
+    // two together cancel and give lower case back.
+    char Buffer[2];
+    const char *pString = KeyMap()->GetString(nCode, 0, Buffer);
+    if (!pString || !pString[0])
+        return false;
+
+    const int nLength = Utf8FromLatin1((unsigned char)pString[0], out);
+    out[nLength] = '\0';
+    return true;
+}
+
 void PushTextInputEvent(SDL_Scancode sc, Uint16 mod)
 {
-    if (!s_textInputActive)
-        return;
-
-    const char c = TypedCharacter(sc, mod);
-    if (c == 0)
+    // Asked even when nothing is collecting text, because this call is also
+    // what advances the layout's lock state: caps lock is a key like any
+    // other, and a layout that stopped counting presses of it while text
+    // input was off would come back with every letter in the wrong case.
+    char Text[8];
+    const bool bText = TypedText(sc, mod, Text);
+    if (!bText || !s_textInputActive)
         return;
 
     SDL_Event ev;
@@ -205,8 +306,7 @@ void PushTextInputEvent(SDL_Scancode sc, Uint16 mod)
     ev.type = SDL_TEXTINPUT;
     ev.text.timestamp = SDL_GetTicks();
     ev.text.windowID = 1;
-    ev.text.text[0] = c;
-    ev.text.text[1] = '\0';
+    memcpy(ev.text.text, Text, strlen(Text) + 1);
     SDL_PushEvent(&ev);
 }
 
@@ -331,6 +431,11 @@ const u64 INJ_HOLD_US = 80000;
 const u64 INJ_GAP_US = 50000;
 
 // ASCII byte -> US-layout scancode + shift. false => ignore the byte.
+//
+// This names a KEY POSITION, not a character. What the application receives
+// as typed text is that position read through the board's own layout, so on
+// a board set to a non-US keymap `key type` presses the US positions and the
+// characters that come out are that layout's.
 bool AsciiToKey(char c, SDL_Scancode &sc, bool &shift)
 {
     shift = false;
