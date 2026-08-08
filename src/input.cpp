@@ -763,15 +763,19 @@ void SDL2Circle_NoInputHalt(void)
     for (unsigned nSaid = 0;; nSaid++)
     {
         SDL2Circle_Log("input", SDL2CIRCLE_LOG_ERROR,
-                       "STOPPED: --rapi-debug-uart is armed and this board has "
-                       "no USB host controller, so a real keyboard, mouse or "
-                       "pad can never work here. Serial injection would still "
-                       "have worked, which is why this cannot be allowed to "
-                       "run: every automated check would pass on a board no "
-                       "person can use. FIX: give the host kernel a "
-                       "CUSBHCIDevice member and call Initialize() on it in "
-                       "CKernel::Initialize, with the SD card and the console. "
-                       "The application has not been started and will not be.");
+                       "STOPPED: robot hands are armed (--rapi-debug-uart) and "
+                       "this KERNEL never brought USB up, so no keyboard, mouse "
+                       "or pad can ever work on it. Nothing here built a host "
+                       "controller. Do not go looking at the board, the ports "
+                       "or anything plugged in — the fault is not there. FIX: "
+                       "give the host kernel a CUSBHCIDevice member and call "
+                       "Initialize() on it in CKernel::Initialize, beside the "
+                       "SD card and the console. Stopped rather than run "
+                       "because injection does not go through USB: it would "
+                       "have worked, every automated check would have passed, "
+                       "and only a person with a real keyboard would ever have "
+                       "found out. The application has not been started and "
+                       "will not be.");
 
         const u64 nUntil = CTimer::GetClockTicks64()
                            + (u64) SDL2CIRCLE_NOINPUT_REPEAT_SECONDS * CLOCKHZ;
