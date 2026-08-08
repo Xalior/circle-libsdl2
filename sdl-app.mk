@@ -16,6 +16,22 @@ SDL_APP_DIR := $(dir $(lastword $(MAKEFILE_LIST)))
 
 SDL_APP_LDSCRIPT ?= $(SDL_APP_DIR)sdl-app.ld
 
+# THE CROSS COMPILER GOES THROUGH ccache WHEN THERE IS ONE.
+#
+# Circle's Rules.mk, which an application includes before this file, names the
+# compiler directly ($(PREFIX)g++). Nothing was cached as a result: a game's
+# sources were fully recompiled every time, however many times the same source
+# had already been built from the same headers.
+#
+# Only if ccache is installed, so an application depends on nothing new. AS is
+# left alone: Rules.mk sets it from CC before this point.
+CCACHE := $(shell command -v ccache 2>/dev/null)
+ifneq ($(CCACHE),)
+CPP := $(CCACHE) $(CPP)
+CC  := $(CCACHE) $(CC)
+endif
+
+
 # The shim's audio backend needs Circle's sound library; carry it here so
 # applications only ever list libSDL2.a.
 LIBS += $(CIRCLEHOME)/lib/sound/libsound.a

@@ -462,6 +462,24 @@ DEFINE += -DSDL2CIRCLE_PRESENT_MAX_CMDS=$(PRESENT_CMDS)
 
 include $(CIRCLEHOME)/Rules.mk
 
+# THE CROSS COMPILER GOES THROUGH ccache WHEN THERE IS ONE.
+#
+# Circle's Rules.mk names the compiler directly ($(PREFIX)g++), so nothing
+# here was cached: ccache saw only the host compiles cmake runs while
+# building libc++, and answered 15 of 2990 calls. Every cross compile — this
+# archive, and every consumer's game and kernel through sdl-app.mk — was a
+# full compile every time, however many times the same source had already
+# been built from the same headers.
+#
+# Only if ccache is installed, so nothing here depends on it. AS is left
+# alone: Rules.mk sets it from CC before this point, and assembling is not
+# worth caching.
+CCACHE := $(shell command -v ccache 2>/dev/null)
+ifneq ($(CCACHE),)
+CPP := $(CCACHE) $(CPP)
+CC  := $(CCACHE) $(CC)
+endif
+
 # src/libcxxthreading.cpp implements libc++'s external-threading ABI against
 # the <__external_threading> header the world was built with, which
 # Config.mk's CFLAGS already put on the include path. Nothing private to
