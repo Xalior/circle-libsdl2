@@ -418,13 +418,19 @@ makes a set of controls portable between boards.
 through the layout the board's `cmdline.txt` selects:
 
 ```
-keymap=uk
+keymap=UK
 ```
 
-Circle carries `us`, `uk`, `de`, `es`, `fr`, `it` and `dv`, and `us` is the
-default. So on a board set to `uk`, shift-2 types `"`, shift-3 types `£` and
-the key beside Enter types `#`; on `de`, the Y and Z positions swap the
-letters they print. The text is UTF-8, as SDL requires — a character outside
+Circle carries `US`, `UK`, `DE`, `ES`, `FR`, `IT` and `DV`. **The names are
+uppercase and matched exactly, and a card that names none of them — or names
+one in the wrong case — gets German.** That is Circle's built-in default, and
+it is chosen silently: no warning, no log line. It presents as individual keys
+printing the wrong character rather than as a setting that was ignored, which
+makes it look like faulty hardware.
+
+So on a board set to `UK`, shift-2 types `"`, shift-3 types `£` and the key
+beside Enter types `#`; on `DE`, the Y and Z positions swap the letters they
+print. The text is UTF-8, as SDL requires — a character outside
 ASCII, such as `£`, arrives as the several bytes UTF-8 spells it with.
 
 **AltGr types; the other modifiers do not.** A key held with control, with
