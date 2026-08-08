@@ -141,12 +141,25 @@
 // The read-ahead window used when the host names none, in kilobytes. Zero
 // turns read-ahead off.
 //
-// PROVISIONAL, for the same reason and in the same way as the pool size: the
-// useful depth depends on how the program reads, and the report is what
-// settles it. Read the share of each window that was actually used — a figure
-// near the whole of it means the depth could go further, and a small one
-// means the card is being asked for sectors nobody wants.
-#define DISKCACHE_DEFAULT_READAHEAD_KB  64
+// This is a compromise between two things that do not peak together, and it
+// is worth knowing which way it errs. Total time in the card driver keeps
+// falling as the window grows, up to a point well past this. The worst SINGLE
+// read grows too, and much faster: a deep window is one transaction the
+// calling core sits blocked on, so read-ahead trades many small waits for one
+// large one. Totals call that a pure win and a program drawing frames does
+// not, because the same delay spread over many reads is invisible and
+// gathered into one read lands inside a frame.
+//
+// So this is set below the fastest depth on purpose: it takes most of the
+// reduction in total time while keeping the worst single read to a fraction
+// of a frame. A program that does all its reading while nothing is being
+// drawn — loading screens, and most of these games — can afford to go
+// deeper, and the switch is there for that.
+//
+// Still provisional in the same sense as the pool size: the report gives the
+// share of each window that was actually wanted, and the largest single read,
+// which are the two numbers this trades between.
+#define DISKCACHE_DEFAULT_READAHEAD_KB  16
 
 // A window deeper than this is refused however it was asked for. Beyond it a
 // single transaction takes long enough that the card stops being the thing
