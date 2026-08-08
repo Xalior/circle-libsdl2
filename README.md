@@ -18,6 +18,13 @@ it marshals every platform call back to core 0 through lock-free rings and
 mailboxes, and provides a presentation worker you can run on a core of your
 choosing. See [Running off core 0](#running-off-core-0).
 
+### Also in this repository, and not part of SDL
+
+[`circle-diskcache/`](circle-diskcache/) is a read cache for a Circle block
+device. It uses Circle and nothing else — not this library, not SDL — and any
+Circle project can copy its two files and use it. It is kept here because that
+is a convenient place for it today, and it may move.
+
 Proven in real use by [pi-mame](https://github.com/Xalior/pi-mame), which runs
 MAME's emulation core on bare metal through this library — a full application
 using the whole API surface at once: fullscreen software rendering, USB HID
