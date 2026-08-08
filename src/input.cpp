@@ -762,20 +762,30 @@ void SDL2Circle_NoInputHalt(void)
 {
     for (unsigned nSaid = 0;; nSaid++)
     {
+        // Said in pieces because the log carries at most LOG_LINE_MAX
+        // characters a line and drops the rest without a word. The most
+        // useful sentence here is the fix, and as one long line it was
+        // exactly the part that fell off the end.
         SDL2Circle_Log("input", SDL2CIRCLE_LOG_ERROR,
                        "STOPPED: robot hands are armed (--rapi-debug-uart) and "
-                       "this KERNEL never brought USB up, so no keyboard, mouse "
-                       "or pad can ever work on it. Nothing here built a host "
-                       "controller. Do not go looking at the board, the ports "
-                       "or anything plugged in — the fault is not there. FIX: "
-                       "give the host kernel a CUSBHCIDevice member and call "
-                       "Initialize() on it in CKernel::Initialize, beside the "
-                       "SD card and the console. Stopped rather than run "
-                       "because injection does not go through USB: it would "
-                       "have worked, every automated check would have passed, "
-                       "and only a person with a real keyboard would ever have "
-                       "found out. The application has not been started and "
-                       "will not be.");
+                       "this kernel never brought USB up. No keyboard, mouse or "
+                       "pad can ever work on it.");
+
+        SDL2Circle_Log("input", SDL2CIRCLE_LOG_ERROR,
+                       "Nothing here built a host controller, so the fault is in "
+                       "the kernel. Do not go looking at the board, the ports, or "
+                       "anything plugged in.");
+
+        SDL2Circle_Log("input", SDL2CIRCLE_LOG_ERROR,
+                       "FIX: give the host kernel a CUSBHCIDevice member and call "
+                       "Initialize() on it in CKernel::Initialize, beside the SD "
+                       "card and the console.");
+
+        SDL2Circle_Log("input", SDL2CIRCLE_LOG_ERROR,
+                       "Stopped rather than run because injection does not go "
+                       "through USB: it would have worked and every automated "
+                       "check would have passed. The application has not started "
+                       "and will not.");
 
         const u64 nUntil = CTimer::GetClockTicks64()
                            + (u64) SDL2CIRCLE_NOINPUT_REPEAT_SECONDS * CLOCKHZ;
