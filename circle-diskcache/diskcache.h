@@ -129,37 +129,43 @@
 
 // The pool size used when the host names none, in kilobytes.
 //
-// PROVISIONAL. This number has not yet been settled by measurement and is not
-// claimed to be right for any particular program. It is a starting point large
-// enough to hold a working set that repeats and small enough to be invisible
-// on every board this runs on. The report this class prints is what replaces
-// it: run the program, read the hit rate and the high-water occupancy, and set
-// the size from those. The right value is per program, which is why the host
-// can name it at boot.
-#define DISKCACHE_DEFAULT_KB        4096
+// Chosen to be larger than any program has been measured to want, rather than
+// to fit any of them. What a program actually occupies varies enormously — a
+// few kilobytes where nothing is re-read, a few megabytes for the heaviest
+// reader seen — so a shared number cannot be economical for all of them and
+// should not try. It can be generous instead: on the boards this runs on, this
+// much memory is not worth reclaiming, and being larger than the working set is
+// what makes the pool stop being the limit.
+//
+// A program that wants its own figure names it at boot. The report is how to
+// find it: the high-water occupancy says what was really used, and a program
+// whose occupancy sits far below the pool has its answer.
+#define DISKCACHE_DEFAULT_KB        8192
 
 // The read-ahead window used when the host names none, in kilobytes. Zero
 // turns read-ahead off.
 //
-// This is a compromise between two things that do not peak together, and it
-// is worth knowing which way it errs. Total time in the card driver keeps
-// falling as the window grows, up to a point well past this. The worst SINGLE
-// read grows too, and much faster: a deep window is one transaction the
-// calling core sits blocked on, so read-ahead trades many small waits for one
-// large one. Totals call that a pure win and a program drawing frames does
-// not, because the same delay spread over many reads is invisible and
-// gathered into one read lands inside a frame.
+// This trades between two things that do not peak together, and it is worth
+// knowing which way it errs. Total time in the card driver keeps falling as
+// the window grows, well past this depth. The worst SINGLE read grows too, and
+// much faster: a deep window is one transaction the calling core sits blocked
+// on, so read-ahead trades many small waits for one large one. Totals call
+// that a pure win; a program drawing frames does not, because the same delay
+// spread over many reads is invisible and gathered into one read lands inside
+// a frame and drops it.
 //
-// So this is set below the fastest depth on purpose: it takes most of the
-// reduction in total time while keeping the worst single read to a fraction
-// of a frame. A program that does all its reading while nothing is being
-// drawn — loading screens, and most of these games — can afford to go
-// deeper, and the switch is there for that.
+// This is set well below the fastest depth on purpose, at the point where the
+// worst single read stays a small fraction of a frame — so a program pays no
+// visible price for it even when it reads while drawing. It still takes the
+// large majority of the reduction in total time, which is what makes this
+// depth worth having on by default rather than something to opt into.
 //
-// Still provisional in the same sense as the pool size: the report gives the
-// share of each window that was actually wanted, and the largest single read,
-// which are the two numbers this trades between.
-#define DISKCACHE_DEFAULT_READAHEAD_KB  16
+// A program that does all its reading while nothing is drawn — loading
+// screens, and most games — can go several times deeper for a further gain,
+// and the switch is there for that. The report gives both numbers it trades
+// between: the share of each window that was actually wanted, and the largest
+// single read.
+#define DISKCACHE_DEFAULT_READAHEAD_KB  4
 
 // A window deeper than this is refused however it was asked for. Beyond it a
 // single transaction takes long enough that the card stops being the thing
