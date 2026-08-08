@@ -264,8 +264,15 @@ deps:
 # FETCH (git, run serially): populate one board's world source. Idempotent.
 # The world's libc++ sources are a symlink to the one shared checkout above,
 # which every board and every project beside this one points at.
+#
+# THE LIBC++ FETCH IS ASKED FOR ONLY WHEN THE WORLD HAS NO libc++ ALREADY.
+# It used to be a prerequisite, so it ran first, unconditionally — and a world
+# whose symlink already resolved then declined to use what had just been
+# fetched. Run from a directory where CIRCLE_LLVM points somewhere that does
+# not exist yet, that is 525 MB downloaded and immediately ignored, left
+# behind as an untracked directory nothing reads.
 .PHONY: world-fetch
-world-fetch: llvm-cache
+world-fetch:
 	@if [ "$(CIRCLE_WORLDS)" = "$(CURDIR)" ]; then \
 		git submodule update --init --recursive circle-stdlib-$(BOARD); \
 	elif [ ! -d "$(CIRCLE_STDLIB)/libs/circle" ]; then \
@@ -275,8 +282,9 @@ world-fetch: llvm-cache
 		echo "CIRCLE_WORLDS to use this repository's own submodules." >&2; \
 		exit 1; \
 	fi
-	@[ -f $(CIRCLE_STDLIB)/libs/llvm-project/runtimes/CMakeLists.txt ] || \
-		ln -sfn $(CIRCLE_LLVM) $(CIRCLE_STDLIB)/libs/llvm-project
+	@[ -f $(CIRCLE_STDLIB)/libs/llvm-project/runtimes/CMakeLists.txt ] || { \
+		$(MAKE) llvm-cache \
+		&& ln -sfn $(CIRCLE_LLVM) $(CIRCLE_STDLIB)/libs/llvm-project; }
 
 # Every core's stack, including the one an application runs on: 2 MB, four
 # cores, 8 MB of a board's memory. A consumer that needs more says so:
