@@ -2,8 +2,25 @@
 #
 # Include AFTER Circle's Rules.mk. Links with sdl-app.ld, which keeps the
 # TLS sections adjacent (binutils 2.44+ refuses PT_TLS otherwise, and
-# libc++'s threading support carries TLS). The overridden-recipe warning
-# from make is expected.
+# libc++'s threading support carries TLS).
+#
+# Circle's Rules.mk defines a link rule for $(TARGET).img as well, and the
+# rule here replaces it. Make warns when a recipe is overridden — twice, once
+# for each side — on every board of every build, which reads like something
+# going wrong to anyone who has not been told it is expected.
+#
+# An application avoids it by pointing TARGET at a name nothing builds while
+# it reads Rules.mk, and restoring it afterwards:
+#
+#   SDL_APP_IMAGE := $(TARGET)
+#   TARGET := $(OBJDIR)/.circle-unused
+#   include $(CIRCLEHOME)/Rules.mk
+#   TARGET := $(SDL_APP_IMAGE)
+#
+# Circle's rule then attaches to the throwaway name, this one is the only
+# recipe for the image, and nothing warns. TARGET reaches nothing else in
+# Rules.mk that an application here uses — only its own install, tftpboot and
+# flash conveniences, which these ports replace with their own.
 #
 # sdl-app.ld is derived from Circle's circle.ld and remains GPLv3 (see its
 # header); the rest of this project is zlib-licensed.
