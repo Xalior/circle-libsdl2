@@ -74,6 +74,11 @@ CDiskCacheDevice::CDiskCacheDevice (const char *pDeviceName)
 	m_nHistoryMask (0),
 	m_nPoolKB (0),
 	m_nOverheadKB (0),
+	m_pAhead (0),
+	m_nAheadDepth (0),
+	m_nAheadBase (0),
+	m_nAheadHeld (0),
+	m_nDeviceSectors (0),
 	m_nAccessCounter (0),
 	m_nRandomState (0x123456789ABCDEFULL),
 	m_nCacheHits (0),
@@ -82,6 +87,11 @@ CDiskCacheDevice::CDiskCacheDevice (const char *pDeviceName)
 	m_nEvictions (0),
 	m_nFirstSightings (0),
 	m_nWriteUpdates (0),
+	m_nAheadHits (0),
+	m_nAheadHitSectors (0),
+	m_nAheadFetches (0),
+	m_nAheadFetched (0),
+	m_nAheadUsed (0),
 	m_nNextExpected (0),
 	m_bHavePrevious (FALSE),
 	m_nSequential (0),
@@ -141,6 +151,10 @@ boolean CDiskCacheDevice::Install (void)
 
 	m_pDevice = pReal;
 
+	// Where the card ends, so a read-ahead run is never asked for past it.
+	u64 ullSize = pReal->GetSize ();
+	m_nDeviceSectors = ullSize == (u64) -1 ? 0 : ullSize / DISKCACHE_SECTOR_SIZE;
+
 	m_ullFirstTicks = CTimer::GetClockTicks64 ();
 	m_ullLastReportTicks = m_ullFirstTicks;
 	m_bStarted = TRUE;
@@ -164,33 +178,133 @@ void CDiskCacheDevice::ReleasePool (void)
 	if (m_pSlot != 0)	CMemorySystem::HeapFree (m_pSlot);
 	if (m_pBucket != 0)	CMemorySystem::HeapFree (m_pBucket);
 	if (m_pHistory != 0)	CMemorySystem::HeapFree (m_pHistory);
+	if (m_pAhead != 0)	CMemorySystem::HeapFree (m_pAhead);
 
 	m_pData = 0;
 	m_pSlot = 0;
 	m_pBucket = 0;
 	m_pHistory = 0;
+	m_pAhead = 0;
 	m_nSlots = 0;
 	m_nSlotsUsed = 0;
 	m_nBucketMask = 0;
 	m_nHistoryMask = 0;
 	m_nPoolKB = 0;
 	m_nOverheadKB = 0;
+	m_nAheadDepth = 0;
+	m_nAheadBase = 0;
+	m_nAheadHeld = 0;
 }
 
-boolean CDiskCacheDevice::Configure (unsigned nKilobytes)
+// The window holds one run and is replaced whole, so giving it up is only
+// ever forgetting which run that was. Nothing in it was owed to anybody.
+void CDiskCacheDevice::DropAhead (void)
+{
+	m_nAheadBase = 0;
+	m_nAheadHeld = 0;
+}
+
+boolean CDiskCacheDevice::Configure (unsigned nKilobytes, unsigned nReadAheadKB)
 {
 	CLogger *pLog = CLogger::Get ();
 
 	ReleasePool ();
 
-	if (nKilobytes == 0)
+	boolean bOK = ConfigurePool (nKilobytes);
+	if (!ConfigureReadAhead (nReadAheadKB))
+	{
+		bOK = FALSE;
+	}
+
+	if (nKilobytes == 0 && nReadAheadKB == 0 && pLog != 0)
+	{
+		pLog->Write (From, LogNotice,
+			     "cache off and no read-ahead — every read reaches the card "
+			     "exactly as it was asked for, and only the counting is running");
+	}
+
+	return bOK;
+}
+
+// The window, sized after the pool because it is held against it.
+boolean CDiskCacheDevice::ConfigureReadAhead (unsigned nReadAheadKB)
+{
+	CLogger *pLog = CLogger::Get ();
+
+	if (nReadAheadKB == 0)
+	{
+		return TRUE;
+	}
+
+	unsigned nAsked = nReadAheadKB;
+
+	if (nReadAheadKB > DISKCACHE_MAX_READAHEAD_KB)
+	{
+		nReadAheadKB = DISKCACHE_MAX_READAHEAD_KB;
+	}
+
+	// Held against the pool it feeds. A window several times the size of the
+	// pool beside it is a pair of numbers nobody meant, and this is cheaper
+	// to enforce here than to get right at every call site.
+	if (m_nSlots > 0)
+	{
+		unsigned nLimit = m_nPoolKB / DISKCACHE_READAHEAD_POOL_DIVISOR;
+		if (nLimit == 0)
+		{
+			nLimit = 1;
+		}
+		if (nReadAheadKB > nLimit)
+		{
+			nReadAheadKB = nLimit;
+		}
+	}
+
+	unsigned nDepth = nReadAheadKB * (1024 / DISKCACHE_SECTOR_SIZE);
+	size_t nBytes = (size_t) nDepth * DISKCACHE_SECTOR_SIZE;
+
+	m_pAhead = (u8 *) CMemorySystem::HeapAllocate (nBytes, HEAP_LOW);
+	if (m_pAhead == 0)
 	{
 		if (pLog != 0)
 		{
-			pLog->Write (From, LogNotice,
-				     "cache off — every read reaches the card, and only the "
-				     "counting is running");
+			pLog->Write (From, LogError,
+				     "%u KB read-ahead window refused by the low heap — "
+				     "read-ahead off", nReadAheadKB);
 		}
+		return FALSE;
+	}
+
+	m_nAheadDepth = nDepth;
+	m_nAheadBase = 0;
+	m_nAheadHeld = 0;
+
+	if (pLog != 0)
+	{
+		if (nReadAheadKB != nAsked)
+		{
+			pLog->Write (From, LogNotice,
+				     "read-ahead on: %u KB window in %u sectors, cut down from "
+				     "the %u KB asked for to stay in proportion to the pool",
+				     nReadAheadKB, nDepth, nAsked);
+		}
+		else
+		{
+			pLog->Write (From, LogNotice,
+				     "read-ahead on: %u KB window in %u sectors, fetched when a "
+				     "read carries on from the last one",
+				     nReadAheadKB, nDepth);
+		}
+	}
+
+	return TRUE;
+}
+
+boolean CDiskCacheDevice::ConfigurePool (unsigned nKilobytes)
+{
+	CLogger *pLog = CLogger::Get ();
+
+	if (nKilobytes == 0)
+	{
 		return TRUE;
 	}
 
@@ -279,7 +393,7 @@ boolean CDiskCacheDevice::Configure (unsigned nKilobytes)
 	if (pLog != 0)
 	{
 		pLog->Write (From, LogNotice,
-			     "cache on: %u KB pool in %u blocks of %u bytes, %u KB of "
+			     "pool on: %u KB in %u blocks of %u bytes, %u KB of "
 			     "bookkeeping, write-through",
 			     nKilobytes, nSlots, (unsigned) DISKCACHE_SECTOR_SIZE,
 			     m_nOverheadKB);
@@ -532,6 +646,113 @@ boolean CDiskCacheDevice::RemoveDevice (void)
 	return TRUE;
 }
 
+// Is the whole of this range in the window?
+boolean CDiskCacheDevice::ServeFromAhead (void *pBuffer, u64 nStartSector, u32 nSectors)
+{
+	if (   m_nAheadHeld == 0
+	    || nStartSector < m_nAheadBase
+	    || nStartSector + nSectors > m_nAheadBase + m_nAheadHeld)
+	{
+		return FALSE;
+	}
+
+	memcpy (pBuffer, m_pAhead + (size_t) (nStartSector - m_nAheadBase) * DISKCACHE_SECTOR_SIZE,
+		(size_t) nSectors * DISKCACHE_SECTOR_SIZE);
+	return TRUE;
+}
+
+// Ask the card for a whole run in one transaction and keep it. Returns the
+// number of sectors brought back, or 0 if the run could not be had — in which
+// case the window is left empty and the caller falls back to a plain read.
+//
+// The duration is the caller's to record: this is one card transaction like
+// any other, and it is counted as one.
+int CDiskCacheDevice::FillAhead (u64 nStartSector, u32 nSectors, unsigned *pMicros)
+{
+	// A run never reaches past the end of the card, never past the window it
+	// has to fit in, and never falls short of what was actually asked for.
+	// The order matters: the last of those three is what makes a request at
+	// or beyond the end of the card fall through to a plain read and be
+	// refused there, rather than being turned into a huge run here.
+	u32 nRun = m_nAheadDepth;
+
+	if (m_nDeviceSectors != 0)
+	{
+		if (nStartSector >= m_nDeviceSectors)
+		{
+			return 0;		// nothing here to read ahead of
+		}
+		u64 nLeft = m_nDeviceSectors - nStartSector;
+		if (nLeft < nRun)
+		{
+			nRun = (u32) nLeft;
+		}
+	}
+
+	if (nRun < nSectors)
+	{
+		nRun = nSectors;		// never fetch less than was asked for
+	}
+	if (nRun > m_nAheadDepth)
+	{
+		return 0;			// larger than the window: not ours
+	}
+
+	DropAhead ();
+
+	m_pDevice->Seek (nStartSector * (u64) DISKCACHE_SECTOR_SIZE);
+
+	unsigned nBefore = CTimer::GetClockTicks ();
+	int nResult = m_pDevice->Read (m_pAhead, (size_t) nRun * DISKCACHE_SECTOR_SIZE);
+	*pMicros = CTimer::GetClockTicks () - nBefore;
+
+	if (nResult != (int) ((size_t) nRun * DISKCACHE_SECTOR_SIZE))
+	{
+		return 0;
+	}
+
+	m_nAheadBase = nStartSector;
+	m_nAheadHeld = nRun;
+
+	m_nAheadFetches++;
+	m_nAheadFetched += nRun;
+
+	return (int) nRun;
+}
+
+// Offer a range to the pool on the terms every read gets. Held already means
+// refresh it and make it recent; seen once before means admit it; never seen
+// means remember the sighting and nothing more. Read-ahead calls this with
+// exactly what the caller asked for, never with the rest of the run, so a
+// stream cannot admit itself by being fetched.
+void CDiskCacheDevice::OfferRange (u64 nStartSector, u32 nSectors, const u8 *pData)
+{
+	if (m_nSlots == 0)
+	{
+		return;
+	}
+
+	for (u32 i = 0; i < nSectors; i++, pData += DISKCACHE_SECTOR_SIZE)
+	{
+		u64 nSector = nStartSector + i;
+		u32 nSlot = Lookup (nSector);
+
+		if (nSlot != DISKCACHE_NO_SLOT)
+		{
+			memcpy (SlotData (nSlot), pData, DISKCACHE_SECTOR_SIZE);
+			m_pSlot[nSlot].nStamp = m_nAccessCounter;
+		}
+		else if (HistorySeen (nSector))
+		{
+			Admit (nSector, pData);
+		}
+		else
+		{
+			m_nFirstSightings++;
+		}
+	}
+}
+
 int CDiskCacheDevice::Read (void *pBuffer, size_t nCount)
 {
 	if (m_pDevice == 0)
@@ -545,13 +766,19 @@ int CDiskCacheDevice::Read (void *pBuffer, size_t nCount)
 				&& nSectors > 0
 				&& (m_ullOffset % DISKCACHE_SECTOR_SIZE) == 0;
 
+	// Whether this read carries straight on from the last one, decided before
+	// the sequence record is updated. This is the only thing read-ahead acts
+	// on: a run that is being walked through is worth fetching in bulk, and a
+	// read that lands somewhere new is not.
+	boolean bSequential = m_bHavePrevious && nStartSector == m_nNextExpected;
+
 	// Recency is measured in sectors asked for rather than in requests, so
 	// that the age of a block is an upper bound on how many distinct blocks
 	// could have been touched since — which is what makes the age of a hit
 	// mean something about pool size.
 	m_nAccessCounter += nSectors;
 
-	// Everything present? Then the card is not touched at all.
+	// 1. The pool. Everything present means the card is not touched at all.
 	if (m_nSlots > 0 && bWholeSectors)
 	{
 		boolean bAllResident = TRUE;
@@ -595,9 +822,64 @@ int CDiskCacheDevice::Read (void *pBuffer, size_t nCount)
 		}
 	}
 
-	// Not all present. One transaction for the whole range, which is cheaper
-	// than several even where part of it was already held: the card charges
-	// mostly for being asked at all.
+	// 2. The read-ahead window, if the run it holds covers this. Also free of
+	// the card, and the sectors still have to earn a place in the pool the
+	// ordinary way.
+	if (   m_nAheadDepth > 0 && bWholeSectors
+	    && ServeFromAhead (pBuffer, nStartSector, nSectors))
+	{
+		m_nAheadHits++;
+		m_nAheadHitSectors += nSectors;
+		m_nAheadUsed += nSectors;
+
+		RecordRequest (&m_Read, nSectors);
+		m_ullOffset += nCount;
+		RecordSequence (nStartSector, nSectors);
+
+		OfferRange (nStartSector, nSectors,
+			    m_pAhead + (size_t) (nStartSector - m_nAheadBase)
+				       * DISKCACHE_SECTOR_SIZE);
+
+		return (int) nCount;
+	}
+
+	// 3. The card. Position it explicitly: a read-ahead run leaves the real
+	// device somewhere past where this layer's own position says it is, and
+	// nothing above here knows that happened.
+	m_pDevice->Seek (m_ullOffset);
+
+	// 3a. A read carrying on from the last one, with a window to put a run in:
+	// ask for the whole run at once. The reads that follow it come out of the
+	// window and cost nothing.
+	if (   m_nAheadDepth > 0 && bSequential && bWholeSectors
+	    && nSectors <= m_nAheadDepth)
+	{
+		unsigned nMicros = 0;
+		int nRun = FillAhead (nStartSector, nSectors, &nMicros);
+
+		if (nRun > 0)
+		{
+			memcpy (pBuffer, m_pAhead, nCount);
+			m_nAheadUsed += nSectors;
+
+			m_ullOffset += nCount;
+
+			RecordRequest (&m_Read, nSectors);
+			RecordTiming (&m_Read, nMicros, TRUE);
+			RecordSequence (nStartSector, nSectors);
+
+			OfferRange (nStartSector, nSectors, m_pAhead);
+
+			return (int) nCount;
+		}
+
+		// The run could not be had. Fall through to a plain read, which is
+		// what would have happened without read-ahead, and put the device
+		// back where this read started.
+		m_pDevice->Seek (m_ullOffset);
+	}
+
+	// 3b. Exactly what was asked for, and nothing more.
 	unsigned nBefore = CTimer::GetClockTicks ();
 	int nResult = m_pDevice->Read (pBuffer, nCount);
 	unsigned nMicros = CTimer::GetClockTicks () - nBefore;
@@ -611,32 +893,9 @@ int CDiskCacheDevice::Read (void *pBuffer, size_t nCount)
 	RecordTiming (&m_Read, nMicros, nResult >= 0);
 	RecordSequence (nStartSector, nSectors);
 
-	// Admission. A block that was already held is refreshed and made recent;
-	// one seen for the second time enters the pool; one seen for the first
-	// time is only remembered, so a file read once from end to end passes
-	// through without displacing anything.
-	if (m_nSlots > 0 && bWholeSectors && nResult == (int) nCount)
+	if (bWholeSectors && nResult == (int) nCount)
 	{
-		const u8 *pIn = (const u8 *) pBuffer;
-		for (u32 i = 0; i < nSectors; i++, pIn += DISKCACHE_SECTOR_SIZE)
-		{
-			u64 nSector = nStartSector + i;
-			u32 nSlot = Lookup (nSector);
-
-			if (nSlot != DISKCACHE_NO_SLOT)
-			{
-				memcpy (SlotData (nSlot), pIn, DISKCACHE_SECTOR_SIZE);
-				m_pSlot[nSlot].nStamp = m_nAccessCounter;
-			}
-			else if (HistorySeen (nSector))
-			{
-				Admit (nSector, pIn);
-			}
-			else
-			{
-				m_nFirstSightings++;
-			}
-		}
+		OfferRange (nStartSector, nSectors, (const u8 *) pBuffer);
 	}
 
 	return nResult;
@@ -709,8 +968,12 @@ int CDiskCacheDevice::Write (const void *pBuffer, size_t nCount)
 	}
 
 	// A write breaks the read-ahead prediction: the next read is not a
-	// continuation of anything this layer has seen.
+	// continuation of anything this layer has seen. The window goes too —
+	// it may hold sectors this write has just changed, and it holds one run
+	// that costs nothing to fetch again, so giving it up whole is cheaper
+	// than working out which part of it is now wrong.
 	m_bHavePrevious = FALSE;
+	DropAhead ();
 
 	return nResult;
 }
@@ -879,6 +1142,10 @@ void CDiskCacheDevice::ReportLegend (void)
 		     "by how long each hit block had gone untouched. A floor, not an exact "
 		     "figure: the real rate at a size is this or better");
 	pLog->Write (From, LogNotice,
+		     "ahead  = runs fetched because a read carried on from the last one, and "
+		     "how much of each run something went on to ask for. A low share means the "
+		     "card is being asked for sectors nobody wants");
+	pLog->Write (From, LogNotice,
 		     "card   = time inside the card driver per request, and the time the cache "
 		     "meant nobody had to spend");
 }
@@ -1043,6 +1310,40 @@ void CDiskCacheDevice::Report (void)
 		pLog->Write (From, LogNotice, "  curve %s", (const char *) Curve);
 	}
 
+	if (m_nAheadDepth > 0)
+	{
+		unsigned nAheadTenths = PercentTenths (m_nAheadHits, m_Read.nRequests);
+		unsigned nUsedTenths = PercentTenths (m_nAheadUsed, m_nAheadFetched);
+		pLog->Write (From, LogNotice,
+			     "  ahead  %u KB window, %llu runs, %llu sectors fetched and "
+			     "%llu wanted (%u.%u%%) — %llu reads (%u.%u%%) came out of it",
+			     (unsigned) ((u64) m_nAheadDepth * DISKCACHE_SECTOR_SIZE / 1024),
+			     (unsigned long long) m_nAheadFetches,
+			     (unsigned long long) m_nAheadFetched,
+			     (unsigned long long) m_nAheadUsed,
+			     nUsedTenths / 10, nUsedTenths % 10,
+			     (unsigned long long) m_nAheadHits,
+			     nAheadTenths / 10, nAheadTenths % 10);
+	}
+	else
+	{
+		pLog->Write (From, LogNotice,
+			     "  ahead  off — the card is asked for exactly what was requested");
+	}
+
+	// Everything that never reached the card, whichever of the two answered
+	// it. This is the figure the whole thing exists to move.
+	u64 nSpared = m_nCacheHits + m_nAheadHits;
+	if (nSpared > 0)
+	{
+		unsigned nSparedTenths = PercentTenths (nSpared, m_Read.nRequests);
+		pLog->Write (From, LogNotice,
+			     "  spared %llu of %llu reads (%u.%u%%) never reached the card",
+			     (unsigned long long) nSpared,
+			     (unsigned long long) m_Read.nRequests,
+			     nSparedTenths / 10, nSparedTenths % 10);
+	}
+
 	if (m_Read.nTimedRequests > 0)
 	{
 		// What the cache is worth, in the only currency that matters here:
@@ -1057,7 +1358,8 @@ void CDiskCacheDevice::Report (void)
 			     (unsigned long long) nMeanMicros,
 			     m_Read.nMaxMicros,
 			     (unsigned long long) (m_Read.nTotalMicros / 1000),
-			     (unsigned long long) (m_nCacheHits * nMeanMicros / 1000));
+			     (unsigned long long) ((m_nCacheHits + m_nAheadHits)
+						   * nMeanMicros / 1000));
 	}
 
 	// Writes get one line: they are rare here, and they always reach the

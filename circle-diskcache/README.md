@@ -3,8 +3,9 @@
 A read cache for a Circle block device, and the measurement tool that tells
 you what size to make it.
 
-It is one header and one source file. You compile the source file into your
-own kernel; there is no library to build and nothing to link.
+It is one header and one source file, with a makefile fragment that builds
+them. You compile the source into your own kernel; there is no library to
+build and nothing to link.
 
 ## This is not part of SDL
 
@@ -31,6 +32,27 @@ A read it can answer from memory returns the same bytes the card would have
 returned, without a card transaction. A read it cannot answer is passed to the
 card unchanged.
 
+It does two separate things, and they help different kinds of reading.
+
+The **pool** holds blocks that have been asked for more than once, so the
+second and later times cost nothing. It cannot help a file that is read
+straight through and never touched again, because nothing in it is ever asked
+for twice.
+
+**Read-ahead** is what helps that file. The card charges almost the same for a
+large request as a small one, so the cost of reading a file one sector at a
+time is the number of requests, not the amount of data. When a read carries on
+exactly where the previous one ended, this class asks the card for a whole run
+of sectors at once and keeps it in a small window; the reads that follow come
+out of the window.
+
+The window is not the pool, and read-ahead never puts anything in the pool. A
+sector served from the window faces the same admission test as any other, so a
+file streamed once still never takes up pool space, while a file streamed round
+a loop is admitted the second time round like any other repeat.
+
+Both are sized separately at runtime, and either can be turned off.
+
 Writes always reach the card before the call returns. Nothing is ever held in
 memory waiting to be written. This is deliberate: these machines are switched
 off without warning, and there is no shutdown step in which delayed writes
@@ -38,7 +60,7 @@ could be completed.
 
 It also counts every request that passes through it, in both directions, and
 writes a summary to Circle's log at a fixed interval. The summary is how you
-choose the pool size, so leave it on while you are deciding and read it on the
+choose both sizes, so leave it on while you are deciding and read it on the
 serial console.
 
 ## Three decisions inside it
@@ -63,10 +85,15 @@ large the pool is.** There is a hash index for lookup and a fixed-size random
 sample for removal, and the pool itself is never scanned. This is why a larger
 pool costs memory and nothing else.
 
+**Read-ahead fetches on a continuation, and only on a continuation.** A run is
+fetched when a read begins exactly where the previous one ended, which is what
+reading a file through looks like. A read that lands somewhere new fetches
+nothing extra, so scattered access never pays for data it will not use.
+
 ## Memory
 
-One allocation when you call `Configure`, from the low heap, and none after
-that. The read path never allocates.
+Allocations happen only when you call `Configure` — the pool, its bookkeeping,
+and the read-ahead window — and never again. The read path never allocates.
 
 The low heap is chosen on purpose. On a board with more than one gigabyte, the
 memory above that point is a separate heap. Staying in the low heap gives the
@@ -74,42 +101,31 @@ same behaviour on every board.
 
 ## How to use it in a Circle project
 
-**1. Put the two files where your build can see them.** Add the directory
-holding `diskcache.h` to your compiler's include path, and add
-`diskcache.cpp` to the sources your kernel compiles.
-
-**Add it to `OBJS` before you include Circle's `Rules.mk`, not after.**
-`Rules.mk` reads `OBJS` at the moment it is included and derives its
-dependency list from it, so anything added afterwards is invisible to it. This
-is the one ordering rule that matters here, and getting it wrong produces a
-build that looks fine until a header changes and nothing rebuilds.
-
-`diskcache.cpp` also needs a compile rule of its own, because it lives outside
-your project and a pattern rule only matches sources beside the makefile that
-declares it:
+**1. Build it, with one line.** Put the directory anywhere your project can
+reach, and include its makefile fragment on the line **before** Circle's
+`Rules.mk`:
 
 ```make
-DISKCACHE_DIR = /path/to/circle-diskcache
-OBJS         += $(OBJDIR)/diskcache.o
-INCLUDE      += -I $(DISKCACHE_DIR)
-
-$(OBJDIR)/diskcache.o: $(DISKCACHE_DIR)/diskcache.cpp | $(OBJDIR)
-	@$(CPP) $(CPPFLAGS) $(DEPFLAGS) -c -o $@ $<
+include /wherever/circle-diskcache/diskcache.mk
+include $(CIRCLEHOME)/Rules.mk
 ```
 
-If your project leaves `CHECK_DEPS` at Circle's default of 1, Circle generates
-dependency files itself with its own `%.d` pattern rules — and those are
-relative too, so they will not match this source either. Give it a second rule
-beside the first:
+That is the whole of the build change. The fragment works out where it is, so
+you do not have to tell it, and it adds its own object to `OBJS`, its own
+directory to the include path, and the rules to build both the object and — if
+your project wants one — its dependency file.
 
-```make
-$(OBJDIR)/diskcache.d: $(DISKCACHE_DIR)/diskcache.cpp | $(OBJDIR)
-	@$(CPP) $(CPPFLAGS) -M -MG -MT $(OBJDIR)/diskcache.o -MT $@ -MF $@ $<
-```
+**The line before `Rules.mk` is not a style preference, and after it does not
+work.** `Rules.mk` reads `OBJS` at the moment it is included and works out its
+dependency list from it there and then, so anything added afterwards is
+something make never checks. That build is not loud about it: everything
+compiles, and then you change a header and nothing rebuilds. The same position
+also settles `CHECK_DEPS`, which your project can only have set before
+`Rules.mk`, so the one instruction covers both.
 
-A project that sets `CHECK_DEPS = 0` and puts `-MD -MP` in its own compile
-line needs only the first rule, since it never asks for a separate dependency
-file.
+If your project builds objects into a directory of its own, set `OBJDIR`
+before the include and this object goes there with the rest. If it does not,
+the object is built beside the source, as Circle's own rules do.
 
 **2. Give your kernel a cache object.** Add the header and one member:
 
@@ -147,14 +163,21 @@ if (bOK) bOK = (f_mount (&m_FileSystem, "SD:", 1) == FR_OK);
 **4. Give it its memory, once, before your program starts.**
 
 ```cpp
-m_DiskCache.Configure (nKilobytes);
+m_DiskCache.Configure (nPoolKB, nReadAheadKB);
 ```
 
-Zero means no cache: every read reaches the card and only the counting
-continues. That is the setting to compare every other size against.
+Both are in kilobytes and both may be zero. A pool of zero means no read is
+ever answered from held data. A read-ahead of zero means the card is asked for
+exactly what was requested and nothing more. Both zero is the run you compare
+every other setting against: the card on its own, with the counting still
+going.
 
-Doing this as a separate step lets you take the size from wherever your
-project reads its settings, which may be later in startup than `Install`. The
+Read-ahead is held to a fraction of the pool, so a window can never be set out
+of all proportion to what it feeds. You do not have to get that right at the
+call site.
+
+Doing this as a separate step from `Install` lets you take both sizes from
+wherever your project reads its settings, which may be later in startup. The
 reads made by mounting the card happen before this point and are not cached.
 
 **5. Call `Poll` regularly from core 0.**
@@ -174,20 +197,29 @@ log. Do not call it from inside a call another processor core is waiting for.
 `Report` writes the summary immediately, which is useful once more before the
 board stops.
 
-## Choosing the size
+## Choosing the sizes
 
-Run your program at several sizes and read two figures from the summary.
+Run your program at several settings and read the summary. Both sizes are
+worth measuring, and they are independent.
 
-`hits` is the share of read requests answered from memory.
+**For the pool**, read `hits` and the high-water mark on the `cache` line.
+`hits` is the share of read requests answered from held data. The high-water
+mark is the largest amount of the pool ever in use, and **it is the figure that
+tells you when to stop**: if your program never fills more than a small part of
+the pool, every larger size will report the same hit rate, and the answer is
+the smallest size that still holds everything it re-reads. If instead the pool
+fills completely and blocks are being evicted, the pool is too small and the
+measurement has not found the answer yet — go up until it stops filling.
 
-`cache` includes a high-water mark: the largest amount of the pool that was
-ever in use. **This is the figure that tells you when to stop.** If your
-program never fills more than a small part of the pool, every larger size will
-report the same hit rate, and the answer for that program is the smallest size
-that still holds everything it re-reads.
+**For read-ahead**, read the `ahead` line. It gives the share of each fetched
+run that something went on to ask for. A share near the whole of it means the
+depth could go further; a small share means the card is being asked for
+sectors nobody wants, which costs time and gains nothing. Also watch the
+`card` line: fewer, larger requests is the point, and the total time is what
+should fall.
 
-The right size differs from one program to the next, which is why it is worth
-setting per program rather than choosing one value for everything.
+The right values differ from one program to the next, which is why they are
+worth setting per program rather than choosing one pair for everything.
 
 ## Where it runs
 

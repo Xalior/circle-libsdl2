@@ -70,6 +70,35 @@
 //   either. This is what makes the pool size free of processor cost, which is
 //   the entire argument for making it large.
 //
+// READ-AHEAD, which is a separate thing from the pool and answers a different
+// problem. A pool only helps data that is asked for twice. Plenty of real
+// reading is a file streamed from beginning to end and never touched again,
+// one sector at a time, and no cache of any size can help that: nothing is
+// ever asked for twice. What can help is that the card charges almost the
+// same for a large request as a small one, so the cost of such a stream is
+// the NUMBER of requests and not the amount of data.
+//
+// So when a read continues exactly where the previous one ended, this class
+// asks the card for a whole run of sectors in one transaction and keeps it in
+// a small window. The reads that follow are answered from that window without
+// the card being asked at all.
+//
+// THE WINDOW IS NOT THE POOL, and read-ahead never puts anything in the pool.
+// The window holds one run, it is thrown away the moment the next one
+// replaces it, and a sector served from it goes through exactly the same
+// admission test as a sector served from the card. So a file streamed once
+// still never enters the pool and still cannot displace anything, while a
+// file streamed round a loop is seen a second time and admitted then, as any
+// other repeat would be. Read-ahead makes the stream cheap; it does not make
+// it privileged.
+//
+// Depth is a real trade-off in both directions, which is why it is set at
+// runtime beside the pool size rather than chosen here. Too shallow and the
+// per-request toll is still being paid. Too deep and the card is being asked
+// for sectors nobody wants, which costs time of its own. The report prints
+// how much of each window was actually used, so the depth can be judged
+// rather than guessed at.
+//
 // MEMORY. One allocation at Configure() time, from the LOW heap explicitly,
 // and none ever again — the read path allocates nothing at all. Low heap is
 // deliberate: on a board with more than a gigabyte the excess is a separate
@@ -109,6 +138,27 @@
 // can name it at boot.
 #define DISKCACHE_DEFAULT_KB        4096
 
+// The read-ahead window used when the host names none, in kilobytes. Zero
+// turns read-ahead off.
+//
+// PROVISIONAL, for the same reason and in the same way as the pool size: the
+// useful depth depends on how the program reads, and the report is what
+// settles it. Read the share of each window that was actually used — a figure
+// near the whole of it means the depth could go further, and a small one
+// means the card is being asked for sectors nobody wants.
+#define DISKCACHE_DEFAULT_READAHEAD_KB  64
+
+// A window deeper than this is refused however it was asked for. Beyond it a
+// single transaction takes long enough that the card stops being the thing
+// worth optimising.
+#define DISKCACHE_MAX_READAHEAD_KB  1024
+
+// The window is also held to this fraction of the pool. The two are separate
+// allocations and a deep window cannot evict a pool block directly, but a
+// window that dwarfs the pool it sits beside is a sign the sizes were not
+// meant, and it costs memory that the pool would have used better.
+#define DISKCACHE_READAHEAD_POOL_DIVISOR    4
+
 // How many slots are examined when a victim is chosen. One would be pure
 // random and would throw away recency entirely; every slot would be true LRU
 // and would phase-lock against cyclic reads. A handful keeps most of the
@@ -147,12 +197,17 @@ public:
 	boolean Install (void);
 
 	/// \brief Give the cache its memory. Call once, before the program runs.
-	/// \param nKilobytes Pool size. Zero means no cache at all: every read
-	///        reaches the card, and only the counting stays on. That is the
-	///        setting to compare against when sizing the pool.
-	/// \return TRUE if the pool was created, or if zero was asked for.
-	///         FALSE means the memory was refused and the cache is off.
-	boolean Configure (unsigned nKilobytes);
+	/// \param nKilobytes Pool size. Zero means no pool at all: no read is
+	///        ever answered from held data, and only the counting stays on.
+	/// \param nReadAheadKB Read-ahead window. Zero means the card is asked
+	///        for exactly what was requested and nothing more. Held to a
+	///        fraction of the pool where there is one, so a window can never
+	///        be set out of all proportion to what it feeds.
+	/// \return TRUE if the memory asked for was obtained, or if nothing was
+	///         asked for. FALSE means it was refused and that part is off.
+	/// \note Both are zero for the run every other setting is compared
+	///       against: the card, unassisted, with the counting still running.
+	boolean Configure (unsigned nKilobytes, unsigned nReadAheadKB);
 
 	/// \brief Emit a report if the reporting interval has elapsed.
 	/// Costs one clock read when it is not yet time, so it can be called as
@@ -199,6 +254,19 @@ private:
 	};
 
 	void ReleasePool (void);
+	boolean ConfigurePool (unsigned nKilobytes);
+	boolean ConfigureReadAhead (unsigned nReadAheadKB);
+
+	// The read-ahead window. Holds one run of sectors, is replaced whole,
+	// and never hands anything to the pool without admission agreeing.
+	boolean ServeFromAhead (void *pBuffer, u64 nStartSector, u32 nSectors);
+	int FillAhead (u64 nStartSector, u32 nSectors, unsigned *pMicros);
+	void DropAhead (void);
+
+	// Offer each sector of a range to the pool, on the terms every other
+	// read gets: already held means refresh it, seen before means admit it,
+	// never seen means remember it and nothing more.
+	void OfferRange (u64 nStartSector, u32 nSectors, const u8 *pData);
 
 	// The pool.
 	u32 Lookup (u64 nSector) const;			// slot index, or NO_SLOT
@@ -250,6 +318,16 @@ private:
 	unsigned m_nPoolKB;		// what was asked for
 	unsigned m_nOverheadKB;		// what the bookkeeping costs on top
 
+	// The read-ahead window: one run of sectors, thrown away whole.
+	u8 *m_pAhead;
+	unsigned m_nAheadDepth;		// sectors fetched per run, 0 = off
+	u64 m_nAheadBase;		// first sector currently held
+	u32 m_nAheadHeld;		// how many, 0 when the window is empty
+
+	// Where the card ends, so a run is never asked for past it. Read once,
+	// when the real device is adopted.
+	u64 m_nDeviceSectors;
+
 	// Recency, and the random source that keeps it from locking on to a
 	// cyclic read pattern.
 	u64 m_nAccessCounter;		// advances by one per sector requested
@@ -263,6 +341,15 @@ private:
 	u64 m_nFirstSightings;		// seen once, remembered, not kept
 	u64 m_nWriteUpdates;		// cached blocks a write refreshed
 	u64 m_nAgeBucket[DISKCACHE_AGE_BUCKETS];
+
+	// Read-ahead outcome. Fetched against used is the whole judgement on
+	// the depth: sectors fetched that nobody went on to ask for were time
+	// spent for nothing.
+	u64 m_nAheadHits;		// requests answered from the window
+	u64 m_nAheadHitSectors;
+	u64 m_nAheadFetches;		// runs asked of the card
+	u64 m_nAheadFetched;		// sectors those runs brought back
+	u64 m_nAheadUsed;		// sectors of them actually handed out
 
 	TDirStats m_Read;
 	TDirStats m_Write;
