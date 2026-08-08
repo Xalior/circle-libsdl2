@@ -78,6 +78,39 @@ same behaviour on every board.
 holding `diskcache.h` to your compiler's include path, and add
 `diskcache.cpp` to the sources your kernel compiles.
 
+**Add it to `OBJS` before you include Circle's `Rules.mk`, not after.**
+`Rules.mk` reads `OBJS` at the moment it is included and derives its
+dependency list from it, so anything added afterwards is invisible to it. This
+is the one ordering rule that matters here, and getting it wrong produces a
+build that looks fine until a header changes and nothing rebuilds.
+
+`diskcache.cpp` also needs a compile rule of its own, because it lives outside
+your project and a pattern rule only matches sources beside the makefile that
+declares it:
+
+```make
+DISKCACHE_DIR = /path/to/circle-diskcache
+OBJS         += $(OBJDIR)/diskcache.o
+INCLUDE      += -I $(DISKCACHE_DIR)
+
+$(OBJDIR)/diskcache.o: $(DISKCACHE_DIR)/diskcache.cpp | $(OBJDIR)
+	@$(CPP) $(CPPFLAGS) $(DEPFLAGS) -c -o $@ $<
+```
+
+If your project leaves `CHECK_DEPS` at Circle's default of 1, Circle generates
+dependency files itself with its own `%.d` pattern rules — and those are
+relative too, so they will not match this source either. Give it a second rule
+beside the first:
+
+```make
+$(OBJDIR)/diskcache.d: $(DISKCACHE_DIR)/diskcache.cpp | $(OBJDIR)
+	@$(CPP) $(CPPFLAGS) -M -MG -MT $(OBJDIR)/diskcache.o -MT $@ -MF $@ $<
+```
+
+A project that sets `CHECK_DEPS = 0` and puts `-MD -MP` in its own compile
+line needs only the first rule, since it never asks for a separate dependency
+file.
+
 **2. Give your kernel a cache object.** Add the header and one member:
 
 ```cpp
