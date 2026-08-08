@@ -18,6 +18,7 @@
 #include <circle/input/mouse.h>
 #include <circle/serial.h>
 #include <circle/atomic.h>
+#include <circle/sched/scheduler.h>
 #include <cstring>
 
 namespace
@@ -33,6 +34,15 @@ CUSBController *s_usb = nullptr;
 // means "not asked yet", so a board with no USB is not searched on every
 // pass for the rest of the run.
 CUSBController *const USB_NONE = (CUSBController *)-1;
+
+// Set on core 0 when the controller is missing and injection is armed; acted
+// on by the caller, off core 0. See SDL2Circle_InputInit.
+bool s_bNoInputFatal = false;
+
+// How often the refusal repeats itself. Long enough not to bury anything else
+// on the console, short enough that nobody attaching serial has to wait to
+// find out why the board is doing nothing.
+const unsigned SDL2CIRCLE_NOINPUT_REPEAT_SECONDS = 5;
 
 CUSBKeyboardDevice *s_keyboard = nullptr;
 
@@ -696,17 +706,81 @@ void SDL2Circle_InputInit(void)
         return;
     }
 
-    // No USB is not fatal — headless and keyboardless payloads are valid, and
-    // this library will not stop a board that is running fine without input.
-    // But it is almost never intended, and the reason is not guessable from a
-    // game that simply never responds to a key, so it is said once and it
-    // names the fix.
+    // No USB is not fatal on its own — headless and keyboardless payloads are
+    // valid, and this library will not stop a board that is running fine
+    // without input. But it is almost never intended, and the reason is not
+    // guessable from a game that simply never responds to a key, so it is
+    // said once and it names the fix.
     s_usb = USB_NONE;
     SDL2Circle_Log("input", SDL2CIRCLE_LOG_WARNING,
                    "no USB host controller on this board: input is off. "
                    "The host kernel brings USB up (a CUSBHCIDevice member "
                    "initialised in CKernel::Initialize); this library only "
                    "finds and pumps it.");
+
+    // WITH INJECTION ARMED IT IS FATAL, and the reason is that this exact
+    // pair hides itself.
+    //
+    // Injection does not go through USB. It reads a serial device and puts
+    // events straight into the queue, so it works perfectly on a board where
+    // no input device was ever enumerated. Every automated check therefore
+    // passes: keys arrive, menus move, screenshots come out right. The board
+    // is declared working and shipped, and the first person to plug a real
+    // keyboard into it finds nothing happens — with the one line that
+    // explained why scrolled off the console hours earlier.
+    //
+    // So a build that asks for robot hands and has no controller is refused
+    // rather than run. Only the flag is set here: this runs on core 0 inside
+    // a marshalled call, and stopping on core 0 would take the console, the
+    // scheduler and the servo down with it and print nothing further. The
+    // stop happens where the caller is, which is not core 0.
+    if (SDL2Circle_DebugUartArmed())
+        s_bNoInputFatal = true;
+}
+
+bool SDL2Circle_NoInputFatal(void)
+{
+    return s_bNoInputFatal;
+}
+
+// The refusal. Says what is wrong, keeps saying it, and never returns.
+//
+// SAYS IT FIRST AND REPEATS IT. A board that stops silently has traded a
+// correct diagnosis for nothing at all, and one line at boot is very nearly
+// as bad: whoever attaches a console afterwards finds a quiet board and no
+// explanation. So the message goes out before anything stops, and goes out
+// again for as long as the board is powered.
+//
+// KEEPS THE MACHINE ALIVE WHILE IT DOES. This is a halt, not a hang. On any
+// core but 0 the wait is a plain spin on the free-running counter, and core 0
+// carries on serving everything as usual. Called on core 0 — a payload with
+// no split, or one that reached here before the split armed — it yields to
+// the scheduler on every pass instead, so the console, the log drain and the
+// watchdog all keep running. A stop that stops core 0 would print the second
+// copy of its own message nowhere.
+void SDL2Circle_NoInputHalt(void)
+{
+    for (unsigned nSaid = 0;; nSaid++)
+    {
+        SDL2Circle_Log("input", SDL2CIRCLE_LOG_ERROR,
+                       "STOPPED: --rapi-debug-uart is armed and this board has "
+                       "no USB host controller, so a real keyboard, mouse or "
+                       "pad can never work here. Serial injection would still "
+                       "have worked, which is why this cannot be allowed to "
+                       "run: every automated check would pass on a board no "
+                       "person can use. FIX: give the host kernel a "
+                       "CUSBHCIDevice member and call Initialize() on it in "
+                       "CKernel::Initialize, with the SD card and the console. "
+                       "The application has not been started and will not be.");
+
+        const u64 nUntil = CTimer::GetClockTicks64()
+                           + (u64) SDL2CIRCLE_NOINPUT_REPEAT_SECONDS * CLOCKHZ;
+        while (CTimer::GetClockTicks64() < nUntil)
+        {
+            if (SDL2Circle_ThisCore() == 0 && CScheduler::IsActive())
+                CScheduler::Get()->Yield();
+        }
+    }
 }
 
 void SDL2Circle_InputPump(void)

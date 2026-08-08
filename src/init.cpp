@@ -302,7 +302,18 @@ extern "C" int SDL_InitSubSystem(Uint32 flags)
     // nothing in it that can block.
     if (flags & (SDL_INIT_VIDEO | SDL_INIT_EVENTS | SDL_INIT_JOYSTICK
                  | SDL_INIT_GAMECONTROLLER))
+    {
         SDL2Circle_CallOn0(init_input_on0, nullptr);
+
+        // A board that asked for robot hands and has no controller to give
+        // them to does not start the application. Checked here, back on the
+        // calling core, rather than inside the call above: that runs on core
+        // 0, and a stop there would take the console and the servo with it
+        // and leave the board silent. The halt says why it is stopping,
+        // repeats it for as long as the board is powered, and never returns.
+        if (SDL2Circle_NoInputFatal())
+            SDL2Circle_NoInputHalt();
+    }
 
     // The host contract (sdl2circle.h) makes this the earliest moment the
     // kernel's CTimer is guaranteed to exist: the wall clock may delegate

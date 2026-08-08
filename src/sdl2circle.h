@@ -18,8 +18,16 @@
 // consumer that has not declared one cannot be started.
 bool SDL2Circle_VirtualDeviceDeclared(void);
 
-void SDL2Circle_InputInit(void);   // bring up USB (idempotent)
+void SDL2Circle_InputInit(void);   // find the host's USB controller (idempotent)
 void SDL2Circle_InputPump(void);   // PnP + translate HID reports to events
+
+// Asking for robot hands on a board that can have no real input device is a
+// build that must not run: injection works without USB, so it would pass
+// every automated check and fail the first person to plug a keyboard in.
+// SDL2Circle_InputInit decides this on core 0 and only records it; the halt
+// is run by the caller, which is not core 0.
+bool SDL2Circle_NoInputFatal(void);
+void SDL2Circle_NoInputHalt(void);  // says why, keeps saying it, never returns
 // Producing audio: run the application's callback and queue what it makes.
 // Both places the result goes have exactly one writer, so production belongs to
 // one core — settled when the device is opened — and this does nothing at all
