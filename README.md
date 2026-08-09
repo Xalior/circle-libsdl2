@@ -44,7 +44,7 @@ core that never touches a device.
 | Files as `SDL_RWops` streams, and streams over memory | the I/O service, so an application off core 0 opens a file with the ordinary SDL call |
 | Audio: `SDL_OpenAudioDevice` callback API | `CHDMISoundBaseDevice`, ~100 ms hardware queue. The device plays 16-bit signed stereo; an application that asks for something else and does not permit a change gets **what it asked for**, converted at the device boundary, and `obtained` reports its own spec. Permit a change and `obtained` reports the device's instead. Off core 0: your callback fills a ring, core 0's servo task feeds the device |
 | Events: queue, `SDL_PumpEvents`, window focus | the per-frame service point: USB pump and scheduler yield on core 0, ring drain and liveness signal off it |
-| Timers: `SDL_GetTicks64`, performance counter, `SDL_Delay` | Circle system timer (µs). `SDL_Delay` yields to the scheduler on core 0; off it, spins to a µs-exact deadline — deterministic, but it occupies the core for the duration |
+| Timers: `SDL_GetTicks64`, performance counter, `SDL_Delay` | Circle system timer (µs). `SDL_Delay` runs the audio callback while it waits, as every wait in this library does; on core 0 it also yields to the scheduler, and off it spins to a µs-exact deadline, occupying the core for the duration |
 | Files: an I/O service callable from any core | FatFs on core 0, marshalled (`SDL2Circle_IO*`) — for applications whose own file layer must not touch the SD card directly |
 | Surfaces and pixel formats: `SDL_CreateRGBSurface*`, `SDL_ConvertSurface`, `SDL_ConvertSurfaceFormat`, `SDL_MapRGB`/`SDL_MapRGBA`, `SDL_GetRGB`/`SDL_GetRGBA`, palettes and `SDL_SetPaletteColors`, `SDL_FillRect`, blitting, `SDL_SetColorKey`, lock/unlock, `SDL_ConvertPixels` | in memory. 8-bit paletted surfaces are first-class: a game that renders through a palette does so here without converting anything itself |
 | Threads and synchronisation: `SDL_CreateThread`, mutexes, condition variables, semaphores, atomics, thread-local storage | Circle's scheduler and the AArch64 atomics |
@@ -545,17 +545,28 @@ What changes for your code, once it is off core 0:
   servo.
 - **Audio inverts from pull to push.** Your callback fills the audio ring; the
   servo feeds the sound device at its own cadence.
-- **`SDL_Delay` becomes exact, and occupies the core.** On core 0 it is
-  `CScheduler::MsSleep` — cooperative, so you become *runnable* at the deadline
-  but only resume when the scheduler next gets control, and a peer that is slow
-  to yield overshoots your delay by however long it takes. Off core 0 there is
-  no scheduler to defer to, so the library spins on the system timer (µs
-  resolution, `yield` hint) and returns at the deadline. You trade a scheduler
-  yield for a deterministic wait, and the cost is that the core is fully
-  occupied for the duration — which is only sound *because* the core is
+- **`SDL_Delay` becomes exact, and occupies the core.** On core 0 it sleeps
+  through `CScheduler::MsSleep` — cooperative, so you become *runnable* at the
+  deadline but only resume when the scheduler next gets control, and a peer
+  that is slow to yield overshoots your delay by however long it takes. Off
+  core 0 there is no scheduler to defer to, so the library spins on the system
+  timer (µs resolution, `yield` hint) and returns at the deadline. You trade a
+  scheduler yield for a deterministic wait, and the cost is that the core is
+  fully occupied for the duration — which is only sound *because* the core is
   dedicated and has nothing else to run. The same spin on core 0 would starve
   the servo, the watchdog, USB and the audio feed, which is why core 0 keeps
   yielding.
+
+  **A delay runs your audio callback, on either core.** The callback has no
+  thread of its own here, so it runs from whichever context calls into the
+  library, and a delay that only counted time would be a delay with the sound
+  device unfed. That matters beyond the sound: a game that produces a frame of
+  audio into a buffer of its own, finds the buffer full and waits in
+  millisecond steps for the callback to take some out is waiting for something
+  only the wait itself can do. The core 0 sleep is taken in one-millisecond
+  slices for the same reason, so a long delay there does not park the callback
+  either. Keep the callback out of a section with `SDL_LockAudioDevice`, which
+  the pump obeys.
 
 **Single-core is the same code in its degenerate case.** Without `SplitInit`
 there is no ring and no mailbox: every call executes directly, the pump does

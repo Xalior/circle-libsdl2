@@ -51,22 +51,45 @@ extern "C" Uint64 SDL_GetPerformanceFrequency(void)
     return 1000000ULL;   // CLOCKHZ — the system timer counts microseconds
 }
 
+// A DELAY IS A WAIT, AND A WAIT MUST NOT STOP THE SOUND.
+//
+// The audio callback has no thread of its own here: it is run by whichever
+// context calls into this library, and SDL_Delay is where an application
+// spends the time it is not drawing. A delay that merely counts is a delay
+// with the sound device unfed — and worse than quiet, because applications
+// wait on the callback having run.
+//
+// The case that wedges is ordinary and common: a game produces a frame of
+// audio into a buffer of its own, finds the buffer full, and waits in
+// millisecond steps for the callback to take some out. The callback can only
+// run from inside that wait, so a wait that does not run it is a wait for
+// something the waiter is itself preventing. It never ends, and nothing in
+// the application looks wrong — its core is running, its loop is simply one
+// call deep and never returns.
+//
+// So every branch below waits through SDL2Circle_ThreadWaitSpin, which is
+// where the one rule about who may produce lives (src/threads.cpp). Off the
+// hardware core that is a pump and a processor yield; on it, a pump and a
+// scheduler yield, and the sleep is taken in slices between them so the
+// scheduler still gets the core and peers still run.
 extern "C" void SDL_Delay(Uint32 ms)
 {
-    // The scheduler is core-0-only by construction: off core 0 a delay is
-    // a plain timed wait on the system timer (a dedicated core has nothing
-    // else to run).
+    const u64 deadline = CTimer::GetClockTicks64() + (u64)ms * 1000;
+
     if (SDL2Circle_ThisCore() != 0)
     {
-        u64 deadline = CTimer::GetClockTicks64() + (u64)ms * 1000;
         while (CTimer::GetClockTicks64() < deadline)
-            asm volatile("yield" ::: "memory");
+            SDL2Circle_ThreadWaitSpin();
     }
     else if (CScheduler::IsActive())
     {
-        // With the scheduler active, sleeping yields to cooperative peers
-        // (audio task, IO thread); without it, plain busy delay.
-        CScheduler::Get()->MsSleep(ms);
+        for (;;)
+        {
+            SDL2Circle_ThreadWaitSpin();
+            if (CTimer::GetClockTicks64() >= deadline)
+                break;
+            CScheduler::Get()->MsSleep(1);
+        }
     }
     else
     {
