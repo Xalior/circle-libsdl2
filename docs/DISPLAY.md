@@ -1,0 +1,132 @@
+# Display and video
+
+## Presentation geometry
+
+Resolutions are always involved on a bare-metal Pi, and the library names each of them rather than treating them as one.
+
+**The scanout is the physical display** — what the hardware actually sends over the display cable. `width=` and `height=` in `cmdline.txt` ask the firmware for a display mode, allocating the framebuffer is what sets it, and **the firmware then reports the mode it actually set. That report is the scanout.** It is read from the firmware, never calculated: not from the framebuffer's pitch, not from its size, and not from the width and height Circle returns, which are only the arguments it was constructed with.
+
+**Set neither and the panel keeps its own mode.** The library then asks the firmware for no particular size, which is how you say "whatever the display is already doing", and the firmware allocates the display's own mode. There is no default resolution anywhere in the library — a default would not be a preference, it would be an instruction, because asking for a mode is what sets one. A card whose configuration asks for nothing gets whatever mode the attached display is already using.
+
+**On a Pi 5, either set no display mode at all or set exactly the one the screen is already using.** That board's firmware chooses its display mode before any kernel starts and does not change it afterwards. It still accepts a `width=`/`height=` request, and then reports the requested mode back as though it had applied it, while continuing to send the screen's own mode to the display. This library takes the firmware's report as the truth, so it would describe a mode that is not being displayed, and every measurement derived from it would be wrong.
+
+A Pi 3 or a Pi 4 applies the requested mode and reports it correctly, so neither has this problem.
+
+**The canvas is the virtual display** — the display area the application is given, and the relation between its shape and the scanout's decides the letterboxing. **The application declares it**, in its own code, before `SDL_Init` — see [Declaring the display](#declaring-the-display). It is required, and there is no fallback: without it the library refuses to start.
+
+**These are settings doing different jobs, and they coexist.** Neither is a fallback for the other and there is no order of precedence between them. One is asked of the firmware by the operator; the other is declared by the application. `width=` and `height=` never set the virtual display, and the declaration never sets the physical one.
+
+**The application's own resolution** is whatever it renders at. It calls `SDL_CreateWindow` and `SDL_RenderCopy` as usual, and the rectangles it passes are canvas coordinates, because the canvas is the window. An application never learns what the physical display is doing.
+
+A frame therefore travels application → canvas → scanout, and **the library composes both steps into a single resampling pass** when the frame is presented — on the presentation core when the core split is active, inline otherwise. The canvas contributes arithmetic, never an intermediate copy.
+
+- **`SDL_RenderCopy` honours its rectangles.** A destination the same size as the source, on a canvas that is the scanout, is still an unscaled blit — the same bytes, on the same path. Anything else resamples.
+- **Nearest neighbour, and only nearest neighbour.** Per-axis index tables are built once per geometry and reused; an exact integer ratio skips the tables and replicates. `SDL_HINT_RENDER_SCALE_QUALITY` is stored like any other hint and **has no effect** — `"linear"` is a later phase, not a silent fallback.
+- **Fit is the default placement.** The canvas is scaled up as far as it fits, centered, and the remainder of the scanout stays black. Put `canvas=stretch` in `cmdline.txt` to fill the scanout instead, without preserving the aspect ratio.
+- **A frame is composed in ordinary memory, never directly in the framebuffer.** The framebuffer is uncached, and a scaler writing it directly pays that cost once per pixel: on a Pi 4, 26.1 ms for a 1280x720 frame against 1.4 ms into ordinary memory. So a present is composed off-screen and the finished frame is copied to the framebuffer in whole rows — 6.0 ms for the same frame — which is also what keeps the picture whole, because the screen is written by that one copy and is never visible mid-composition.
+- **The copy to the screen runs on the DMA engine where it can.** When the firmware grants enough memory for two screens, presenting is a page flip and the copy goes to the half being panned to. When it grants only one — a Pi 5 does — the finished frame goes to the granted surface itself, which is the most expensive thing the presentation core does. So the library gives that copy to a DMA channel and returns without waiting for it, scaling the next frame into a second buffer while the transfer runs. One frame is in flight at a time. If no DMA channel is free, the CPU does the copy exactly as before.
+- **The present path is built once and reused.** Its buffers and its DMA channel are sized by the framebuffer the firmware granted, and that grant is made once and kept for as long as the machine runs, so a second window adopts the same one. An application may destroy its window, renderer and textures and create new ones as often as it likes — which is what a settings menu does whenever a video setting changes — and none of it is allocated again. There are only a few DMA channels on the board and the sound device needs one too.
+
+The library logs the whole chain once at startup and once per distinct geometry, so a serial console tells you what happened without guessing:
+
+```
+sdl2video: scanout 1920x1080 (firmware reported), canvas 720x576 (declared virtual device)
+sdl2video: canvas 720x576 on scanout 1920x1080: fit -> 1350x1080+285+0
+sdl2video: granted 1080 rows < 2160: shadow-buffered present
+sdl2video: present: dma copy, channel 11, 8294400 bytes, double-shadowed
+sdl2video: copy src 320x224 -> canvas 720x504+0+36 -> scanout 1350x945+285+67 (nearest)
+```
+
+The `present:` line names the path that is actually in use — `dma copy` or `cpu copy`, and the reason when it is the latter.
+
+### Window flags
+
+`SDL_GetWindowFlags` describes **the machine, not the request**. A flag an application passed to `SDL_CreateWindow` is reported back only where this window can honour it; reporting it otherwise tells the asker its own question back, and a game branches on the answer.
+
+- **`SDL_WINDOW_INPUT_FOCUS` is always set.** There is one window and no window manager to take focus away from it. A flag that is never set reads exactly like a flag that is false, and a game that believes it has lost focus pauses, stops drawing or drops input — a black screen with a clean log.
+- **`SDL_WINDOW_SHOWN` is always set, and `SDL_HideWindow` does not clear it.** The surface is on the glass and cannot leave it, so `SHOWN` is the truth. `SDL_WINDOW_HIDDEN` and `SDL_WINDOW_MINIMIZED` are never reported.
+- **`SDL_WINDOW_OPENGL`, `SDL_WINDOW_VULKAN` and `SDL_WINDOW_METAL` are never reported.** See the accelerated-graphics note in [FEATURES.md](FEATURES.md).
+- **`SDL_WINDOW_MOUSE_FOCUS` is asked, not stored**, because a USB mouse can arrive or leave long after the window is made. It answers the same question `SDL_GetMouseFocus` answers, so the flag and the function cannot drift apart — which is the rule for any flag whose truth can change after the window exists.
+
+## Declaring the display
+
+**Every application declares the display it is to be given**, in its own code, before `SDL_Init`. This is not optional and there is no fallback of any kind — not the boot command line, not the panel. An application that has not declared one has not said what display it is to be given, and the library will not invent one, so `SDL_Init` fails and says why on the console.
+
+```c
+#include <SDL2/SDL_circle.h>
+
+if (SDL2Circle_DeclareVirtualDevice(32, 800, 450) != 0)
+    fprintf(stderr, "%s\n", SDL_GetError());
+```
+
+That becomes the canvas. `SDL_GetCurrentDisplayMode`, `SDL_GetDesktopDisplayMode`, `SDL_GetDisplayMode` and `SDL_GetDisplayBounds` all answer with it, `SDL_CreateWindow` returns a window of that size whatever it was asked for, and the library carries each frame from there to whatever the panel is really doing. **The application never learns the real output resolution**, which is the point: it draws in the virtual display it declared, and the placement rules above put that onto the physical screen.
+
+- **It is fixed.** One declaration is accepted, before anything has asked the library about the display. A second one is refused, and so is one made after the display size has been settled — the first display query, or the first window. The size an application is given cannot change while it is running, so every geometry derived from it is worked out once and holds for the rest of the run.
+- **32 bits per pixel, and nothing else.** The framebuffer is allocated at 32 bits and streaming ARGB8888 is the only texture format, so another depth is refused rather than quietly rounded to this one. Width and height must both be above zero.
+- **The return value reports the outcome.** Zero means accepted; -1 means refused, with `SDL_GetError` saying which of the above was not met. A refused declaration changes nothing, and an earlier accepted one still stands.
+- **It states the virtual display, not the physical one.** The mode the panel is driven at remains the operator's decision, asked for in `config.txt` and `cmdline.txt` and granted, or not, by the firmware. Declaring a virtual device asks the firmware for nothing; it says what the application is to be shown, and the library scales.
+- **Without it the library does not start.** `SDL_Init` returns failure with `SDL_GetError` explaining, and puts a line on the console naming the call to make. Nothing is initialised, no device is touched, and no display question can be answered.
+
+### Matching the virtual display to the physical one
+
+**Where the numbers come from is for the application to decide, and only the application.** A build constant, a settings file, an option of its host kernel's own, a value read from a network port. The library is told; it discovers nothing and offers no way to ask what the physical display is.
+
+So an application that wants its virtual display to **match** the panel determines the physical size for itself and passes it in — which takes only the few lines below, using Circle's public property tags, and needs nothing from this library at all:
+
+```c
+#include <circle/bcmpropertytags.h>
+
+CBcmPropertyTags Tags;
+TPropertyTagDisplayDimensions Dim;
+memset(&Dim, 0, sizeof Dim);
+if (Tags.GetTag(PROPTAG_GET_DISPLAY_DIMENSIONS, &Dim, sizeof Dim)
+    && Dim.nWidth != 0 && Dim.nHeight != 0)
+{
+    SDL2Circle_DeclareVirtualDevice(32, (int) Dim.nWidth, (int) Dim.nHeight);
+}
+```
+
+**`examples/gradient`, `examples/keyecho`, `examples/tone`, `examples/padview` and `examples/videocycle` each do exactly this** — every one carries the query in its own kernel source rather than sharing a helper, so each stands alone as a complete worked example. `examples/videocycle` shows the variation an application off core 0 needs: the firmware mailbox belongs to core 0, so its host kernel asks and declares before the application core is released.
+
+**`examples/virtdev` is the opposite demonstration** — it declares a size matching nothing on the board, because the virtual display is whatever the application says it is and need not resemble the hardware.
+
+`examples/virtdev` is a bootable example of all of this — see [Examples](EXAMPLES.md).
+
+## Declaring the base path
+
+SDL gives an application two directories: the one it was installed in (`SDL_GetBasePath`) and one it may write settings and saved games into (`SDL_GetPrefPath`). On a desktop SDL works both out for itself, from where the running program came from and from the user's home directory.
+
+Neither question has an answer here. The payload was chain-loaded over a wire or started from a card; there is no program image to locate, no user and no home directory. Where an application's files were put is a decision somebody made when they built the card, and the only party that knows it is the one embedding this library. So it states it, once, before `SDL_Init`:
+
+```c
+SDL2Circle_DeclareBasePath("/games/example");
+```
+
+**The library learns nothing else from this.** It stores the string, hands it back from `SDL_GetBasePath`, and composes `SDL_GetPrefPath` below it. It does not read the path, does not check that it exists, and carries no default for any particular application — it cannot know one is there.
+
+The declaration is fixed, on the same terms as the virtual display: accepted once, before anything has asked for a path, and refused afterwards. Both functions return a string the caller releases with `SDL_free`, and both end in a separator, because that is SDL's contract and applications append to the result without checking.
+
+**Not declaring one is not an error.** It answers `/`, with one warning on the log. This differs deliberately from the virtual display, which stops `SDL_Init` when it is missing: there is no sane default display size, but a board has exactly one filesystem and `/` is a real directory an application can read and write. SDL returns a non-null path on every desktop platform, so a great many applications dereference the answer without looking — refusing would turn a missing declaration into a crash inside the application rather than a message from here.
+
+## Boot switches
+
+A boot argument block sits at a fixed offset inside the kernel image, and a loader writes a plain argument string into it before pushing the image — so a setting can ride a boot without anything being rebuilt.
+
+**This library reads that block itself**, and acts on the switches that describe what IT does. An application does not forward them, is never asked for them, and cannot fail to pass them on. That last point is the whole reason: while each application interpreted these in turn, one that had never heard of a switch silently lost the capability — the switch was stamped, the loader confirmed it, and nothing happened, with nothing anywhere to say why.
+
+| switch | effect |
+|---|---|
+| `--rapi-debug-uart` | types bytes arriving on the serial console into the machine as SDL key events. Takes **no value** |
+| `--rapi-perf=N` | a performance report every N seconds |
+
+An application still reads the same block for its own arguments, and still strips every `--rapi-` switch before its program sees them. Those are its arguments; reading the block twice is harmless, because nothing here writes to it.
+
+Serial key injection needs two things, and neither turns it on alone: the switch, and a serial device. **A kernel lends its own device unconditionally** — it must not construct one, because a second device on the same slot halts the board inside its constructor:
+
+```c
+SDL2Circle_SetInjectSerial (&m_Serial);   // no condition around it
+```
+
+Whether anything is injected through it is then the library's decision, taken from the switch it found for itself.
+
+Anything that decides how the KERNEL starts stays with the kernel, and `rapi-split` is the example: it chooses whether the core split is set up at all, which means choosing which cores are started. That happens before this library exists, and it is read from `cmdline.txt` rather than from the block.
