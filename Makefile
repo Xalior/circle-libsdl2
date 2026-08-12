@@ -312,20 +312,6 @@ world-fetch:
 # for machines with megabytes of stack, which is most of them.
 CIRCLE_KERNEL_STACK_SIZE ?= 0x200000
 
-# Circle's console depth is a compile-time macro, baked into libcircle when the
-# world is configured, and its default is 16. Circle reads the pitch the
-# firmware granted back out of the mailbox reply but never the depth, so
-# CBcmFrameBuffer::GetDepth() returns the constructor's argument for the
-# object's whole life and CTerminalDevice sizes each row from it. Where the
-# compiled depth is not the depth the firmware actually gave out, every glyph
-# is drawn at the wrong width into a buffer with the right stride, and the
-# console paints part of a scanline in narrow characters.
-#
-# The Pi 5 has one firmware surface for every kernel and it is 32 bits per
-# pixel, so that world alone is configured to match it. Pi 3 and Pi 4 honour a
-# per-kernel framebuffer request, so their worlds keep Circle's default.
-CIRCLE_DEPTH_rpi5 = -o DEPTH=32
-
 # COMPILE (isolated per world, safe to run in parallel across boards). Idempotent:
 # skips re-configure when Config.mk is already present.
 .PHONY: world-build
@@ -334,8 +320,7 @@ world-build:
 	@[ -f $(CIRCLE_STDLIB)/Config.mk ] || \
 		( cd $(CIRCLE_STDLIB) && bash ./configure -r $(RASPPI_$(BOARD)) -p aarch64-none-elf- \
 			--libcxx-repo --kernel-max-size 256 -o ARM_ALLOW_MULTI_CORE \
-			-o KERNEL_STACK_SIZE=$(CIRCLE_KERNEL_STACK_SIZE) $(CIRCLE_DEPTH_$(BOARD)) \
-			&& $(MAKE) MAKEINFO=true )
+			-o KERNEL_STACK_SIZE=$(CIRCLE_KERNEL_STACK_SIZE) && $(MAKE) MAKEINFO=true )
 
 # Convenience: fetch then build one board's world.
 .PHONY: world
