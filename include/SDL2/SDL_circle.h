@@ -313,18 +313,28 @@ void SDL2Circle_LogBytes(const char *from, const char *bytes, unsigned len);
 // labelled like the rest of the log.
 void SDL2Circle_WriteBytes(const char *bytes, unsigned len);
 
-// ---- the log on the screen (host kernel side) -------------------------------
+// ---- the log on the screen --------------------------------------------------
 
-// Make the SCREEN a second destination for the log, alongside the serial port
-// the host kernel has already given Circle's logger. From that moment every
-// line the logger carries — the kernel's own, this library's, and everything
-// an application writes through the calls above — is drawn on the display as
-// well as sent down the wire.
+// THE SCREEN IS ALREADY A DESTINATION AND NOTHING HAS TO CALL THIS. The
+// library attaches the screen itself, on every board, from
+// SDL2Circle_ArmCoreRuntime — because where output goes is a property of the
+// machine, not something each host kernel has to remember. From that moment
+// every line the logger carries, and every byte written raw, is drawn on the
+// display as well as sent down the wire.
 //
-// WHERE THE LOG LANDS IS THE HOST KERNEL'S DECISION AND AN APPLICATION NEVER
-// SEES IT. Call this once, on core 0, during the kernel's own initialisation,
-// after CLogger has been initialised on the serial device. That is the only
-// moment anything is attached.
+// A MACHINE THAT WANTS THE SERIAL PORT ALONE says so on its own command line,
+// with --rapi-no-screen-log in the boot argument block. That also stops the
+// display grant being made at boot, for a machine that wants the display mode
+// settled by the application's first window and by nothing before it.
+//
+// WHAT THIS CALL IS STILL FOR: having the screen EARLIER than the arming
+// call, for a host kernel with bring-up of its own worth watching on the
+// glass — mounting a card, say. Make it on core 0, after CLogger has been
+// initialised on the serial device.
+//
+// It answers 0 when the screen is a destination, INCLUDING when it already
+// was, so a kernel that makes it after the library has is not told of a
+// problem it does not have.
 //
 // THE SERIAL PORT IS NOT REPLACED. Whatever device the logger already had
 // stays its destination for the whole run; this only puts the screen alongside
@@ -332,8 +342,8 @@ void SDL2Circle_WriteBytes(const char *bytes, unsigned len);
 //
 // THE SCREEN IS DROPPED WHEN AN APPLICATION INITIALISES SDL VIDEO, because
 // that is the moment the guest takes the display, and from then on the log
-// goes to the serial port alone. Nothing is ever attached after boot: the only
-// transition available afterwards is removal, so the console and the
+// goes to the serial port alone. Nothing is ever attached after that: this
+// call refuses once the application has the display, so the console and the
 // application can never hold the framebuffer at the same time.
 //
 // THE LIBRARY DRAWS THE TEXT ITSELF, at the depth the firmware granted, which
@@ -344,10 +354,11 @@ void SDL2Circle_WriteBytes(const char *bytes, unsigned len);
 // that no reply ever corrects, which on a board that grants a different depth
 // paints part of each scanline in squeezed characters.
 //
-// Returns 0 when the screen has been attached, and -1 when it has not — no
-// logger, no display, a pixel format this console cannot draw, or a screen
-// with no room for one character — with SDL_GetError saying which. A refusal
-// changes nothing and leaves the serial log exactly as it was.
+// Returns 0 when the screen is a destination, and -1 when it is not — no
+// logger, no display, a pixel format this console cannot draw, a screen with
+// no room for one character, or an application that already has the display —
+// with SDL_GetError saying which. A refusal changes nothing and leaves the
+// serial log exactly as it was.
 int SDL2Circle_LogAttachScreen(void);
 
 // ---- I/O service (any core) -------------------------------------------------

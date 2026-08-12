@@ -49,16 +49,39 @@ the card.
 Standard input is bound but no character ever arrives on it, because this
 board has no console input. A C program that reads standard input waits.
 
-### The log can go on the screen, drawn by this library
+### The log is on the screen from boot, drawn by this library
 
-A host kernel that wants its log on the display as well as on the serial port
-now asks for it with one call, `SDL2Circle_LogAttachScreen`, made once while
-the kernel is initialising itself. The serial destination is not replaced: the
-screen is added in front of whatever device the logger already had, and the
-serial write happens first so drawing never delays it. The screen is dropped
-when an application initialises SDL video, because that is the moment the
-application takes the display, and from then on the log goes to the serial
-port alone. Nothing is ever attached after boot.
+Every board now shows its output on the display as well as on the serial port,
+and nothing has to ask for it. The library attaches the screen itself inside
+`SDL2Circle_ArmCoreRuntime`, the call every host kernel already makes on core
+0, so a kernel that has never heard of any of this gets both destinations by
+doing nothing.
+
+Where output goes is a property of the machine, and that is why it is not
+something a kernel opts into. A destination a kernel can forget is one that
+goes missing in silence — nothing on the wire and nothing on the glass says
+that half the output is not arriving.
+
+The serial destination is not replaced: the screen is added in front of
+whatever device the logger already had, and the serial write happens first so
+drawing never delays it. The screen is dropped when an application initialises
+SDL video, because that is the moment the application takes the display, and
+from then on the log goes to the serial port alone. Nothing is ever attached
+after that. A board with no display is not a fault — it is a machine with one
+destination instead of two, said once at notice.
+
+**A machine that wants the serial port alone** stamps `--rapi-no-screen-log`
+into the boot argument block. That also stops the display grant being made at
+boot, for a machine that wants the display mode settled by the application's
+first window and by nothing before it.
+
+`SDL2Circle_LogAttachScreen` remains, for a host kernel that wants the screen
+EARLIER than the arming call — one with bring-up of its own worth watching on
+the glass. Two things about it changed. It now answers 0 when the screen is
+already a destination, instead of reporting a refusal, so a kernel that makes
+the call after the library has is not told of a problem it does not have. And
+it refuses once an application has taken the display, which the documented
+"nothing is ever attached after boot" previously rested on nobody asking.
 
 Kernels used to do this by building Circle's own screen device and putting a
 splitter in front of the logger. That console is wrong on some boards and
@@ -78,9 +101,8 @@ height are the firmware's report of the display, and the bytes per pixel are
 that pitch divided by that width. There is no board test in it and nothing to
 configure.
 
-Nothing already exported changed, so an existing kernel needs no action. A
-kernel that keeps its own screen device keeps working exactly as before, and is
-the one arrangement this replaces — see [LOGGING.md](LOGGING.md).
+A kernel that keeps its own screen device keeps working, and is the one
+arrangement this replaces — see [LOGGING.md](LOGGING.md).
 
 ### The I/O service gained rename, directory removal, and the working directory
 

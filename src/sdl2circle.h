@@ -50,11 +50,21 @@ bool SDL2Circle_ScanoutAcquire(SDL2CircleScanout *out);
 
 // ---- the screen log destination (src/console.cpp) --------------------------
 //
-// SDL2Circle_LogAttachScreen (SDL_circle.h) is the host kernel's way in. This
-// is the other end: the drop, made when an application initialises SDL video,
+// The attach the LIBRARY makes, on every board, from SDL2Circle_ArmCoreRuntime
+// on core 0 — because where output goes is a property of the machine and not
+// something each host kernel has to remember to ask for. It does nothing when
+// the machine's command line carries --rapi-no-screen-log, and it reports a
+// board with no usable display as a notice rather than a fault.
+//
+// SDL2Circle_LogAttachScreen (SDL_circle.h) remains the host kernel's way to
+// have it EARLIER than this, for a kernel with bring-up of its own worth
+// watching on the glass.
+void SDL2Circle_LogAttachScreenAtBoot(void);
+
+// The other end: the drop, made when an application initialises SDL video,
 // because that is the moment the guest takes the display. A no-op when the
-// screen was never attached, and it cannot be undone — nothing is ever
-// attached after boot.
+// screen was never attached, and it cannot be undone — the screen is never a
+// destination again afterwards.
 void SDL2Circle_LogDetachScreen(void);
 
 // ---- the C library's standard descriptors (src/stdio.cpp) ------------------
@@ -133,6 +143,10 @@ bool SDL2Circle_KernelTimeUTC(unsigned *pSeconds, unsigned *pMicroSeconds);
 // The library's own switches, found by the library rather than forwarded to
 // it. Idempotent; safe to call from any start-up order.
 void SDL2Circle_ReadBootArgs(void);
+
+// Whether --rapi-no-screen-log was stamped on this image: the machine saying
+// the log stays on the serial port and no display grant is made at boot.
+bool SDL2Circle_ScreenLogDeclined(void);
 
 // The application's static constructors, deferred by sdl-app-init.ld until
 // the kernel exists. Called once, on core 0, from SDL2Circle_ArmCoreRuntime.

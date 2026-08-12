@@ -82,6 +82,15 @@ CCharGenerator s_font;
 // serial port without drawing.
 bool s_drawing = false;
 
+// Set by the drop and never cleared. THE SCREEN IS ATTACHED ONCE OR NOT AT
+// ALL: after an application has taken the display, drawing text into the
+// framebuffer would paint over its picture. The invariant used to rest on
+// nobody asking twice; it is written down here because the attach now answers
+// "the screen is a destination" rather than refusing, and a caller that reads
+// that as "so a later call is harmless" would otherwise reattach over a
+// running game.
+bool s_dropped = false;
+
 // What the logger's target was before the tee was put in front of it — the
 // serial device the host kernel gave it. It is never replaced, only wrapped,
 // and it is what the target goes back to when the screen is dropped.
@@ -277,9 +286,20 @@ CScreenLogDevice s_screenLog;
 
 extern "C" int SDL2Circle_LogAttachScreen(void)
 {
+    // ALREADY A DESTINATION IS THE ANSWER THE CALLER ASKED FOR, so it is
+    // success. The library attaches the screen itself while the machine comes
+    // up (SDL2Circle_LogAttachScreenAtBoot below), which means a host kernel
+    // making this call is now usually the second to arrive rather than the
+    // first. What it wanted is true either way, and a kernel that reports a
+    // refusal — every kernel that made this call before the library did —
+    // would otherwise print a warning about a screen that is working.
     if (s_drawing)
-        return SDL_SetError("SDL2Circle_LogAttachScreen: the screen is "
-                            "already a log destination");
+        return 0;
+
+    if (s_dropped)
+        return SDL_SetError("SDL2Circle_LogAttachScreen: the application has "
+                            "the display; the screen cannot be a log "
+                            "destination again");
 
     // A LOGGER WITH A DESTINATION ALREADY, and the check is on the
     // destination rather than on the logger. Circle's CLogger::Get() never
@@ -372,11 +392,45 @@ extern "C" int SDL2Circle_LogAttachScreen(void)
 }
 
 // ---------------------------------------------------------------------------
+// Attaching at boot (the library, on every board, without being asked)
+// ---------------------------------------------------------------------------
+
+void SDL2Circle_LogAttachScreenAtBoot(void)
+{
+    // WHERE OUTPUT GOES IS A PROPERTY OF THE MACHINE, so the machine decides
+    // it and not each host kernel in turn. This used to be a call a kernel
+    // made, which made the screen an opt-in: a kernel that had never heard of
+    // it printed to the wire alone, and there was nothing on the wire or on
+    // the glass to say that a destination was missing. Silence is exactly
+    // what a forgotten destination looks like.
+    //
+    // A machine that wants the screen left out of it says so on its own
+    // command line (src/bootargs.cpp), which keeps the decision on the same
+    // side as the rest of the machine's description.
+    if (SDL2Circle_ScreenLogDeclined())
+        return;
+
+    // A board with no display, or a grant this console cannot draw into, is
+    // not a fault: it is a machine with one destination instead of two, and
+    // the serial log carries on unaffected. Said once, at notice, because a
+    // headless board would otherwise report an error on every boot for
+    // working exactly as it is wired.
+    if (SDL2Circle_LogAttachScreen() != 0)
+        SDL2Circle_Log("sdl2console", SDL2CIRCLE_LOG_NOTICE,
+                       "no screen log: %s", SDL_GetError());
+}
+
+// ---------------------------------------------------------------------------
 // Dropping (SDL_Init, when an application starts video)
 // ---------------------------------------------------------------------------
 
 void SDL2Circle_LogDetachScreen(void)
 {
+    // Recorded even where there was nothing to drop, because what this marks
+    // is that the application now has the display — which is true whether or
+    // not the screen was ever drawn on.
+    s_dropped = true;
+
     if (!s_drawing)
         return;
 

@@ -34,25 +34,31 @@ So they do not write. **Each core copies into a ring of its own and returns**, a
 
 ## Where output lands
 
-**The host kernel decides, and the application never learns of a destination.** An application writes into a channel and knows of nothing beyond it. The kernel attaches the destinations once, while it is initialising itself, and that is the only moment anything is attached. Both channels above land in the same places, by these rules.
+**The machine decides, and neither the application nor the host kernel has to ask.** An application writes into a channel and knows of nothing beyond it. The destinations are attached once, while the machine is coming up, and that is the only moment anything is attached.
 
 **The serial port is always a destination.** It is whatever device the kernel gave Circle's logger, and it stays that for the whole run.
 
-**The screen can be a second destination from boot**, and this library draws it:
+**The screen is a second destination from boot, on every board, and this library both attaches and draws it.** It happens inside `SDL2Circle_ArmCoreRuntime`, the call every host kernel already makes on core 0, so a kernel that has never heard of any of this gets both destinations by doing nothing.
 
-```cpp
-// in the kernel's Initialize(), after the logger is on the serial device
-if (SDL2Circle_LogAttachScreen() != 0)
-    m_Logger.Write(From, LogWarning, "no screen log: %s", SDL_GetError());
-```
+That is deliberately not something a kernel opts into. A destination a kernel can forget is a destination that goes missing in silence: there is nothing on the wire, and nothing on the glass, to say that half the output is not arriving.
 
-Every line the logger carries from that point — the kernel's own, this library's, and everything an application writes — appears on the display as well as on the wire. The library reports the console it built on both of them:
+Every line the logger carries — the kernel's own, this library's, and everything an application writes or prints — appears on the display as well as on the wire. The library reports the console it built on both of them:
 
 ```
 sdl2console: screen log: 1920x1080 pixels, 4 bytes per pixel (pitch 7680), 240x67 characters of 8x16
 ```
 
-**The screen destination is dropped when an application initialises SDL video**, because that is the moment the application takes the display. From then on the log goes to the serial port alone, and the library says so before it goes. Nothing is ever attached after boot: the only transition available afterwards is removal, and a removal cannot spoil a picture. That is what makes a console and a game writing the same framebuffer unreachable rather than merely discouraged.
+**A board with no display is not a fault.** It is a machine with one destination instead of two; the library says so once, at notice, and the serial log carries on unaffected.
+
+### Saying no, and asking earlier
+
+**A machine that wants the serial port alone stamps `--rapi-no-screen-log`** into the boot argument block, alongside the library's other switches. It is a switch on the machine rather than a call in a kernel for the same reason the rule itself is the machine's.
+
+It turns off two things. The log is not drawn. And **the display grant is not made at boot** — asking the firmware for the framebuffer is what sets the display mode, so this is how a machine says the mode is to be settled by the application's first window and by nothing before it.
+
+**`SDL2Circle_LogAttachScreen` remains, for a kernel that wants the screen EARLIER than the arming call** — one with bring-up of its own worth watching on the glass, such as mounting a card. Call it on core 0 once the logger is on the serial device. It answers 0 when the screen is a destination, including when it already was, so a kernel that calls it after the library has is not told of a problem it does not have.
+
+**The screen destination is dropped when an application initialises SDL video**, because that is the moment the application takes the display. From then on the log goes to the serial port alone, and the library says so before it goes. Nothing is ever attached after that: `SDL2Circle_LogAttachScreen` refuses once the application has the display, and a removal cannot spoil a picture. That is what makes a console and a game writing the same framebuffer unreachable rather than merely discouraged.
 
 The drop happens after `SDL_Init` has decided whether it will start at all, so a consumer turned away at the door — no virtual display device declared — still gets the line saying why, on the screen as well as on the wire.
 
