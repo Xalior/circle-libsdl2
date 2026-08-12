@@ -101,6 +101,15 @@ extern "C" void SDL2Circle_ArmCoreRuntime(void)
 
     if (core == 0)
     {
+        // Board hardware — the CPU clock and the case fan — before anything
+        // else on core 0, so the rest of bring-up runs at the clock the
+        // application is going to have. SDL2Circle_HardwareInit is
+        // idempotent (see hardware.cpp), so a host kernel that brought this
+        // up earlier still — a CSDL2CircleHardware member, or a direct call
+        // from its own constructor, needed when it drives I2C, SPI or the
+        // mini UART itself — costs nothing extra here.
+        SDL2Circle_HardwareInit();
+
         // The application's own static constructors, held back by
         // sdl-app-init.ld until the kernel exists. Core 0 only, and after
         // the runtime above rather than before it: a deferred constructor

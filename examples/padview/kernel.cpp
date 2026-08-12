@@ -456,8 +456,7 @@ CKernel::CKernel(void)
     // sends every log line somewhere nobody is listening.
     : m_Serial(0, FALSE, 0),
       m_Timer(&m_Interrupt),
-      m_Logger(m_Options.GetLogLevel(), &m_Timer),
-      m_CPUThrottle(CPUSpeedMaximum)
+      m_Logger(m_Options.GetLogLevel(), &m_Timer)
 {
     m_ActLED.Blink(3);
 }
@@ -469,6 +468,7 @@ boolean CKernel::Initialize(void)
     if (bOK) bOK = m_Logger.Initialize(&m_Serial);
     if (bOK) bOK = m_Interrupt.Initialize();
     if (bOK) bOK = m_Timer.Initialize();
+    if (bOK) SDL2Circle_ArmCoreRuntime();
     return bOK;
 }
 

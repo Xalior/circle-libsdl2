@@ -12,7 +12,6 @@
 #include <circle/interrupt.h>
 #include <circle/timer.h>
 #include <circle/logger.h>
-#include <circle/cputhrottle.h>
 #include <circle/types.h>
 
 enum TShutdownMode
@@ -42,12 +41,10 @@ private:
     CInterruptSystem    m_Interrupt;
     CTimer              m_Timer;
     CLogger             m_Logger;
-    // Circle boots at idle clock, so an application that wants full speed
-    // asks for it. The shim also ticks this object to run thermal
-    // management, and reaches it through CCPUThrottle::Get(), which asserts
-    // rather than returning null — so a kernel without one does not merely
-    // run slow, it dies on the first event pump.
-    CCPUThrottle        m_CPUThrottle;
+    // No CCPUThrottle here: the library owns exactly one, and creates it
+    // itself. A second construction — one declared by this kernel — aborts
+    // with "assertion failed: s_pThis == 0" the moment the library's own
+    // instance is made.
 };
 
 #endif

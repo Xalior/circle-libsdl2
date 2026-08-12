@@ -95,6 +95,7 @@ boolean CKernel::Initialize(void)
     if (bOK) bOK = m_Logger.Initialize(&m_Serial);
     if (bOK) bOK = m_Interrupt.Initialize();
     if (bOK) bOK = m_Timer.Initialize();
+    if (bOK) SDL2Circle_ArmCoreRuntime();
     return bOK;
 }
 

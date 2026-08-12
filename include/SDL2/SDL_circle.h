@@ -238,10 +238,13 @@ int SDL2Circle_DeclareBasePath(const char *path);
 // is nothing for it to return, so it can never be used to ask the question.
 //
 // Nothing has to be done for the common case: bring-up happens inside
-// SDL_Init, on core 0, and an application that does nothing gets it. The
-// clock is raised to maximum, because Circle boots the board at its idle
-// rate; the cmdline.txt options `socmaxtemp=` and `gpiofanpin=` then govern
-// what happens from there (see Circle's doc/cmdline.txt).
+// SDL2Circle_ArmCoreRuntime, on core 0, and an application that does nothing
+// gets it — every host kernel already makes that call, whether or not it
+// uses the core split, so this runs before any SDL_Init the application
+// goes on to make. The clock is raised to maximum, because Circle boots the
+// board at its idle rate; the cmdline.txt options `socmaxtemp=` and
+// `gpiofanpin=` then govern what happens from there (see Circle's
+// doc/cmdline.txt).
 //
 // Bring it up EARLIER if the host kernel initializes I2C, SPI or the mini
 // UART itself. Raising the CPU clock also moves the core clock, and those
@@ -379,9 +382,11 @@ void     SDL2Circle_IOCloseDir(intptr_t dir);
 // The early-bring-up hatch for board hardware, described above. Declare one
 // as a member of the Circle kernel class and the library's hardware
 // management comes up while the kernel is being constructed, before anything
-// in Initialize() runs, instead of waiting for SDL_Init. It holds no state
-// of its own: constructing it calls SDL2Circle_HardwareInit, and where it
-// sits in the member list decides how early that happens.
+// in Initialize() runs, instead of waiting for SDL2Circle_ArmCoreRuntime. It
+// holds no state of its own: constructing it calls SDL2Circle_HardwareInit,
+// and where it sits in the member list decides how early that happens — and
+// it must sit after a CKernelOptions member, since CCPUThrottle reads the
+// fan pin from CKernelOptions::Get() with no null check.
 class CSDL2CircleHardware
 {
 public:

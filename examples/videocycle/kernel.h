@@ -18,7 +18,6 @@
 #include <circle/timer.h>
 #include <circle/logger.h>
 #include <circle/sched/scheduler.h>
-#include <circle/cputhrottle.h>
 #include <circle/multicore.h>
 #include <circle/memory.h>
 #include <circle/types.h>
@@ -58,10 +57,10 @@ private:
     CTimer              m_Timer;
     CLogger             m_Logger;
     CScheduler          m_Scheduler;
-    // Circle boots at idle clock, and the shim reaches this object through
-    // CCPUThrottle::Get(), which asserts rather than returning null — so a
-    // kernel without one dies on the first event pump.
-    CCPUThrottle        m_CPUThrottle;
+    // No CCPUThrottle here: the library owns exactly one, and creates it
+    // itself. A second construction — one declared by this kernel — aborts
+    // with "assertion failed: s_pThis == 0" the moment the library's own
+    // instance is made.
     CSplitCores         m_Cores;
 };
 

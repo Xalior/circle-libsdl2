@@ -29,6 +29,13 @@ include $(CIRCLEHOME)/Rules.mk
 
 INCLUDE := -I ../../include $(CIRCLE_STDLIB_INCLUDES) $(INCLUDE)
 
+# No libSDL2-$(BOARD).a here — deliberately: this probe links no SDL and
+# uses none of this library's threading. That is also why kernel.cpp never
+# calls SDL2Circle_ArmCoreRuntime: the symbol lives in that archive, so
+# calling it would need this library linked in to arm a thread pointer
+# nothing here reads (the probe throws no C++ exception and starts no
+# thread). Adding the call without adding the archive is an undefined
+# reference at link time.
 LIBS := $(CIRCLE_STDLIB_LIBS)
 
 -include $(DEPS)

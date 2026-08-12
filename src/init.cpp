@@ -251,11 +251,6 @@ static void init_input_on0(void *)
     SDL2Circle_InputInit();
 }
 
-static void init_hardware_on0(void *)
-{
-    SDL2Circle_HardwareInit();
-}
-
 static void drop_screen_log_on0(void *)
 {
     SDL2Circle_LogDetachScreen();
@@ -304,15 +299,14 @@ extern "C" int SDL_InitSubSystem(Uint32 flags)
     if (flags & SDL_INIT_VIDEO)
         SDL2Circle_CallOn0(drop_screen_log_on0, nullptr);
 
-    // Board hardware — the CPU clock and the case fan — before anything
-    // else, so the rest of bring-up runs at the clock the application is
-    // going to have. It belongs to core 0 like every other device, so it is
-    // marshalled there; a host kernel that needed it earlier still has
-    // already brought it up, and this then does nothing.
-    //
-    // Not conditional on the subsystem flags: this is the machine, not a
-    // subsystem, and every SDL application wants the machine running.
-    SDL2Circle_CallOn0(init_hardware_on0, nullptr);
+    // Board hardware — the CPU clock and the case fan — is brought up from
+    // SDL2Circle_ArmCoreRuntime, not here. Every host kernel already makes
+    // that call on core 0 before running anything else (see coreruntime.cpp),
+    // which is earlier than any SDL_Init an application can issue, so by the
+    // time this function runs the clock is already at the rate the
+    // application is going to have; a host kernel that needed it earlier
+    // still (CSDL2CircleHardware, or a direct SDL2Circle_HardwareInit call)
+    // has already brought it up, and both routes are idempotent.
 
     // Video/window devices come up lazily in SDL_CreateWindow. USB is not
     // brought up here AT ALL any more: the host kernel owns the controller

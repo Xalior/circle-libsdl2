@@ -284,8 +284,7 @@ CKernel::CKernel(void)
     // = 10) is the Pi 5's dedicated debug connector, not the header.
     : m_Serial(0, FALSE, 0),
       m_Timer(&m_Interrupt),
-      m_Logger(m_Options.GetLogLevel(), &m_Timer),
-      m_CPUThrottle(CPUSpeedMaximum)
+      m_Logger(m_Options.GetLogLevel(), &m_Timer)
 {
     m_ActLED.Blink(3);
 }
