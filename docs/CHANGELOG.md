@@ -57,11 +57,6 @@ the gap was in the marshalling layer alone. Each new operation has the same
 shape as the ones already there: one argument structure, one handler, and one
 call performed on the core that owns the card.
 
-The working directory is one setting for the whole board, because the volume is
-mounted on one core and the setting lives with the mount. An application with
-several threads moves all of them when any one of them changes directory, which
-is what a working directory is on any system.
-
 Nothing already exported changed, so an existing kernel needs no action.
 
 ### The file-operation counter counts every operation
