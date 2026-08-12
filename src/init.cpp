@@ -258,6 +258,13 @@ static void drop_screen_log_on0(void *)
 
 extern "C" int SDL_InitSubSystem(Uint32 flags)
 {
+    // SDL.h says twice that video brings the event subsystem up with it, and
+    // it does. Recording it is what makes SDL_WasInit answer honestly, and a
+    // great many applications ask that question before deciding whether to
+    // bring events up themselves.
+    if (flags & SDL_INIT_VIDEO)
+        flags |= SDL_INIT_EVENTS;
+
     // The library's own boot switches, found by the library rather than
     // forwarded to it, so an application that has never heard of one still
     // gets it. Idempotent, and done before anything is brought up: a switch
