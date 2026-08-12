@@ -10,6 +10,49 @@ followed.
 
 ## vPoC3
 
+### The I/O service gained rename, directory removal, and the working directory
+
+The service carried open, read, write, seek, truncate, unlink, directory
+creation and directory listing. It did not carry rename, directory removal,
+change of directory, or the query that reports the working directory. An
+application whose files go through the service could not rename a file, and
+could not remove a directory it had made.
+
+Nothing underneath was missing. The C library on this board has all four, and
+the filesystem is configured for the relative-path calls the last two need, so
+the gap was in the marshalling layer alone. Each new operation has the same
+shape as the ones already there: one argument structure, one handler, and one
+call performed on the core that owns the card.
+
+The working directory is one setting for the whole board, because the volume is
+mounted on one core and the setting lives with the mount. An application with
+several threads moves all of them when any one of them changes directory, which
+is what a working directory is on any system.
+
+Nothing already exported changed, so an existing kernel needs no action.
+
+### The file-operation counter counts every operation
+
+It was raised by open, read, write, stat and directory open, and not by
+truncate, close, unlink, directory create, directory read or directory close.
+That number appears in the watchdog's stall report, which therefore
+under-reported how much file work an application was doing — the case where the
+number matters most.
+
+### Two documents corrected
+
+`CORE-SPLIT.md` told an application with its own file layer to point that layer
+at the service, and said nothing else was needed. A host kernel must also
+initialise the C library's standard streams. Without that, the first file
+opened takes the lowest free descriptor, which is the one a language runtime
+reads as its console, and everything written to that file goes to the log with
+nothing reporting it. The document did say which descriptors are the console,
+but only in the section it tells this kind of application to skip.
+
+`AUDIO.md` said timer callbacks run on core 0. They run in the caller's own
+line of execution, on the caller's core, at the event pump and at `SDL_Delay`.
+This library's other documents and its source have always said so.
+
 ### Every core gets a 2 MB stack
 
 Circle's own default is 128 KB a core. This library configures its worlds at
