@@ -113,7 +113,12 @@ Almost nothing. Call plain `SDL_*` and it works on whatever core you were placed
 
 **Files.** The C library on this platform drives the SD card directly from whichever core calls it, and off core 0 that is not allowed. So an application that reads files must reach them through the I/O service in `SDL2/SDL_circle.h` — `SDL2Circle_IOOpen`, `IORead`, `IOWrite`, `IOOpenDir` and the rest. Every one of them is safe from any core, and every one of them becomes an ordinary direct call in a single-core build, so there is no second code path to maintain.
 
-If the application has its own file layer — many ports and emulators do — point it at these functions and nothing else is needed.
+**The working directory is one setting for the whole board.** `SDL2Circle_IOChdir` and `SDL2Circle_IOGetCwd` reach the filesystem's own current directory, which lives on core 0 and is shared by every core, this library's file calls and the host kernel's alike. A change made from anywhere is a change everywhere. Two parts of a program that both use relative paths therefore have to agree about it; a part that cannot make that agreement uses absolute paths, which the setting does not affect.
+
+If the application has its own file layer — many ports and emulators do — point it at these functions. Two things are then still the host kernel's:
+
+- **Initialise the C library's standard streams before the application opens anything.** A Circle kernel that calls `CGlueStdioInit` takes descriptors 0, 1 and 2 for the console. Without it the first file the application opens is handed descriptor 0, because the C library gives out the lowest free slot — and a runtime that reads 0, 1 and 2 as the console then sends every write meant for that file to the console instead, with nothing reporting a fault.
+- **Bring the card up before any other core starts asking for it**, which is step 1 above.
 
 If it does not, and it simply calls `fopen`, `std::ifstream` or `opendir` throughout its source, **redirect the C library underneath it** instead of editing the application. The linker's `--wrap` option does this without touching a single vendored file:
 

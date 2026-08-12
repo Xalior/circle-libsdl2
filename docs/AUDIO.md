@@ -26,7 +26,7 @@ Full conversion support: `SDL_BuildAudioCVT`, `SDL_ConvertAudio`, `SDL_LoadWAV_R
 
 ## Timers
 
-`SDL_AddTimer` and `SDL_RemoveTimer` use the system timer, serviced from the per-frame service point (the pump on core 0, or the servo's drain off it). Timer callbacks run on core 0.
+`SDL_AddTimer` and `SDL_RemoveTimer` use the system timer. A callback has no thread of its own here, so it runs in the calling line of execution — at `SDL_PumpEvents`, which `SDL_PollEvent` calls, and at `SDL_Delay`, on whichever core makes the call. A callback is never dropped, only deferred until one of those two points is reached, so an application inside a long stretch of work with neither a delay nor an event poll in it runs its timers late.
 
 ## Examples
 

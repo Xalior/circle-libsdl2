@@ -320,6 +320,14 @@ int      SDL2Circle_IOTruncate(int handle, uint64_t size);
 int      SDL2Circle_IOClose(int handle);
 int      SDL2Circle_IOUnlink(const char *path);
 int      SDL2Circle_IOMkdir(const char *path);
+int      SDL2Circle_IORmdir(const char *path);
+int      SDL2Circle_IORename(const char *oldpath, const char *newpath);
+/* The working directory is one setting for the whole board, held on core 0.
+   Changing it changes it for every core, this library's own file calls
+   included. Relative paths are resolved against it; absolute paths are not
+   affected by it. GetCwd fills buf and reports -ERANGE if it is too small. */
+int      SDL2Circle_IOChdir(const char *path);
+int      SDL2Circle_IOGetCwd(char *buf, uint32_t size);
 int      SDL2Circle_IOStatPath(const char *path, SDL2Circle_IOStat *st);
 intptr_t SDL2Circle_IOOpenDir(const char *path);                      /* 0 on failure */
 int      SDL2Circle_IOReadDir(intptr_t dir, SDL2Circle_IODirEntry *e); /* 1 entry, 0 end, <0 error */

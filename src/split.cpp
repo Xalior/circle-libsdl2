@@ -622,6 +622,8 @@ struct IoRw     { int h; void *buf; const void *cbuf; uint64_t off; uint32_t len
 struct IoTrunc  { int h; uint64_t size; int r; };
 struct IoClose  { int h; int r; };
 struct IoPath   { const char *path; int r; };
+struct IoPath2  { const char *from; const char *to; int r; };
+struct IoCwdQ   { char *buf; uint32_t size; int r; };
 struct IoStatQ  { const char *path; SDL2Circle_IOStat *st; int r; };
 struct IoDirO   { const char *path; intptr_t r; };
 struct IoDirR   { intptr_t dir; SDL2Circle_IODirEntry *e; int r; };
@@ -696,25 +698,57 @@ void io_write(void *p)
 void io_trunc(void *p)
 {
     auto *a = (IoTrunc *)p;
+    g_io_ops.fetch_add(1, std::memory_order_relaxed);
     a->r = (::ftruncate(a->h, (off_t)a->size) < 0) ? -errno : 0;
 }
 
 void io_close(void *p)
 {
     auto *a = (IoClose *)p;
+    g_io_ops.fetch_add(1, std::memory_order_relaxed);
     a->r = (::close(a->h) < 0) ? -errno : 0;
 }
 
 void io_unlink(void *p)
 {
     auto *a = (IoPath *)p;
+    g_io_ops.fetch_add(1, std::memory_order_relaxed);
     a->r = (::unlink(a->path) < 0) ? -errno : 0;
 }
 
 void io_mkdir(void *p)
 {
     auto *a = (IoPath *)p;
+    g_io_ops.fetch_add(1, std::memory_order_relaxed);
     a->r = (::mkdir(a->path, 0777) < 0) ? -errno : 0;
+}
+
+void io_rmdir(void *p)
+{
+    auto *a = (IoPath *)p;
+    g_io_ops.fetch_add(1, std::memory_order_relaxed);
+    a->r = (::rmdir(a->path) < 0) ? -errno : 0;
+}
+
+void io_rename(void *p)
+{
+    auto *a = (IoPath2 *)p;
+    g_io_ops.fetch_add(1, std::memory_order_relaxed);
+    a->r = (::rename(a->from, a->to) < 0) ? -errno : 0;
+}
+
+void io_chdir(void *p)
+{
+    auto *a = (IoPath *)p;
+    g_io_ops.fetch_add(1, std::memory_order_relaxed);
+    a->r = (::chdir(a->path) < 0) ? -errno : 0;
+}
+
+void io_getcwd(void *p)
+{
+    auto *a = (IoCwdQ *)p;
+    g_io_ops.fetch_add(1, std::memory_order_relaxed);
+    a->r = (::getcwd(a->buf, (size_t)a->size) == nullptr) ? -errno : 0;
 }
 
 void io_stat(void *p)
@@ -743,6 +777,7 @@ void io_opendir(void *p)
 void io_readdir(void *p)
 {
     auto *a = (IoDirR *)p;
+    g_io_ops.fetch_add(1, std::memory_order_relaxed);
     errno = 0;
     struct dirent *d = ::readdir((DIR *)a->dir);
     if (!d)
@@ -768,6 +803,7 @@ void io_readdir(void *p)
 void io_closedir(void *p)
 {
     auto *a = (IoDirC *)p;
+    g_io_ops.fetch_add(1, std::memory_order_relaxed);
     ::closedir((DIR *)a->dir);
 }
 
@@ -819,6 +855,40 @@ extern "C" int SDL2Circle_IOMkdir(const char *path)
 {
     IoPath a{path, 0};
     SDL2Circle_CallOn0(io_mkdir, &a);
+    return a.r;
+}
+
+extern "C" int SDL2Circle_IORmdir(const char *path)
+{
+    IoPath a{path, 0};
+    SDL2Circle_CallOn0(io_rmdir, &a);
+    return a.r;
+}
+
+extern "C" int SDL2Circle_IORename(const char *oldpath, const char *newpath)
+{
+    IoPath2 a{oldpath, newpath, 0};
+    SDL2Circle_CallOn0(io_rename, &a);
+    return a.r;
+}
+
+// The working directory is one setting for the whole board, held by the
+// filesystem on core 0 rather than by the caller, so a change made through
+// this call is a change every core sees — including core 0's own C library
+// calls. Two callers that both use relative paths share it and must agree
+// about it; a caller that cannot make that agreement names absolute paths,
+// which nothing here can disturb.
+extern "C" int SDL2Circle_IOChdir(const char *path)
+{
+    IoPath a{path, 0};
+    SDL2Circle_CallOn0(io_chdir, &a);
+    return a.r;
+}
+
+extern "C" int SDL2Circle_IOGetCwd(char *buf, uint32_t size)
+{
+    IoCwdQ a{buf, size, 0};
+    SDL2Circle_CallOn0(io_getcwd, &a);
     return a.r;
 }
 
