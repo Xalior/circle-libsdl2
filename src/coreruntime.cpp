@@ -110,6 +110,14 @@ extern "C" void SDL2Circle_ArmCoreRuntime(void)
         // mini UART itself — costs nothing extra here.
         SDL2Circle_HardwareInit();
 
+        // The C library's standard output and standard error, bound to this
+        // board's output router before anything can print. Here for the same
+        // reason as the calls below: this is the one point every host kernel
+        // already makes on core 0, early, with its world up — and "early" is
+        // load-bearing, because the C library takes the lowest free
+        // descriptors and a file opened first would take one of them.
+        SDL2Circle_StdioInit();
+
         // The application's own static constructors, held back by
         // sdl-app-init.ld until the kernel exists. Core 0 only, and after
         // the runtime above rather than before it: a deferred constructor

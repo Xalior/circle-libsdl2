@@ -57,6 +57,16 @@ bool SDL2Circle_ScanoutAcquire(SDL2CircleScanout *out);
 // attached after boot.
 void SDL2Circle_LogDetachScreen(void);
 
+// ---- the C library's standard descriptors (src/stdio.cpp) ------------------
+//
+// Bind standard output and standard error to the raw output channel, so an
+// ordinary printf goes where everything else on this board goes and arrives
+// exactly as it was written. Core 0 only, once, early — before anything opens
+// a file, because the C library binds all three standard descriptors together
+// and takes the lowest free slots. It does nothing at all when a host kernel
+// has bound its own console.
+void SDL2Circle_StdioInit(void);
+
 void SDL2Circle_InputInit(void);   // find the host's USB controller (idempotent)
 void SDL2Circle_InputPump(void);   // PnP + translate HID reports to events
 

@@ -10,6 +10,45 @@ followed.
 
 ## vPoC3
 
+### A program's own output is no longer treated as a log line
+
+Where output goes and what output looks like are now two separate things.
+
+Where it goes is unchanged and is still the machine's decision: the serial
+port always, and the screen as well until an application takes the display.
+What is new is a second way of writing into those destinations.
+`SDL2Circle_WriteBytes` takes bytes and adds nothing to them — no source, no
+severity, no timestamp, and no waiting for an end of line. A program that
+prints a number gets that number. `SDL2Circle_Log` and `SDL2Circle_LogBytes`
+are unchanged and still label everything they carry.
+
+**Consumers will see this**: the C library's standard output and standard
+error are now bound to that raw channel by the library itself, during
+`SDL2Circle_ArmCoreRuntime`. An ordinary `printf` used to reach a descriptor
+nobody had bound, so the C library answered "bad file descriptor" and the
+bytes were lost; it now appears on the serial port, and on the screen while
+the screen is still a destination, exactly as it was written. Nothing in
+circle-newlib is changed to do this — the library gives the C library's own
+console glue a device of its own.
+
+**Consumers must act** if the host kernel binds its own console with
+`CGlueStdioInit`: that call must be made BEFORE `SDL2Circle_ArmCoreRuntime`.
+The C library binds its three standard descriptors together and stops the
+board inside an assertion if they are bound twice. This library checks first
+and leaves them alone when a kernel has already bound them, so a kernel that
+binds first keeps its own arrangement and nothing else changes for it. A
+kernel that binds afterwards is the one order that fails.
+
+A kernel that binds nothing gains something as well: all three standard
+descriptors are now held for the life of the program. They used to be free,
+and the C library hands out the lowest free descriptor, so the first file such
+a program opened was given descriptor 0 — which a language runtime reads as
+the console, quietly sending that file's writes to the console instead of to
+the card.
+
+Standard input is bound but no character ever arrives on it, because this
+board has no console input. A C program that reads standard input waits.
+
 ### The log can go on the screen, drawn by this library
 
 A host kernel that wants its log on the display as well as on the serial port

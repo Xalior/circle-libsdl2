@@ -47,7 +47,7 @@ If your application runs off core 0, see [Running off core 0](docs/CORE-SPLIT.md
 - **[Audio](docs/AUDIO.md)** — callback API, mixing, conversion, timers
 - **[Running off core 0](docs/CORE-SPLIT.md)** — core split architecture, marshalling, the servo and watchdog, file I/O
 - **[C++ threading](docs/THREADING.md)** — std::mutex, std::thread, thread_local — all work on any core
-- **[Logging](docs/LOGGING.md)** — SDL2Circle_Log from any core without blocking
+- **[Output](docs/LOGGING.md)** — the log and a program's own output, from any core, without blocking
 - **[Performance](docs/PERFORMANCE.md)** — profiling and instrumentation
 - **[Design](docs/DESIGN.md)** — architecture decisions, ownership rules, what the host kernel does
 - **[Building](docs/BUILDING.md)** — prerequisites, per-board archives, single-core vs multicore

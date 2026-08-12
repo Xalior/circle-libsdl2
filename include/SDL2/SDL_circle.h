@@ -261,19 +261,27 @@ void SDL2Circle_HardwareInit(void);
 unsigned SDL2Circle_SoCTemperature(void);
 unsigned SDL2Circle_CPUClockRate(void);
 
-// ---- logging (any core) -----------------------------------------------------
+// ---- output (any core) ------------------------------------------------------
 //
-// The serial console is a device, so only core 0 may write to it. These put
-// a line on it from ANY core: the calling core formats into a ring of its
-// own and returns, and core 0's servo drains every ring into the logger.
-// The caller never touches the hardware and is never blocked by it.
+// WHERE OUTPUT GOES is one decision for the whole board and no caller has a
+// say in it: the serial port always, and the screen as well until an
+// application takes the display (see SDL2Circle_LogAttachScreen below).
 //
-// When a ring is full the line is DROPPED and counted, and the count is
-// printed with the next drain — logging never stalls the core that logs,
+// WHAT OUTPUT LOOKS LIKE is decided by which of these calls is used. A log
+// line comes out with a source, a severity and a timestamp on it. Raw output
+// comes out exactly as it was handed over. Both reach the same destinations.
+//
+// The serial console is a device, so only core 0 may write to it. These are
+// callable from ANY core: the calling core copies into a ring of its own and
+// returns, and core 0's servo writes the ring out. The caller never touches
+// the hardware and is never blocked by it.
+//
+// When a ring is full the record is DROPPED and counted, and the count is
+// printed with the next drain — writing never stalls the core that writes,
 // and never quietly loses anything without saying so.
 //
-// Without the split active these write straight to the logger, so the same
-// call sites serve a single-core build at no extra cost.
+// Without the split active these write straight through, so the same call
+// sites serve a single-core build at no extra cost.
 //
 // `from` is the subsystem tag Circle's logger prints. It is stored by
 // POINTER and printed later, so it must outlive the call: a string literal,
@@ -286,10 +294,24 @@ unsigned SDL2Circle_CPUClockRate(void);
 
 void SDL2Circle_Log(const char *from, unsigned severity, const char *fmt, ...);
 
-// Byte-oriented output — an application's stdout, arriving in whatever
-// pieces it was written in. Lines are assembled and published one at a
-// time, because a log carries lines and has nowhere to put half of one.
+// Byte-oriented material that IS a log, arriving in whatever pieces it was
+// written in. Lines are assembled and published one at a time, because a log
+// carries lines and has nowhere to put half of one. Each finished line is
+// printed under `from`, with a severity and a timestamp, like every other
+// log line.
 void SDL2Circle_LogBytes(const char *from, const char *bytes, unsigned len);
+
+// A PROGRAM'S OWN OUTPUT, BYTE FOR BYTE. It reaches the destinations above
+// and NOTHING is added to it: no source, no severity, no timestamp, and no
+// line discipline. Half a line is output. A byte that is not text is output.
+// A program that prints a number gets that number and not a decorated
+// version of it.
+//
+// This is what a language runtime binds its standard output and standard
+// error to, and it is where an ordinary C printf on this board goes. Use
+// SDL2Circle_LogBytes instead when the bytes are diagnostics and should be
+// labelled like the rest of the log.
+void SDL2Circle_WriteBytes(const char *bytes, unsigned len);
 
 // ---- the log on the screen (host kernel side) -------------------------------
 

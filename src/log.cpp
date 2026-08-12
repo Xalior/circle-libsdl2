@@ -1,5 +1,28 @@
 //
-// log.cpp — a log line from any core, without touching the hardware.
+// log.cpp — output from any core, without touching the hardware.
+//
+// TWO QUESTIONS THAT ARE NOT THE SAME QUESTION, and this file is where they
+// are kept apart.
+//
+// WHERE OUTPUT GOES is a property of the machine. The serial port always, and
+// the screen as well until an application takes the display. It is one
+// decision for the whole board and no caller has a say in it. That decision is
+// held as Circle's logger target device: src/console.cpp puts a tee in front
+// of the serial device when the screen is attached and puts the serial device
+// back when it is dropped, so the target IS the destination set at any moment.
+// DestinationWrite below is the whole of reaching it.
+//
+// WHAT OUTPUT LOOKS LIKE is a property of whoever is printing, and that is the
+// only difference between the two ways in. A LOG RECORD carries a source, a
+// severity and a timestamp, because that is what makes a log useful, and it
+// gets them from Circle's logger. RAW OUTPUT — a program's own standard
+// output — carries nothing at all: a program printing a number expects that
+// number and not a decorated version of it, and it may print half a line or
+// bytes that are not text. So the raw channel adds no source, no severity, no
+// timestamp and no line discipline.
+//
+// Both go to the same destinations by the same rules, and neither is built on
+// top of the other.
 //
 // The serial console is a device, and devices belong to the hardware core.
 // So every other core writes its lines into a ring of its own instead, and
@@ -10,6 +33,10 @@
 // One ring per core, single producer and single consumer, exactly like the
 // event and audio rings next door: the owning core is the only writer, the
 // servo is the only reader, and the two never need a lock between them.
+//
+// Log records and raw output share that ring, so a program's printed line and
+// the log line it writes next come out in the order it produced them. A record
+// says which of the two it is and the drain gives it to the right one.
 //
 // A ring that is full DROPS the line and counts it. Losing a line is bad;
 // stalling the core that produced it, or overwriting a line already in the
@@ -32,6 +59,7 @@
 #include <SDL2/SDL.h>
 #include "sdl2circle.h"
 
+#include <circle/device.h>
 #include <circle/logger.h>
 #include <circle/timer.h>
 
@@ -82,18 +110,24 @@ static const unsigned LOG_DRAIN_MAX_RECORDS = 16;
 namespace
 {
 
-// A record is this header followed by its text. The header is copied byte
+// A record is this header followed by its bytes. The header is copied byte
 // by byte into the ring, so nothing here needs the ring to be aligned.
 //
 // `from` is stored as a POINTER, not a copy: every subsystem tag in this
 // library is a string literal, so it outlives any record that names it and
 // every core sees it at the same address. Callers must respect that — a tag
 // built on the stack would be gone by the time the servo printed it.
+//
+// `raw` is which of the two channels produced the record. A raw record's
+// bytes go to the destination exactly as they arrived and `from` and
+// `severity` mean nothing in it; anything else is a log line and gets its
+// label from Circle's logger when the servo prints it.
 struct LogRec
 {
     const char *from;
     unsigned severity;
-    unsigned len;          // bytes of text following the header
+    unsigned len;          // bytes following the header
+    bool raw;
 };
 
 struct alignas(64) LogRing
@@ -132,15 +166,37 @@ inline TLogSeverity ToCircle(unsigned severity)
     }
 }
 
-// Whether each core is currently losing lines, and how many it has lost
+// EVERY DESTINATION AT ONCE, and nothing added on the way.
+//
+// Circle's logger holds the target device, and src/console.cpp is what makes
+// that device reach more than one place: the tee it installs at attach writes
+// the serial port and then the screen, and the drop puts the plain serial
+// device back. So reading the target back is reading the destination set as it
+// stands, with no second copy of the rule to keep in step.
+//
+// There is no target before the host kernel has initialised its logger, and
+// bytes handed over then have nowhere to go.
+//
+// CLogger writes its own text to the target OUTSIDE its lock (lib/logger.cpp,
+// CLogger::Write(const char *): the target write happens before
+// m_SpinLock.Acquire), so this takes nothing the logger does not, and adds no
+// hazard that was not there already.
+void DestinationWrite(const char *bytes, unsigned len)
+{
+    CDevice *pTarget = CLogger::Get()->GetTarget();
+    if (pTarget != nullptr)
+        pTarget->Write(bytes, len);
+}
+
+// Whether each core is currently losing output, and how much it has lost
 // since it started. Only the servo touches these.
 bool g_dropping[LOG_MAX_CORES] = {};
 u32  g_droppedTotal[LOG_MAX_CORES] = {};
 
-// Say when a ring STARTS losing lines and when it STOPS, rather than once
+// Say when a ring STARTS losing records and when it STOPS, rather than once
 // per pass. A ring is full precisely when the console cannot keep up, so a
 // line per pass about it would be spending the scarce thing on describing
-// its own scarcity — and would push out the very lines it is reporting the
+// its own scarcity — and would push out the very records it is reporting the
 // loss of. Two lines per episode say the same thing and cost nothing.
 void ReportDrops(unsigned core, LogRing &ring)
 {
@@ -153,9 +209,9 @@ void ReportDrops(unsigned core, LogRing &ring)
         {
             g_dropping[core] = true;
             CLogger::Get()->Write("sdl2log", LogWarning,
-                                  "core %u: log ring full, lines are being "
-                                  "dropped (the console cannot carry them "
-                                  "this fast)", core);
+                                  "core %u: output ring full, records are "
+                                  "being dropped (the console cannot carry "
+                                  "them this fast)", core);
         }
         return;
     }
@@ -164,8 +220,9 @@ void ReportDrops(unsigned core, LogRing &ring)
     {
         g_dropping[core] = false;
         CLogger::Get()->Write("sdl2log", LogWarning,
-                              "core %u: log ring keeping up again, %u line(s) "
-                              "lost in total", core, g_droppedTotal[core]);
+                              "core %u: output ring keeping up again, %u "
+                              "record(s) lost in total", core,
+                              g_droppedTotal[core]);
     }
 }
 
@@ -191,8 +248,9 @@ void RingCopyOut(LogRing &ring, u32 at, void *dst, unsigned len)
         p[i] = ring.data[(at + i) % LOG_RING_BYTES];
 }
 
-// Publish one finished line into the calling core's ring.
-void RingPush(const char *from, unsigned severity, const char *text, unsigned len)
+// Publish one finished record into the calling core's ring.
+void RingPush(const char *from, unsigned severity, const char *text,
+              unsigned len, bool raw)
 {
     if (len > LOG_LINE_MAX)
         len = LOG_LINE_MAX;
@@ -208,7 +266,7 @@ void RingPush(const char *from, unsigned severity, const char *text, unsigned le
         return;
     }
 
-    LogRec rec{from, severity, len};
+    LogRec rec{from, severity, len, raw};
     RingCopyIn(ring, tail, &rec, sizeof(rec));
     RingCopyIn(ring, tail + sizeof(rec), text, len);
 
@@ -218,7 +276,7 @@ void RingPush(const char *from, unsigned severity, const char *text, unsigned le
     asm volatile("dsb ish; sev" ::: "memory");
 }
 
-// Hand a finished line to wherever it goes.
+// Hand a finished line to wherever it goes, labelled on the way.
 void Emit(const char *from, unsigned severity, const char *text, unsigned len)
 {
     if (WritesDirectly())
@@ -228,7 +286,30 @@ void Emit(const char *from, unsigned severity, const char *text, unsigned len)
         CLogger::Get()->Write(from, ToCircle(severity), "%s", text);
         return;
     }
-    RingPush(from, severity, text, len);
+    RingPush(from, severity, text, len, false);
+}
+
+// Hand a piece of raw output to the same destinations, untouched.
+void EmitRaw(const char *bytes, unsigned len)
+{
+    if (WritesDirectly())
+    {
+        DestinationWrite(bytes, len);
+        return;
+    }
+
+    // A record holds at most LOG_LINE_MAX bytes, so a longer write becomes
+    // several records. Truncating is what the labelled path does with an
+    // over-long line, and it is exactly wrong here: a byte stream that loses
+    // its middle is worse than one that arrives in pieces, and the pieces
+    // rejoin at the destination because nothing is added between them.
+    while (len > 0)
+    {
+        const unsigned take = len > LOG_LINE_MAX ? LOG_LINE_MAX : len;
+        RingPush(nullptr, SDL2CIRCLE_LOG_NOTICE, bytes, take, true);
+        bytes += take;
+        len   -= take;
+    }
 }
 
 } // namespace
@@ -261,10 +342,15 @@ extern "C" void SDL2Circle_Log(const char *from, unsigned severity,
 extern "C" void SDL2Circle_LogBytes(const char *from, const char *bytes,
                                     unsigned len)
 {
-    // Byte-oriented output — an application's stdout — arrives in whatever
-    // pieces it was written in, so lines are assembled here and published
-    // one at a time. The logger prints lines; it has nowhere to put half of
-    // one.
+    // Byte-oriented material that IS a log — a subsystem that produces its
+    // diagnostics as a stream rather than a line at a time — arrives in
+    // whatever pieces it was written in, so lines are assembled here and
+    // published one at a time. The logger prints lines; it has nowhere to put
+    // half of one.
+    //
+    // A program's ordinary output is NOT this. It goes to
+    // SDL2Circle_WriteBytes below, which labels nothing and waits for
+    // nothing.
     LineBuffer &buf = g_lines[SDL2Circle_ThisCore() % LOG_MAX_CORES];
 
     for (unsigned i = 0; i < len; i++)
@@ -284,6 +370,20 @@ extern "C" void SDL2Circle_LogBytes(const char *from, const char *bytes,
             continue;
         buf.text[buf.len++] = c;
     }
+}
+
+extern "C" void SDL2Circle_WriteBytes(const char *bytes, unsigned len)
+{
+    // A PROGRAM'S OWN OUTPUT, WHICH NOTHING HERE MAY TOUCH. No tag, no
+    // severity, no timestamp, and no waiting for an end of line: half a line
+    // is output, a byte that is not text is output, and a program that prints
+    // a number expects that number back and nothing else.
+    //
+    // The only thing this shares with the log is where the bytes end up.
+    if (bytes == nullptr || len == 0)
+        return;
+
+    EmitRaw(bytes, len);
 }
 
 // ---------------------------------------------------------------------------
@@ -345,8 +445,15 @@ void SDL2Circle_LogDrain(void)
             ring.head.store(head + sizeof(rec) + rec.len,
                             std::memory_order_release);
 
-            CLogger::Get()->Write(rec.from ? rec.from : "sdl2",
-                                  ToCircle(rec.severity), "%s", line);
+            // The one place the two channels part company. Raw output goes to
+            // the destination by count, because it may hold a byte that is
+            // not text and it has no line to end; a log record goes through
+            // the logger and comes out labelled.
+            if (rec.raw)
+                DestinationWrite(line, rec.len);
+            else
+                CLogger::Get()->Write(rec.from ? rec.from : "sdl2",
+                                      ToCircle(rec.severity), "%s", line);
             printed++;
         }
 
