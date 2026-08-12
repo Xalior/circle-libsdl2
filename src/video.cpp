@@ -438,27 +438,20 @@ bool SDL2Circle_VirtualDeviceDeclared(void)
     return s_declared;
 }
 
-// Settle the canvas, the scanout and the placement between them. True once
-// the canvas exists; false when nothing was declared, which is the one
-// unanswerable state.
+// Acquire THE framebuffer and settle the scanout it was granted on, without
+// touching the canvas.
 //
-// SDL_Init is where that is reported loudly — a consumer is refused at the
-// door, once, rather than at every call afterwards. Reaching here undeclared
-// means SDL_Init already said no and was ignored, so this only sets the
-// error and refuses: the canvas stays zero, and everything derived from it
-// (the placement divides by it) is never computed from nothing.
-static bool resolve_display_size(void)
+// Kept apart from the display-size resolve below because the screen log
+// destination (src/console.cpp) needs exactly this and nothing more: it comes
+// up during the host kernel's initialisation, long before an application has
+// declared a canvas or asked for a window. One routine so the two can never
+// ask the firmware for different things — the request below is what SETS the
+// display mode, and a second, different request would be a second mode.
+//
+// Returns where the scanout figure came from, or null when there is no
+// display to describe. Idempotent: the grant is made once and kept.
+static const char *acquire_scanout(void)
 {
-    if (s_canvas_w > 0 && s_canvas_h > 0)
-        return true;
-
-    if (!s_declared)
-    {
-        SDL_SetError("no virtual display device has been declared "
-                     "(SDL2Circle_DeclareVirtualDevice)");
-        return false;
-    }
-
     // The boot options' width=/height= is a request to the firmware for a
     // PHYSICAL DISPLAY MODE, and that is the whole of what it is. It is not
     // a canvas source and is never read as one.
@@ -485,14 +478,14 @@ static bool resolve_display_size(void)
     // Pi 5 scans out its panel's own mode whatever it is asked) both answer
     // this question correctly for themselves, and neither needs the library
     // to guess on its behalf.
-    const char *source;
     if (s_phys_w > 0 && s_phys_h > 0)
     {
         s_scanout_w = s_phys_w;
         s_scanout_h = s_phys_h;
-        source = "firmware reported";
+        return "firmware reported";
     }
-    else if (a.w > 0 && a.h > 0)
+
+    if (a.w > 0 && a.h > 0)
     {
         // The firmware would not say, but a mode was named on the command
         // line, so that is the only figure left. It is the one case where
@@ -500,9 +493,10 @@ static bool resolve_display_size(void)
         // presenting it as an answer.
         s_scanout_w = a.w;
         s_scanout_h = a.h;
-        source = "firmware silent, physical request";
+        return "firmware silent, physical request";
     }
-    else if (s_grant_w > 0 && s_grant_h > 0)
+
+    if (s_grant_w > 0 && s_grant_h > 0)
     {
         // Nothing named and the firmware silent to us. Circle asked the same
         // question in its constructor and allocated against whatever it got,
@@ -512,11 +506,58 @@ static bool resolve_display_size(void)
         // was made, and held since.
         s_scanout_w = s_grant_w;
         s_scanout_h = s_grant_h;
-        source = "firmware silent, grant geometry";
+        return "firmware silent, grant geometry";
     }
-    else
+
+    // No grant and no answer: there is no display to describe.
+    return nullptr;
+}
+
+// The grant, for anything in this library that draws on the screen itself.
+// The screen log destination is the one such consumer; see sdl2circle.h.
+bool SDL2Circle_ScanoutAcquire(SDL2CircleScanout *out)
+{
+    if (!out)
+        return false;
+    if (!acquire_scanout() || !s_fb0)
+        return false;
+
+    // Pitch, size and base address are the firmware's reply to the
+    // allocation; Circle keeps all three unchanged. Width and height are the
+    // scanout the routine above settled, which is the firmware's report of
+    // the display and not the request made of it.
+    out->base   = (u8 *)(uintptr)s_fb0->GetBuffer();
+    out->pitch  = s_fb0->GetPitch();
+    out->bytes  = s_fb0->GetSize();
+    out->width  = s_scanout_w;
+    out->height = s_scanout_h;
+    return true;
+}
+
+// Settle the canvas, the scanout and the placement between them. True once
+// the canvas exists; false when nothing was declared, which is the one
+// unanswerable state.
+//
+// SDL_Init is where that is reported loudly — a consumer is refused at the
+// door, once, rather than at every call afterwards. Reaching here undeclared
+// means SDL_Init already said no and was ignored, so this only sets the
+// error and refuses: the canvas stays zero, and everything derived from it
+// (the placement divides by it) is never computed from nothing.
+static bool resolve_display_size(void)
+{
+    if (s_canvas_w > 0 && s_canvas_h > 0)
+        return true;
+
+    if (!s_declared)
     {
-        // No grant and no answer: there is no display to describe.
+        SDL_SetError("no virtual display device has been declared "
+                     "(SDL2Circle_DeclareVirtualDevice)");
+        return false;
+    }
+
+    const char *source = acquire_scanout();
+    if (!source)
+    {
         SDL_SetError("the display size cannot be determined");
         return false;
     }

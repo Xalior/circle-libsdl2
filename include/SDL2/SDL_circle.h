@@ -288,6 +288,43 @@ void SDL2Circle_Log(const char *from, unsigned severity, const char *fmt, ...);
 // time, because a log carries lines and has nowhere to put half of one.
 void SDL2Circle_LogBytes(const char *from, const char *bytes, unsigned len);
 
+// ---- the log on the screen (host kernel side) -------------------------------
+
+// Make the SCREEN a second destination for the log, alongside the serial port
+// the host kernel has already given Circle's logger. From that moment every
+// line the logger carries — the kernel's own, this library's, and everything
+// an application writes through the calls above — is drawn on the display as
+// well as sent down the wire.
+//
+// WHERE THE LOG LANDS IS THE HOST KERNEL'S DECISION AND AN APPLICATION NEVER
+// SEES IT. Call this once, on core 0, during the kernel's own initialisation,
+// after CLogger has been initialised on the serial device. That is the only
+// moment anything is attached.
+//
+// THE SERIAL PORT IS NOT REPLACED. Whatever device the logger already had
+// stays its destination for the whole run; this only puts the screen alongside
+// it, and the serial write happens first so that drawing never delays it.
+//
+// THE SCREEN IS DROPPED WHEN AN APPLICATION INITIALISES SDL VIDEO, because
+// that is the moment the guest takes the display, and from then on the log
+// goes to the serial port alone. Nothing is ever attached after boot: the only
+// transition available afterwards is removal, so the console and the
+// application can never hold the framebuffer at the same time.
+//
+// THE LIBRARY DRAWS THE TEXT ITSELF, at the depth the firmware granted, which
+// it reads back rather than assumes — the pitch of the allocation over the
+// width of the display, both of them the firmware's own answers. There is no
+// board test in it and nothing to configure. A host kernel that builds Circle's
+// own screen device instead gets a console sized by a compile-time depth macro
+// that no reply ever corrects, which on a board that grants a different depth
+// paints part of each scanline in squeezed characters.
+//
+// Returns 0 when the screen has been attached, and -1 when it has not — no
+// logger, no display, a pixel format this console cannot draw, or a screen
+// with no room for one character — with SDL_GetError saying which. A refusal
+// changes nothing and leaves the serial log exactly as it was.
+int SDL2Circle_LogAttachScreen(void);
+
 // ---- I/O service (any core) -------------------------------------------------
 
 // Open flags.

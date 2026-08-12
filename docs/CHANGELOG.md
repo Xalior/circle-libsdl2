@@ -10,6 +10,39 @@ followed.
 
 ## vPoC3
 
+### The log can go on the screen, drawn by this library
+
+A host kernel that wants its log on the display as well as on the serial port
+now asks for it with one call, `SDL2Circle_LogAttachScreen`, made once while
+the kernel is initialising itself. The serial destination is not replaced: the
+screen is added in front of whatever device the logger already had, and the
+serial write happens first so drawing never delays it. The screen is dropped
+when an application initialises SDL video, because that is the moment the
+application takes the display, and from then on the log goes to the serial
+port alone. Nothing is ever attached after boot.
+
+Kernels used to do this by building Circle's own screen device and putting a
+splitter in front of the logger. That console is wrong on some boards and
+cannot be made right: its colour depth is a compile-time value, and the
+framebuffer object reads the granted pitch back out of the firmware's reply but
+never the granted depth, so it goes on reporting the depth it was constructed
+with. Circle's terminal sizes every row of pixels from that. Where the
+firmware grants a depth nobody asked for — a Pi 5 grants 32 bits per pixel
+whatever the request was — each character is drawn at the wrong stride and the
+console paints a fraction of each scanline in squeezed characters.
+
+This library already reads those numbers back for its own drawing, which is
+why every application drawing through SDL has a correct picture on every
+board. The console is now drawn from the same readings: the pitch and the
+buffer address are the firmware's reply to the allocation, the width and
+height are the firmware's report of the display, and the bytes per pixel are
+that pitch divided by that width. There is no board test in it and nothing to
+configure.
+
+Nothing already exported changed, so an existing kernel needs no action. A
+kernel that keeps its own screen device keeps working exactly as before, and is
+the one arrangement this replaces — see [LOGGING.md](LOGGING.md).
+
 ### The I/O service gained rename, directory removal, and the working directory
 
 The service carried open, read, write, seek, truncate, unlink, directory

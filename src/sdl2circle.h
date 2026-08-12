@@ -18,6 +18,45 @@
 // consumer that has not declared one cannot be started.
 bool SDL2Circle_VirtualDeviceDeclared(void);
 
+// ---- the one display grant (src/video.cpp) ---------------------------------
+//
+// THE framebuffer, and the numbers the firmware granted for it.
+//
+// One grant is made on this board and everything that draws shares it: an
+// application's window adopts it, and so does the screen log destination
+// (src/console.cpp), which comes up during the host kernel's initialisation
+// long before an application has declared a canvas or asked for a window.
+// Asking for the grant is what SETS the display mode, so both go through this
+// one routine — two askers with two different requests would be two modes.
+//
+// The pitch, the byte count and the base address are the firmware's reply to
+// the allocation. The width and height are the firmware's report of the
+// display it is scanning, taken on the same trip. Nothing here echoes a
+// request back.
+//
+// Core 0's work (it is a mailbox transaction); callers on another core are
+// marshalled there. Idempotent, and the answer never changes: the grant is
+// made once and kept for the life of the program. False when there is no
+// display to describe.
+struct SDL2CircleScanout
+{
+    u8      *base;
+    unsigned pitch;    // bytes per row
+    unsigned bytes;    // the whole grant
+    int      width;    // pixels across
+    int      height;   // pixel rows
+};
+bool SDL2Circle_ScanoutAcquire(SDL2CircleScanout *out);
+
+// ---- the screen log destination (src/console.cpp) --------------------------
+//
+// SDL2Circle_LogAttachScreen (SDL_circle.h) is the host kernel's way in. This
+// is the other end: the drop, made when an application initialises SDL video,
+// because that is the moment the guest takes the display. A no-op when the
+// screen was never attached, and it cannot be undone — nothing is ever
+// attached after boot.
+void SDL2Circle_LogDetachScreen(void);
+
 void SDL2Circle_InputInit(void);   // find the host's USB controller (idempotent)
 void SDL2Circle_InputPump(void);   // PnP + translate HID reports to events
 

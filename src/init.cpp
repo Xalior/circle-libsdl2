@@ -256,6 +256,11 @@ static void init_hardware_on0(void *)
     SDL2Circle_HardwareInit();
 }
 
+static void drop_screen_log_on0(void *)
+{
+    SDL2Circle_LogDetachScreen();
+}
+
 extern "C" int SDL_InitSubSystem(Uint32 flags)
 {
     // The library's own boot switches, found by the library rather than
@@ -282,6 +287,22 @@ extern "C" int SDL_InitSubSystem(Uint32 flags)
         return SDL_SetError("no virtual display device has been declared "
                             "(SDL2Circle_DeclareVirtualDevice)");
     }
+
+    // THE SCREEN STOPS BEING A LOG DESTINATION HERE, if the host kernel made
+    // it one. Starting video is the application taking the display, and the
+    // console and the application must never hold the framebuffer at once.
+    //
+    // It happens AFTER the refusal above, deliberately: a consumer that has
+    // declared no virtual device is turned away without ever reaching the
+    // display, and the line saying so is the one thing on the screen that
+    // could tell anyone why. Dropping the console first would take that line
+    // off the glass and leave a black screen and a silent board.
+    //
+    // A removal, never an attachment — the only transition there is after
+    // boot. Marshalled to core 0 because the logger's target is a device
+    // pointer read by the core that owns the devices.
+    if (flags & SDL_INIT_VIDEO)
+        SDL2Circle_CallOn0(drop_screen_log_on0, nullptr);
 
     // Board hardware — the CPU clock and the case fan — before anything
     // else, so the rest of bring-up runs at the clock the application is

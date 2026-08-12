@@ -399,7 +399,7 @@ include $(CIRCLESTDLIBHOME)/Config.mk
 SRCS = src/init.cpp src/error.cpp src/timer.cpp src/hints.cpp src/events.cpp \
        src/video.cpp src/surface.cpp src/input.cpp src/joystick.cpp \
        src/gamecontroller.cpp src/rwops.cpp src/audio.cpp src/perf.cpp \
-       src/split.cpp src/log.cpp src/coreruntime.cpp src/hardware.cpp \
+       src/split.cpp src/log.cpp src/console.cpp src/coreruntime.cpp src/hardware.cpp \
        src/mouse.cpp src/pixels.cpp src/blit.cpp src/bmp.cpp src/rect.cpp \
        src/threads.cpp src/stdinc.cpp src/filesystem.cpp src/clipboard.cpp \
        src/messagebox.cpp src/keyname.cpp src/platform.cpp src/image.cpp src/audiocvt.cpp src/mixer.cpp src/gl.cpp src/bootargs.cpp src/ctors.cpp src/libcxxthreading.cpp
