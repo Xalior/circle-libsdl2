@@ -220,6 +220,55 @@ TShutdownMode CKernel::Run(void)
     SDL_RenderSetViewport(ren, nullptr);
     SDL_SetRenderTarget(ren, nullptr);
 
+    // A blended copy into a target has to compose the destination alpha it
+    // is writing over, the same as any other SDL_BLENDMODE_BLEND copy, not
+    // discard it. Cleared fully transparent, then half of it covered by a
+    // copy at a known partial source alpha: the covered half has to read
+    // back at the composed alpha, and the half never touched has to read
+    // back exactly as the clear left it.
+    const int BLEND_W = 8, BLEND_H = 1;
+    SDL_Texture *alphatarget = SDL_CreateTexture(ren, SDL_PIXELFORMAT_ARGB8888,
+                                                 SDL_TEXTUREACCESS_TARGET,
+                                                 BLEND_W, BLEND_H);
+    SDL_Texture *halfsrc = SDL_CreateTexture(ren, SDL_PIXELFORMAT_ARGB8888,
+                                             SDL_TEXTUREACCESS_STREAMING,
+                                             BLEND_W / 2, BLEND_H);
+    if (!alphatarget || !halfsrc)
+    {
+        m_Logger.Write(From, LogError, "blend-alpha textures: %s", SDL_GetError());
+        return ShutdownHalt;
+    }
+    SDL_SetTextureBlendMode(halfsrc, SDL_BLENDMODE_BLEND);
+    {
+        void *pixels = nullptr;
+        int pitch = 0;
+        SDL_LockTexture(halfsrc, nullptr, &pixels, &pitch);
+        Uint32 *row = (Uint32 *)pixels;
+        for (int x = 0; x < BLEND_W / 2; x++)
+            row[x] = 0x80FFFFFFu;      // alpha 128, white
+        SDL_UnlockTexture(halfsrc);
+    }
+
+    SDL_SetRenderTarget(ren, alphatarget);
+    SDL_SetRenderDrawColor(ren, 0, 0, 0, 0);
+    SDL_RenderClear(ren);
+    const SDL_Rect coveredhalf = { 0, 0, BLEND_W / 2, BLEND_H };
+    SDL_RenderCopy(ren, halfsrc, nullptr, &coveredhalf);
+
+    Uint32 touched = 0, untouched = 0;
+    const SDL_Rect touchedpx = { 0, 0, 1, 1 };
+    const SDL_Rect untouchedpx = { BLEND_W - 1, 0, 1, 1 };
+    SDL_RenderReadPixels(ren, &touchedpx, SDL_PIXELFORMAT_ARGB8888, &touched, 4);
+    SDL_RenderReadPixels(ren, &untouchedpx, SDL_PIXELFORMAT_ARGB8888, &untouched, 4);
+    SDL_SetRenderTarget(ren, nullptr);
+
+    m_Logger.Write(From, LogNotice,
+                   "blended copy into target, touched pixel: 0x%08X "
+                   "(want 0x807F7F7F)", (unsigned) touched);
+    m_Logger.Write(From, LogNotice,
+                   "blended copy into target, untouched pixel: 0x%08X "
+                   "(want 0x00000000)", (unsigned) untouched);
+
     // ---- the picture ------------------------------------------------------
 
     m_Logger.Write(From, LogNotice, "rendering; power-cycle to exit");

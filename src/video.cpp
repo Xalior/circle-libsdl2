@@ -848,8 +848,15 @@ static void build_scale_maps(int sw, int sh, int dw, int dh)
 }
 
 // Resample sw x sh source pixels onto dw x dh destination pixels.
+//
+// dst_alpha says whether the destination's own alpha is worth composing.
+// It is false for every call that lands on the frame — a panel has nothing
+// behind its pixels, so the byte is never read back and is not spent on.
+// It is true only for a copy into a render target, where that byte is the
+// texture's own alpha and something may read it next: SDL_RenderReadPixels,
+// or a further blended copy that uses this texture as its destination.
 static void scale_copy(const SDL2CirclePresentCmd *cmd, u8 *dst, unsigned dpitch,
-                       int sw, int sh)
+                       int sw, int sh, bool dst_alpha)
 {
     const int dw = cmd->w, dh = cmd->h;
     if (dw > SCALE_MAP_MAX || dh > SCALE_MAP_MAX)
@@ -917,6 +924,43 @@ static void scale_copy(const SDL2CirclePresentCmd *cmd, u8 *dst, unsigned dpitch
 
     // Blended: the destination is read as well as written, so no row can be
     // reused — every destination pixel is composited in place.
+    //
+    // Which alpha byte is written is decided once here, outside both loops,
+    // not per pixel: the frame path (dst_alpha false) keeps the exact loop
+    // this always ran, spending nothing extra; the target path composes the
+    // destination alpha SDL_BLENDMODE_BLEND defines,
+    // dstA = srcA + dstA * (1 - srcA), with the same 8-bit approximation
+    // already used above for the colour channels.
+    if (dst_alpha)
+    {
+        u8 *drow = dst;
+        for (int j = 0; j < dh; j++, drow += dpitch)
+        {
+            const u32 *s = (const u32 *)(cmd->src + (size_t)s_ymap[j] * cmd->srcpitch);
+            u32 *d = (u32 *)drow;
+            for (int i = 0; i < dw; i++)
+            {
+                u32 sp = s[s_xmap[i]];
+                unsigned a = ((sp >> 24) * cmd->alphamod) / 255;
+                if (a == 255)
+                {
+                    d[i] = sp;
+                }
+                else if (a != 0)
+                {
+                    u32 dp = d[i];
+                    u32 srb = sp & 0x00FF00FF, sg = sp & 0x0000FF00;
+                    u32 drb = dp & 0x00FF00FF, dg = dp & 0x0000FF00;
+                    u32 rb = ((srb * a + drb * (255 - a)) >> 8) & 0x00FF00FF;
+                    u32 g = ((sg * a + dg * (255 - a)) >> 8) & 0x0000FF00;
+                    unsigned da = a + (((dp >> 24) * (255 - a)) >> 8);
+                    d[i] = (da << 24) | rb | g;
+                }
+            }
+        }
+        return;
+    }
+
     u8 *drow = dst;
     for (int j = 0; j < dh; j++, drow += dpitch)
     {
@@ -946,8 +990,15 @@ static void scale_copy(const SDL2CirclePresentCmd *cmd, u8 *dst, unsigned dpitch
 // Execute one command into a surface of the caller's choosing. The
 // presentation core uses it on the shadow or a framebuffer half; the main
 // thread uses it on its own canvas surface when a frame has to be
-// rasterized there.
-static void exec_into(const SDL2CirclePresentCmd *cmd, u8 *dst0, unsigned dpitch)
+// rasterized there; emit_cmd uses it on a render target's own pixels.
+//
+// dst_alpha marks that last case. It defaults false, so every frame-path
+// call site is unchanged, and is passed true only for a render target,
+// where a blended copy has to compose the destination alpha it is writing
+// over rather than discard it — see scale_copy just above for the reason
+// and the arithmetic.
+static void exec_into(const SDL2CirclePresentCmd *cmd, u8 *dst0, unsigned dpitch,
+                      bool dst_alpha = false)
 {
     if (cmd->op == SDL2CirclePresentCmd::FILL)
     {
@@ -972,15 +1023,54 @@ static void exec_into(const SDL2CirclePresentCmd *cmd, u8 *dst0, unsigned dpitch
     const int sh = cmd->sh > 0 ? cmd->sh : cmd->h;
     if (sw != cmd->w || sh != cmd->h)
     {
-        scale_copy(cmd, dst, dpitch, sw, sh);
+        scale_copy(cmd, dst, dpitch, sw, sh, dst_alpha);
         return;
     }
 
+    // Unblended, at full alphamod: the source pixel replaces the
+    // destination outright, its own alpha byte included, so this already
+    // carries a straight-alpha source's transparency through untouched —
+    // the frame path and the target path want exactly the same bytes here
+    // and neither reads dst_alpha.
     if (!cmd->blend && cmd->alphamod == 255)
     {
         for (int y = 0; y < cmd->h; y++)
         {
             memcpy(dst, src, (size_t)cmd->w * 4);
+            src += cmd->srcpitch;
+            dst += dpitch;
+        }
+        return;
+    }
+
+    // Blended, 1:1. Same split as scale_copy's blended loop and for the same
+    // reason: chosen once here, not per pixel, so the frame path's cost does
+    // not move at all.
+    if (dst_alpha)
+    {
+        for (int y = 0; y < cmd->h; y++)
+        {
+            const u32 *s = (const u32 *)src;
+            u32 *d = (u32 *)dst;
+            for (int x = 0; x < cmd->w; x++)
+            {
+                u32 sp = s[x];
+                unsigned a = ((sp >> 24) * cmd->alphamod) / 255;
+                if (a == 255)
+                {
+                    d[x] = sp;
+                }
+                else if (a != 0)
+                {
+                    u32 dp = d[x];
+                    u32 srb = sp & 0x00FF00FF, sg = sp & 0x0000FF00;
+                    u32 drb = dp & 0x00FF00FF, dg = dp & 0x0000FF00;
+                    u32 rb = ((srb * a + drb * (255 - a)) >> 8) & 0x00FF00FF;
+                    u32 g = ((sg * a + dg * (255 - a)) >> 8) & 0x0000FF00;
+                    unsigned da = a + (((dp >> 24) * (255 - a)) >> 8);
+                    d[x] = (da << 24) | rb | g;
+                }
+            }
             src += cmd->srcpitch;
             dst += dpitch;
         }
@@ -1303,7 +1393,7 @@ static void emit_cmd(SDL_Renderer *ren, const SDL2CirclePresentCmd &cmd)
     if (ren->target)
     {
         exec_into(&cmd, texture_write_buffer(ren->target, true),
-                  (unsigned)ren->target->pitch);
+                  (unsigned)ren->target->pitch, /* dst_alpha */ true);
         return;
     }
 

@@ -31,7 +31,7 @@ The application's format is honoured at the EDGE instead. `SDL_CreateTexture` ac
 
 Surfaces carry no such restriction: any depth, any masks, and 8-bit paletted throughout.
 
-**A texture can be drawn into as well as read from.** `SDL_CreateTexture` accepts `SDL_TEXTUREACCESS_TARGET`, `SDL_SetRenderTarget` aims the renderer at such a texture, and every drawing call then lands in it instead of in the frame; aiming back at the frame is passing null. `SDL_RenderTargetSupported` answers true, and `SDL_GetRendererInfo` reports `SDL_RENDERER_TARGETTEXTURE`. It is the frame's own composition machinery pointed at a different buffer — see [Render targets](DISPLAY.md#render-targets), which also states where a target here answers differently from a desktop SDL.
+**A texture can be drawn into as well as read from.** `SDL_CreateTexture` accepts `SDL_TEXTUREACCESS_TARGET`, `SDL_SetRenderTarget` aims the renderer at such a texture, and every drawing call then lands in it instead of in the frame; aiming back at the frame is passing null. `SDL_RenderTargetSupported` answers true, and `SDL_GetRendererInfo` reports `SDL_RENDERER_TARGETTEXTURE`. It is the frame's own composition machinery pointed at a different buffer — see [Render targets](DISPLAY.md#render-targets).
 
 ## Not yet
 

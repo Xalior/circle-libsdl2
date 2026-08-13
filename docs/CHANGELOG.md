@@ -27,9 +27,7 @@ created.
 
 Nothing new composes the picture: a render target is the executor that
 composes the frame, writing into the texture instead. What is different about
-a target is written down in [Display and video](DISPLAY.md#render-targets),
-including the one place it answers differently from a desktop SDL — a blended
-draw into a target leaves the pixels it touched opaque.
+a target is written down in [Display and video](DISPLAY.md#render-targets).
 
 Aiming at a texture that was not created as a target is refused, as upstream
 SDL refuses it. So is copying a target into itself, which upstream SDL leaves
