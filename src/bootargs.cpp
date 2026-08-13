@@ -35,6 +35,7 @@
 #include <SDL2/SDL_circle.h>
 #include "sdl2circle.h"
 
+#include <circle/macros.h>
 #include <circle/memorymap.h>
 #include <cstring>
 
@@ -55,6 +56,72 @@ struct TBootArgsBlock
 } PACKED;
 
 const char From[] = "bootargs";
+} // namespace
+
+// ---------------------------------------------------------------------------
+// CARRYING THE BLOCK. Placing a block at a fixed image offset is a linker's
+// job, not this function's, and it used to be asked of every application in
+// turn: a linker script of its own, a trampoline over the reserved space, a
+// copy of the struct above to instantiate. Every one of those was the same
+// eleven bytes of magic and capacity, written out again per consumer, and an
+// application that forgot the linker script silently got no block at all —
+// which is exactly the failure this replaces. The library places its own
+// copy instead, in a section sdl-app.ld reserves at image offset 0x800
+// unconditionally, so every application linked against this library carries
+// a valid block whether or not it has ever heard of one.
+//
+// THE TRAMPOLINE. The image's first instruction must not be the block, or
+// the processor would start executing magic bytes. `b _start` steps over the
+// reserved region to Circle's own startup, which sdl-app.ld places right
+// after the block. sdl-app.ld makes this symbol the image's entry point.
+// ---------------------------------------------------------------------------
+extern "C"
+{
+
+__asm__ (
+    "\t.section .rapiboot.entry, \"ax\", %progbits\n"
+    "\t.globl _rapiboot_entry\n"
+    "_rapiboot_entry:\n"
+    "\tb _start\n"
+    "\t.previous\n"
+);
+
+// A second, external-linkage copy of the struct above: sdl-app.ld places
+// this exact object by name, and a variable placed by name needs a name the
+// linker script can bind to, which a type from an anonymous namespace
+// cannot give an external symbol without a compiler warning about mismatched
+// linkage. The two struct definitions must stay byte-identical; both encode
+// the same interface, and a static_assert just below checks they agree on
+// size.
+struct TRapiBootPlacedBlock
+{
+    char Magic[4];
+    u16  Capacity;
+    u16  Length;
+    char Text[512];
+} PACKED;
+
+// `used` and sdl-app.ld's KEEP() stop this being discarded for having no
+// callers; its ASSERTs refuse any link that puts it anywhere but 0x800. It
+// ships with the magic, the capacity, and an empty string, so an image
+// nobody has stamped boots through exactly the same reader code as one that
+// has been.
+__attribute__ ((section (".rapiboot.defaults"), used, aligned (8)))
+TRapiBootPlacedBlock _rapiboot_defaults =
+{
+    { 'P', 'M', '8', 'D' },    // must match MAGIC above, byte for byte
+    512,                        // must match BUFFER_BYTES above
+    0,                          // Length: empty
+    {0}                         // Text: nothing stamped
+};
+
+} // extern "C"
+
+namespace
+{
+static_assert(sizeof(TRapiBootPlacedBlock) == sizeof(TBootArgsBlock),
+              "the placed block and the block this file reads back must be "
+              "the same shape");
 
 bool s_read = false;
 bool s_debugUart = false;
