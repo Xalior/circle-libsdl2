@@ -661,9 +661,11 @@ static bool settle_canvas(int fallback_w, int fallback_h,
         *out_how = "first window created";
         return true;
     }
-    SDL_SetError("the display size is not yet known (no --rapi-vdisplay "
-                "switch, no SDL2Circle_DeclareVirtualDevice, no window "
-                "created)");
+    if (fallback_w != 0 || fallback_h != 0)
+        SDL_SetError("the window has no usable size (%dx%d)",
+                     fallback_w, fallback_h);
+    else
+        SDL_SetError("the display size is not yet known");
     return false;
 }
 
