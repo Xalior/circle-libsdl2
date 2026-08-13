@@ -251,11 +251,6 @@ static void init_input_on0(void *)
     SDL2Circle_InputInit();
 }
 
-static void release_screen_on0(void *)
-{
-    SDL2Circle_ConsoleReleaseScreen();
-}
-
 extern "C" int SDL_InitSubSystem(Uint32 flags)
 {
     // SDL.h says twice that video brings the event subsystem up with it, and
@@ -271,43 +266,11 @@ extern "C" int SDL_InitSubSystem(Uint32 flags)
     // that changes how a subsystem starts has to be known first.
     SDL2Circle_ReadBootArgs();
 
-    // The virtual display device is what this library is built around, and
-    // it has no fallback of any kind — not the boot command line, not the
-    // physical display, nothing. A consumer that has not declared one has
-    // not said what display its application is to be given, and there is
-    // nothing here to invent in its place. So the library does not start.
-    //
-    // Refused at the door, before a single device is brought up, and said
-    // plainly on the console as well as through the return: this lands
-    // during start-up on a board whose only other output is a black screen.
-    if ((flags & SDL_INIT_VIDEO) && !SDL2Circle_VirtualDeviceDeclared())
-    {
-        SDL2Circle_Log("sdl2", SDL2CIRCLE_LOG_ERROR,
-                       "no virtual display device declared: call "
-                       "SDL2Circle_DeclareVirtualDevice(32, width, height) "
-                       "before SDL_Init");
-        return SDL_SetError("no virtual display device has been declared "
-                            "(SDL2Circle_DeclareVirtualDevice)");
-    }
-
-    // THE SCREEN STOPS BEING DRAWN ON HERE. Starting video is the application
-    // taking the display, and the console and the application must never hold
-    // the framebuffer at once.
-    //
-    // It happens AFTER the refusal above, deliberately: a consumer that has
-    // declared no virtual device is turned away without ever reaching the
-    // display, and the line saying so is the one thing on the screen that
-    // could tell anyone why. Dropping the console first would take that line
-    // off the glass and leave a black screen and a silent board.
-    //
-    // ONE FLAG, CLEARED ONCE. Nothing is attached, detached or moved: the
-    // logger's destination is the same device before this and after it, and
-    // all that changes is whether that device draws as well as writes.
-    // Marshalled to core 0 because clearing it waits on any line already part
-    // way onto the screen, and that drawing belongs to the core that owns the
-    // devices.
-    if (flags & SDL_INIT_VIDEO)
-        SDL2Circle_CallOn0(release_screen_on0, nullptr);
+    // NO VIRTUAL DISPLAY SIZE IS NEEDED HERE. Initialising video is not
+    // taking the display — creating a window is (src/video.cpp), and that is
+    // where the virtual framebuffer's size is settled and where the console
+    // hands the screen over. An application may bring video up and never
+    // create a window at all; nothing below depends on a size existing yet.
 
     // Board hardware — the CPU clock and the case fan — is brought up from
     // SDL2Circle_ArmCoreRuntime, not here. Every host kernel already makes

@@ -220,21 +220,16 @@ struct SDL_Texture
 };
 
 // The size of what is being drawn into: the render target where one is set,
-// the window otherwise. Every rectangle an application hands over is placed
-// against it, so a call cannot be found honouring one and a call beside it
-// honouring the other.
-static inline int render_target_w(const SDL_Renderer *ren)
-{
-    return ren->target ? ren->target->w : ren->window->w;
-}
+// the CANVAS otherwise -- not necessarily the window's own reported size; see
+// the geometry comment below the canvas variables, where these are defined.
+// Every rectangle an application hands over is placed against it, so a call
+// cannot be found honouring one and a call beside it honouring the other.
+static inline int render_target_w(const SDL_Renderer *ren);
+static inline int render_target_h(const SDL_Renderer *ren);
 
-static inline int render_target_h(const SDL_Renderer *ren)
-{
-    return ren->target ? ren->target->h : ren->window->h;
-}
-
-// The one fullscreen window (ID 1). Display-mode queries answer with its
-// size once it exists, and with the panel default before that.
+// The one fullscreen window (ID 1). Display-mode queries answer with the
+// canvas, not this — see the geometry comment below — because the two are
+// not always the same rectangle.
 static SDL_Window *s_window = nullptr;
 
 // Three resolutions are in play, and every piece of geometry below belongs
@@ -252,27 +247,69 @@ static SDL_Window *s_window = nullptr;
 //             the present executor are its only readers, and nothing in SDL
 //             is ever answered with it.
 //
-//   CANVAS    the VIRTUAL display: the world the application is given, and
-//             the shape that decides the letterboxing. The consumer declares
-//             it before SDL_Init, and where the consumer got the numbers is
-//             the consumer's business entirely — this library is told, and
-//             discovers nothing. It is REQUIRED and it has no fallback: not
-//             the command line, not the scanout, nothing. Undeclared, there
-//             is no canvas, and the library refuses to start rather than
-//             invent a display the consumer never asked for.
+//   CANVAS    the VIRTUAL display: the world the application is given, the
+//             shape that decides the letterboxing, and the shape every
+//             render target draws into that is not a texture of its own (see
+//             render_target_w/h below). Settled once, at the first of three
+//             moments, in this order:
 //
-//   APPLICATION  whatever SDL_CreateWindow was asked for, and whatever
-//             rectangles SDL_RenderCopy is handed. Those rectangles are
-//             CANVAS coordinates, because the canvas is the window.
+//               1. --rapi-vdisplay=WxH (src/bootargs.cpp). A boot switch, so
+//                  it wins over anything the application does.
+//               2. SDL2Circle_DeclareVirtualDevice, called by the consumer
+//                  before SDL_Init.
+//               3. The first SDL_CreateWindow's own width and height. A
+//                  window IS the canvas here, so with neither override this
+//                  is where the two become the same rectangle.
+//
+//             Once any of the three has settled it, the canvas is fixed for
+//             the rest of the run — the placement, the window, the
+//             display-mode answers all derive from it from that point on.
+//
+//   APPLICATION  what SDL_CreateWindow was asked for, reported back exactly
+//             as asked (SDL_GetWindowSize). It is the CANVAS by construction
+//             under (2) and (3) above, but under (1) the switch may give the
+//             canvas a different shape — a consumer that named a size still
+//             gets a window of that size, honoured as an answer to the
+//             question it asked, but draws into a canvas of the switch's
+//             shape. render_target_w/h is what settles which shape a given
+//             piece of drawing lands in, and it is always the canvas.
 //
 // The physical and the virtual are two numbers doing two jobs. Neither
 // overrides the other and there is no order of precedence between them: one
-// is asked of the firmware, the other is declared by the consumer, and the
-// whole job of this file is to scale the second onto the first. The frame
-// travels application -> canvas -> scanout, and the two hops are composed
-// into a single resampling pass at present time.
+// is asked of the firmware, the other is settled as above, and the whole job
+// of this file is to scale the second onto the first. The frame travels
+// application -> canvas -> scanout, and the two hops are composed into a
+// single resampling pass at present time.
 static int s_scanout_w = 0, s_scanout_h = 0;
 static int s_canvas_w = 0, s_canvas_h = 0;
+
+// render_target_w/h (declared above, by the struct they read): every
+// rectangle an application hands over is placed against the CANVAS, whatever
+// the window's own reported size is under the switch — see the geometry
+// comment above. A render target already answers with its own texture, which
+// this never touches.
+static inline int render_target_w(const SDL_Renderer *ren)
+{
+    return ren->target ? ren->target->w : s_canvas_w;
+}
+
+static inline int render_target_h(const SDL_Renderer *ren)
+{
+    return ren->target ? ren->target->h : s_canvas_h;
+}
+
+// The --rapi-vdisplay=WxH switch (src/bootargs.cpp), read from the boot
+// argument block before SDL_Init runs and before any window can exist. Top
+// of the canvas precedence: once set, nothing below can out-rank it.
+static bool s_switch_set = false;
+static int s_switch_w = 0, s_switch_h = 0;
+
+void SDL2Circle_SetVDisplaySwitch(int width, int height)
+{
+    s_switch_w = width;
+    s_switch_h = height;
+    s_switch_set = true;
+}
 
 // The virtual display device, as declared by the consumer through
 // SDL2Circle_DeclareVirtualDevice. It states the canvas and nothing else:
@@ -283,7 +320,7 @@ static int s_canvas_w = 0, s_canvas_h = 0;
 // can be taken: everything downstream — the placement, the window, the
 // display-mode answers — has been derived from the canvas by then, and the
 // declaration promises a display whose size does not change under the
-// application. This is settled before the application starts, on one core,
+// application. This is settled before or at the first window, on one core,
 // so the two flags need no more protection than that.
 static bool s_declared = false;
 static int s_declared_w = 0, s_declared_h = 0;
@@ -466,6 +503,11 @@ static void resolve_placement(void)
 // logged, because a declaration is made before SDL_Init and the log route
 // reaches a host kernel's logger, which may not exist that early. An
 // accepted declaration is named on the resolve's own geometry line below.
+//
+// It is entirely optional, and stands or falls independently of the
+// --rapi-vdisplay switch: both may be set, and settle_canvas below is the one
+// place that decides which of them, or the window, actually becomes the
+// canvas.
 extern "C" int SDL2Circle_DeclareVirtualDevice(unsigned depth, int width,
                                                int height)
 {
@@ -491,13 +533,6 @@ extern "C" int SDL2Circle_DeclareVirtualDevice(unsigned depth, int width,
     s_declared_h = height;
     s_declared = true;
     return 0;
-}
-
-// Non-zero once a virtual device has been declared. SDL_Init asks, because
-// the declaration is what the library needs before it can start at all.
-bool SDL2Circle_VirtualDeviceDeclared(void)
-{
-    return s_declared;
 }
 
 // Acquire THE framebuffer and settle the scanout it was granted on, without
@@ -596,26 +631,58 @@ bool SDL2Circle_ScanoutAcquire(SDL2CircleScanout *out)
     return true;
 }
 
+// Decide the canvas size, in precedence order: the --rapi-vdisplay switch,
+// then SDL2Circle_DeclareVirtualDevice, then the caller's own size — which
+// only a window has, so a display query arriving before any of the three
+// exist is passed 0,0 and finds nothing to fall back on. Nothing is written
+// to s_canvas_w/h here: the caller commits them only once the scanout is
+// known too, so a failed resolve leaves nothing partially set.
+static bool settle_canvas(int fallback_w, int fallback_h,
+                          int *out_w, int *out_h, const char **out_how)
+{
+    if (s_switch_set)
+    {
+        *out_w = s_switch_w;
+        *out_h = s_switch_h;
+        *out_how = "--rapi-vdisplay switch";
+        return true;
+    }
+    if (s_declared)
+    {
+        *out_w = s_declared_w;
+        *out_h = s_declared_h;
+        *out_how = "declared virtual device";
+        return true;
+    }
+    if (fallback_w > 0 && fallback_h > 0)
+    {
+        *out_w = fallback_w;
+        *out_h = fallback_h;
+        *out_how = "first window created";
+        return true;
+    }
+    SDL_SetError("the display size is not yet known (no --rapi-vdisplay "
+                "switch, no SDL2Circle_DeclareVirtualDevice, no window "
+                "created)");
+    return false;
+}
+
 // Settle the canvas, the scanout and the placement between them. True once
-// the canvas exists; false when nothing was declared, which is the one
-// unanswerable state.
+// the canvas exists.
 //
-// SDL_Init is where that is reported loudly — a consumer is refused at the
-// door, once, rather than at every call afterwards. Reaching here undeclared
-// means SDL_Init already said no and was ignored, so this only sets the
-// error and refuses: the canvas stays zero, and everything derived from it
-// (the placement divides by it) is never computed from nothing.
-static bool resolve_display_size(void)
+// fallback_w/h are the window's own size, offered only by SDL_CreateWindow
+// (create_window_on0, below) — every other caller passes 0,0, so a display
+// query that arrives before the canvas has a source of its own is refused
+// rather than guessing at one.
+static bool resolve_display_size(int fallback_w = 0, int fallback_h = 0)
 {
     if (s_canvas_w > 0 && s_canvas_h > 0)
         return true;
 
-    if (!s_declared)
-    {
-        SDL_SetError("no virtual display device has been declared "
-                     "(SDL2Circle_DeclareVirtualDevice)");
+    int w = 0, h = 0;
+    const char *how = nullptr;
+    if (!settle_canvas(fallback_w, fallback_h, &w, &h, &how))
         return false;
-    }
 
     const char *source = acquire_scanout();
     if (!source)
@@ -624,17 +691,13 @@ static bool resolve_display_size(void)
         return false;
     }
 
-    // The declared virtual device is the canvas, and the only thing that
-    // ever is. The boot options are not consulted here — they asked for a
-    // physical mode and that is all they did.
-    s_canvas_w = s_declared_w;
-    s_canvas_h = s_declared_h;
+    s_canvas_w = w;
+    s_canvas_h = h;
 
     SDL2Circle_Log("sdl2video", SDL2CIRCLE_LOG_NOTICE,
-                          "scanout %dx%d (%s), canvas %dx%d (declared "
-                          "virtual device)",
+                          "scanout %dx%d (%s), canvas %dx%d (%s)",
                           s_scanout_w, s_scanout_h, source,
-                          s_canvas_w, s_canvas_h);
+                          s_canvas_w, s_canvas_h, how);
 
     resolve_placement();
     return true;
@@ -1232,18 +1295,19 @@ static void emit_cmd(SDL_Renderer *ren, const SDL2CirclePresentCmd &cmd)
     exec_into(&cmd, s_canvas_surface, s_canvas_surface_pitch);
 }
 
-// Answer one display-mode query. False when there is no display to describe,
-// which only happens where SDL_Init's refusal was ignored. Zeroed first, so a
-// consumer that also ignores this return reads an obviously empty mode rather
-// than whatever its stack held.
+// Answer one display-mode query. False when there is no display to describe:
+// no --rapi-vdisplay switch, no SDL2Circle_DeclareVirtualDevice and no window
+// yet, or a board with no scanout to read. Zeroed first, so a consumer that
+// also ignores this return reads an obviously empty mode rather than whatever
+// its stack held.
 static bool fill_mode(SDL_DisplayMode *mode)
 {
     memset(mode, 0, sizeof(*mode));
     if (!resolve_display_size())
         return false;
     mode->format = SDL_PIXELFORMAT_ARGB8888;
-    mode->w = s_window ? s_window->w : s_canvas_w;
-    mode->h = s_window ? s_window->h : s_canvas_h;
+    mode->w = s_canvas_w;
+    mode->h = s_canvas_h;
     mode->refresh_rate = DEFAULT_HZ;
     return true;
 }
@@ -1262,20 +1326,21 @@ extern "C" int SDL_GetDisplayBounds(int, SDL_Rect *rect)
     rect->h = 0;
     if (!resolve_display_size())
         return -1;
-    rect->w = s_window ? s_window->w : s_canvas_w;
-    rect->h = s_window ? s_window->h : s_canvas_h;
+    rect->w = s_canvas_w;
+    rect->h = s_canvas_h;
     return 0;
 }
 
-// Where the mouse pointer is allowed to be (src/mouse.cpp). The application's
-// window while one exists, and the declared canvas before that — the same
-// answer SDL_GetDisplayBounds gives, because on one screen with one fullscreen
-// window the display and the window are the same rectangle. Both numbers are
-// plain reads of state core 0 wrote, so the mouse pump may ask from there.
+// Where the mouse pointer is allowed to be (src/mouse.cpp): the CANVAS,
+// which is the same rectangle SDL_GetDisplayBounds answers with and the same
+// one render_target_w/h draws into — on one screen with no window manager,
+// the application's coordinate space and the display are the same rectangle,
+// whatever the window's own reported size is under the switch. A plain read
+// of state core 0 wrote, so the mouse pump may ask from there.
 void SDL2Circle_PointerBounds(int *w, int *h)
 {
-    if (w) *w = s_window ? s_window->w : s_canvas_w;
-    if (h) *h = s_window ? s_window->h : s_canvas_h;
+    if (w) *w = s_canvas_w;
+    if (h) *h = s_canvas_h;
 }
 
 extern "C" int SDL_GetNumDisplayModes(int) { return 1; }
@@ -1400,15 +1465,17 @@ static void create_window_on0(void *p)
     auto *a = (CreateWindowArgs *)p;
     a->result = nullptr;
 
-    // Adopt THE framebuffer — usually already allocated by the display-
-    // size resolve, which also settles the scanout, the canvas and the
-    // placement between them. A consumer that creates a window without ever
-    // asking for the display size arrives here first; the resolve is
-    // idempotent and this is already core 0, so run it either way.
-    //
-    // A window IS the canvas, so with nothing declared there is no window to
-    // make. The resolve has set the error.
-    if (!resolve_display_size())
+    // The library's own boot switches, in case this is reached without an
+    // SDL_Init that already read them (SDL2Circle_ReadBootArgs is
+    // idempotent) — --rapi-vdisplay has to be known before the canvas size
+    // below is decided.
+    SDL2Circle_ReadBootArgs();
+
+    // Settle the canvas: the switch, then a declaration, then THIS window's
+    // own size — the first window is what makes a canvas out of nothing at
+    // all. Idempotent and already core 0, so later windows just confirm what
+    // is already settled.
+    if (!resolve_display_size(a->w, a->h))
         return;
     CBcmFrameBuffer *fb = s_fb0;
     if (!fb)
@@ -1430,16 +1497,17 @@ static void create_window_on0(void *p)
         return;
     }
 
-    // The window is the CANVAS — the virtual device the consumer declared,
-    // or the scanout itself where nothing was declared. What the application
-    // asked SDL_CreateWindow for does not enter into it: there is one screen
-    // and the application gets all of it. The shim's present carries the
-    // canvas to the scanout, so an application never has to learn what the
-    // glass is really doing.
+    // The window's OWN size: what was asked for under the switch — the
+    // canvas is fixed at the switch's resolution regardless, so the window
+    // is honoured as an answer to the question it asked rather than folded
+    // into the canvas — and the canvas itself in every other case, where the
+    // window IS the canvas by construction (see the geometry comment above
+    // s_canvas_w/h). Drawing always targets the canvas; render_target_w/h is
+    // where that is settled, and it never reads this field.
     SDL_Window *win = new SDL_Window;
     win->fb = fb;
-    win->w = s_canvas_w;
-    win->h = s_canvas_h;
+    win->w = s_switch_set ? a->w : s_canvas_w;
+    win->h = s_switch_set ? a->h : s_canvas_h;
     // The window's state, and the flags a game branches on.
     //
     // THIS WINDOW ALWAYS HAS INPUT FOCUS. There is one window and no window
@@ -1536,6 +1604,14 @@ static void create_window_on0(void *p)
 
     s_window = win;
 
+    // THE SCREEN STOPS BEING DRAWN ON HERE. Creating a window is the
+    // application taking the framebuffer — SDL_Init only brought video up,
+    // which is not the same thing — and the console and the application must
+    // never hold it at once. Already core 0, so no marshalling is needed;
+    // src/console.cpp's own lock covers a line already part way onto the
+    // screen.
+    SDL2Circle_ConsoleReleaseScreen();
+
     // Pitch and size came back from the firmware. Everything else is what
     // Circle was constructed with, echoed unchanged by its getters, so the
     // two halves are labelled and never printed as one geometry.
@@ -1598,6 +1674,11 @@ extern "C" SDL_Renderer *SDL_GetRenderer(SDL_Window *win)
 
 extern "C" int SDL_GetWindowDisplayIndex(SDL_Window *) { return 0; }
 
+static void grant_screen_on0(void *)
+{
+    SDL2Circle_ConsoleGrantScreen();
+}
+
 extern "C" void SDL_DestroyWindow(SDL_Window *win)
 {
     if (!win)
@@ -1611,6 +1692,12 @@ extern "C" void SDL_DestroyWindow(SDL_Window *win)
     {
         s_window = nullptr;
         s_fb_base = nullptr;
+
+        // Give the screen back: this was the window holding the
+        // framebuffer, and it no longer does. Marshalled to core 0 for the
+        // same reason the take is (create_window_on0) — the drawing belongs
+        // to the core that owns the devices.
+        SDL2Circle_CallOn0(grant_screen_on0, nullptr);
     }
     // win->fb is THE framebuffer (s_fb0), kept for the process lifetime:
     // deleting it cannot return the firmware's allocation, and the next
@@ -1676,9 +1763,9 @@ extern "C" void SDL_ShowWindow(SDL_Window *) {}
 // ---------------------------------------------------------------------------
 // Window geometry and window-manager state
 //
-// A board has one screen and no window manager. The window is the canvas the
-// consumer declared, it fills the display, and it never moves or changes
-// size. Every call below is accepted and none of them changes the geometry.
+// A board has one screen and no window manager. The window fills the
+// display, and it never moves or changes size once created. Every call below
+// is accepted and none of them changes the geometry.
 //
 // They are accepted rather than refused because of how applications use
 // them. A game toggling fullscreen calls SDL_SetWindowFullscreen and then
@@ -1706,9 +1793,9 @@ extern "C" int SDL_SetWindowFullscreen(SDL_Window *win, Uint32 flags)
 
 extern "C" void SDL_SetWindowSize(SDL_Window *, int, int)
 {
-    // The canvas size is fixed before SDL_Init and the present path is built
-    // around it. Nothing to do, and no SDL_WINDOWEVENT_SIZE_CHANGED, because
-    // the size did not change.
+    // The canvas size is fixed at the first window and the present path is
+    // built around it. Nothing to do, and no SDL_WINDOWEVENT_SIZE_CHANGED,
+    // because the size did not change.
 }
 
 extern "C" void SDL_SetWindowMinimumSize(SDL_Window *win, int w, int h)
@@ -1905,23 +1992,27 @@ extern "C" int SDL_GetDisplayDPI(int, float *ddpi, float *hdpi, float *vdpi)
                         "physical size");
 }
 
-// There is no compositor between the window and the panel, so a drawable
-// pixel is a window pixel.
+// There is no compositor between the canvas and the panel, and no scaling
+// factor of the kind a desktop applies on a high-density display, so a
+// drawable pixel is a CANVAS pixel — not necessarily a window pixel: under
+// the --rapi-vdisplay switch a window may report a size of its own that the
+// canvas does not share (see the geometry comment above s_canvas_w/h).
 extern "C" void SDL_GL_GetDrawableSize(SDL_Window *win, int *w, int *h)
 {
-    SDL_GetWindowSize(win, w, h);
+    if (w) *w = win ? s_canvas_w : 0;
+    if (h) *h = win ? s_canvas_h : 0;
 }
 
-// Same reason: a window pixel IS a canvas pixel, with no scaling factor of
-// the kind a desktop applies on a high-density display.
 extern "C" void SDL_GetWindowSizeInPixels(SDL_Window *win, int *w, int *h)
 {
-    SDL_GetWindowSize(win, w, h);
+    if (w) *w = win ? s_canvas_w : 0;
+    if (h) *h = win ? s_canvas_h : 0;
 }
 
 extern "C" void SDL_Vulkan_GetDrawableSize(SDL_Window *win, int *w, int *h)
 {
-    SDL_GetWindowSize(win, w, h);
+    if (w) *w = win ? s_canvas_w : 0;
+    if (h) *h = win ? s_canvas_h : 0;
 }
 
 // Gamma is applied by hardware this shim does not drive. Refused rather than
@@ -2320,13 +2411,15 @@ extern "C" int SDL_CreateWindowAndRenderer(int width, int height,
     return 0;
 }
 
-// The size of what is being drawn into, which SDL answers with the render
-// target's size while one is set rather than the window's.
+// The size of what is being drawn into: the render target's own size while
+// one is set, the CANVAS otherwise — render_target_w/h, not the window's own
+// reported size, which under the switch is not necessarily the same thing.
 extern "C" int SDL_GetRendererOutputSize(SDL_Renderer *ren, int *w, int *h)
 {
     if (ren && ren->target)
         return SDL_QueryTexture(ren->target, nullptr, nullptr, w, h);
-    SDL_GetWindowSize(ren ? ren->window : nullptr, w, h);
+    if (w) *w = ren ? render_target_w(ren) : 0;
+    if (h) *h = ren ? render_target_h(ren) : 0;
     return 0;
 }
 

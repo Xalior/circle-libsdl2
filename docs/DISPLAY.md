@@ -12,11 +12,15 @@ Resolutions are always involved on a bare-metal Pi, and the library names each o
 
 A Pi 3 or a Pi 4 applies the requested mode and reports it correctly, so neither has this problem.
 
-**The canvas is the virtual display** — the display area the application is given, and the relation between its shape and the scanout's decides the letterboxing. **The application declares it**, in its own code, before `SDL_Init` — see [Declaring the display](#declaring-the-display). It is required, and there is no fallback: without it the library refuses to start.
+**The canvas is the virtual display** — the display area the application is given, and the relation between its shape and the scanout's decides the letterboxing. It is settled once, at the first of three moments, in this order — see [Declaring the display](#declaring-the-display):
 
-**These are settings doing different jobs, and they coexist.** Neither is a fallback for the other and there is no order of precedence between them. One is asked of the firmware by the operator; the other is declared by the application. `width=` and `height=` never set the virtual display, and the declaration never sets the physical one.
+1. The `--rapi-vdisplay=WxH` boot switch.
+2. `SDL2Circle_DeclareVirtualDevice`, called by the application before `SDL_Init`.
+3. The application's first `SDL_CreateWindow` — the window and the canvas are the same rectangle when neither of the above was used.
 
-**The application's own resolution** is whatever it renders at. It calls `SDL_CreateWindow` and `SDL_RenderCopy` as usual, and the rectangles it passes are canvas coordinates, because the canvas is the window. An application never learns what the physical display is doing.
+**`width=`/`height=` and the canvas are settings doing different jobs, and they coexist.** Neither is a fallback for the other. One is asked of the firmware by the operator; the other is settled as above. `width=` and `height=` never set the virtual display, and nothing that sets the virtual display ever sets the physical one.
+
+**The application's own resolution** is whatever it renders at — the canvas, always, whatever `SDL_CreateWindow` reports back (see [Declaring the display](#declaring-the-display) for the one case those differ). It calls `SDL_CreateWindow` and `SDL_RenderCopy` as usual, and the rectangles it passes are canvas coordinates. An application never learns what the physical display is doing.
 
 A frame therefore travels application → canvas → scanout, and **the library composes both steps into a single resampling pass** when the frame is presented — on the presentation core when the core split is active, inline otherwise. The canvas contributes arithmetic, never an intermediate copy.
 
@@ -25,7 +29,7 @@ A frame therefore travels application → canvas → scanout, and **the library 
 - **Fit is the default placement.** The canvas is scaled up as far as it fits, centered, and the remainder of the scanout stays black. Put `canvas=stretch` in `cmdline.txt` to fill the scanout instead, without preserving the aspect ratio.
 - **A frame is composed in ordinary memory, never directly in the framebuffer.** The framebuffer is uncached, and a scaler writing it directly pays that cost once per pixel: on a Pi 4, 26.1 ms for a 1280x720 frame against 1.4 ms into ordinary memory. So a present is composed off-screen and the finished frame is copied to the framebuffer in whole rows — 6.0 ms for the same frame — which is also what keeps the picture whole, because the screen is written by that one copy and is never visible mid-composition.
 - **The copy to the screen runs on the DMA engine where it can.** When the firmware grants enough memory for two screens, presenting is a page flip and the copy goes to the half being panned to. When it grants only one — a Pi 5 does — the finished frame goes to the granted surface itself, which is the most expensive thing the presentation core does. So the library gives that copy to a DMA channel and returns without waiting for it, scaling the next frame into a second buffer while the transfer runs. One frame is in flight at a time. If no DMA channel is free, the CPU does the copy exactly as before.
-- **There is one framebuffer grant on the board, and everything that draws shares it.** Asking the firmware for it is what sets the display mode, so two askers with two different requests would be two modes. Output is on the screen from boot on every board ([LOGGING.md](LOGGING.md)), which makes that grant during the machine's own bring-up, with the same request an application's first window would have made; the window then adopts it. The console stops drawing the moment an application initialises SDL video, so the console and the application never hold the framebuffer at the same time.
+- **There is one framebuffer grant on the board, and everything that draws shares it.** Asking the firmware for it is what sets the display mode, so two askers with two different requests would be two modes. Output is on the screen from boot on every board ([LOGGING.md](LOGGING.md)), which makes that grant during the machine's own bring-up, with the same request an application's first window would have made; the window then adopts it. The console stops drawing the moment an application **creates its window** — not merely when it calls `SDL_Init`, which brings video up but does not yet take the display — so the console and the application never hold the framebuffer at the same time. Destroying that window gives the screen back.
 - **The present path is built once and reused.** Its buffers and its DMA channel are sized by the framebuffer the firmware granted, and that grant is made once and kept for as long as the machine runs, so a second window adopts the same one. An application may destroy its window, renderer and textures and create new ones as often as it likes — which is what a settings menu does whenever a video setting changes — and none of it is allocated again. There are only a few DMA channels on the board and the sound device needs one too.
 
 The library logs the whole chain once at startup and once per distinct geometry, so a serial console tells you what happened without guessing:
@@ -37,6 +41,8 @@ sdl2video: granted 1080 rows < 2160: shadow-buffered present
 sdl2video: present: dma copy, channel 11, 8294400 bytes, double-shadowed
 sdl2video: copy src 320x224 -> canvas 720x504+0+36 -> scanout 1350x945+285+67 (nearest)
 ```
+
+The `(declared virtual device)` on the first line names which of the three sources in [Declaring the display](#declaring-the-display) settled the canvas — `--rapi-vdisplay switch`, `declared virtual device` or `first window created`.
 
 The `present:` line names the path that is actually in use — `dma copy` or `cpu copy`, and the reason when it is the latter.
 
@@ -69,22 +75,30 @@ A texture created with `SDL_TEXTUREACCESS_TARGET` can be drawn into. `SDL_SetRen
 
 ## Declaring the display
 
-**Every application declares the display it is to be given**, in its own code, before `SDL_Init`. This is not optional and there is no fallback of any kind — not the boot command line, not the panel. An application that has not declared one has not said what display it is to be given, and the library will not invent one, so `SDL_Init` fails and says why on the console.
+**Nothing is required.** An application that calls `SDL_Init` and then `SDL_CreateWindow` with no further ceremony gets a canvas sized from that window's own width and height — the window and the canvas are the same rectangle. `SDL_Init` itself never refuses for want of a display size; a program may bring video up and never create a window at all.
 
-```c
-#include <SDL2/SDL_circle.h>
+Two things can override that default, and they are settled in this order — the first one present wins outright, and neither is required for the other to work:
 
-if (SDL2Circle_DeclareVirtualDevice(32, 800, 450) != 0)
-    fprintf(stderr, "%s\n", SDL_GetError());
-```
+1. **The `--rapi-vdisplay=WxH` boot switch**, handled by the library like every other `--rapi-` switch — see [Boot switches](#boot-switches). It is read from the boot argument block before `SDL_Init` runs, so it is known before any window can exist, and it wins over a declaration as well as over a window's own size.
+2. **`SDL2Circle_DeclareVirtualDevice`**, called by the application before `SDL_Init`:
 
-That becomes the canvas. `SDL_GetCurrentDisplayMode`, `SDL_GetDesktopDisplayMode`, `SDL_GetDisplayMode` and `SDL_GetDisplayBounds` all answer with it, `SDL_CreateWindow` returns a window of that size whatever it was asked for, and the library carries each frame from there to whatever the panel is really doing. **The application never learns the real output resolution**, which is the point: it draws in the virtual display it declared, and the placement rules above put that onto the physical screen.
+   ```c
+   #include <SDL2/SDL_circle.h>
 
-- **It is fixed.** One declaration is accepted, before anything has asked the library about the display. A second one is refused, and so is one made after the display size has been settled — the first display query, or the first window. The size an application is given cannot change while it is running, so every geometry derived from it is worked out once and holds for the rest of the run.
-- **32 bits per pixel, and nothing else.** The framebuffer is allocated at 32 bits and streaming ARGB8888 is the only texture format, so another depth is refused rather than quietly rounded to this one. Width and height must both be above zero.
-- **The return value reports the outcome.** Zero means accepted; -1 means refused, with `SDL_GetError` saying which of the above was not met. A refused declaration changes nothing, and an earlier accepted one still stands.
-- **It states the virtual display, not the physical one.** The mode the panel is driven at remains the operator's decision, asked for in `config.txt` and `cmdline.txt` and granted, or not, by the firmware. Declaring a virtual device asks the firmware for nothing; it says what the application is to be shown, and the library scales.
-- **Without it the library does not start.** `SDL_Init` returns failure with `SDL_GetError` explaining, and puts a line on the console naming the call to make. Nothing is initialised, no device is touched, and no display question can be answered.
+   if (SDL2Circle_DeclareVirtualDevice(32, 800, 450) != 0)
+       fprintf(stderr, "%s\n", SDL_GetError());
+   ```
+
+   This call is unchanged from before and remains entirely optional. It loses to the switch when both are present.
+
+Whichever of the three settles it, `SDL_GetCurrentDisplayMode`, `SDL_GetDesktopDisplayMode`, `SDL_GetDisplayMode` and `SDL_GetDisplayBounds` all answer with the canvas, and the library carries each frame from there to whatever the panel is really doing. **The application never learns the real output resolution**, which is the point: it draws in the canvas, and the placement rules above put that onto the physical screen.
+
+**The switch and the window can disagree on purpose.** With `--rapi-vdisplay=WxH` set, `SDL_CreateWindow` still returns a window of the size the application asked for — `SDL_GetWindowSize` answers honestly — but the application draws into a canvas of the switch's size regardless, exactly as `SDL_GetRendererOutputSize` and `SDL_GetWindowSizeInPixels` report it. The two sizes are then deliberately different, and the scanout scaling above is what reconciles the canvas with the panel; nothing reconciles the window's reported size with the canvas, so a program meant to run under the switch should read its drawing size from the renderer or the display mode, not from `SDL_GetWindowSize`. Under a declaration, or with neither override, the window and the canvas are always the same rectangle, so this distinction does not arise.
+
+- **It is fixed.** Once settled — by the switch, by a declaration, or by the first window — the canvas does not change for the rest of the run, however many further windows are created or destroyed. A second `SDL_CreateWindow` (without the switch) reports the *already-settled* canvas size, not its own arguments; only the switch case lets each window report what it actually asked for while the canvas stays put. A `SDL2Circle_DeclareVirtualDevice` call arriving after the canvas has settled is refused, and so is a second call.
+- **32 bits per pixel, and nothing else.** The framebuffer is allocated at 32 bits and streaming ARGB8888 is the only texture format, so another depth is refused rather than quietly rounded to this one. Width and height must both be above zero, for the switch as well as for the declaration.
+- **`SDL2Circle_DeclareVirtualDevice`'s return value reports the outcome.** Zero means accepted; -1 means refused, with `SDL_GetError` saying which of the above was not met. A refused declaration changes nothing, and an earlier accepted one still stands.
+- **Either states the virtual display, not the physical one.** The mode the panel is driven at remains the operator's decision, asked for in `config.txt` and `cmdline.txt` and granted, or not, by the firmware. Neither the switch nor the declaration asks the firmware for anything; each says what the application is to be shown, and the library scales.
 
 ### Matching the virtual display to the physical one
 
@@ -125,7 +139,7 @@ SDL2Circle_DeclareBasePath("/games/example");
 
 The declaration is fixed, on the same terms as the virtual display: accepted once, before anything has asked for a path, and refused afterwards. Both functions return a string the caller releases with `SDL_free`, and both end in a separator, because that is SDL's contract and applications append to the result without checking.
 
-**Not declaring one is not an error.** It answers `/`, with one warning on the log. This differs deliberately from the virtual display, which stops `SDL_Init` when it is missing: there is no sane default display size, but a board has exactly one filesystem and `/` is a real directory an application can read and write. SDL returns a non-null path on every desktop platform, so a great many applications dereference the answer without looking — refusing would turn a missing declaration into a crash inside the application rather than a message from here.
+**Not declaring one is not an error.** It answers `/`, with one warning on the log: a board has exactly one filesystem and `/` is a real directory an application can read and write. SDL returns a non-null path on every desktop platform, so a great many applications dereference the answer without looking — refusing would turn a missing declaration into a crash inside the application rather than a message from here.
 
 ## Boot switches
 
@@ -137,6 +151,7 @@ A boot argument block sits at a fixed offset inside the kernel image, and a load
 |---|---|
 | `--rapi-debug-uart` | types bytes arriving on the serial console into the machine as SDL key events. Takes **no value** |
 | `--rapi-perf=N` | a performance report every N seconds |
+| `--rapi-vdisplay=WxH` | the virtual framebuffer size — see [Declaring the display](#declaring-the-display). Wins over `SDL2Circle_DeclareVirtualDevice` and over the first window's own size |
 
 An application still reads the same block for its own arguments, and still strips every `--rapi-` switch before its program sees them. Those are its arguments; reading the block twice is harmless, because nothing here writes to it.
 

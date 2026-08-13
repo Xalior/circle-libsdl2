@@ -53,10 +53,11 @@
 // black in every one of them. So the console is right on a board this library
 // has never seen, which is the whole point of it.
 //
-// WHEN THE SCREEN GOES. The flag is cleared the moment an application
-// initialises SDL video, because that is the moment the guest takes the
-// display. It is the only transition there is, it happens once, and it cannot
-// be undone.
+// WHEN THE SCREEN GOES, AND WHEN IT COMES BACK. The flag is cleared when an
+// application creates its window — that is the moment the guest actually
+// takes the framebuffer, not merely SDL_Init — and set again when that window
+// is destroyed. Both are one boolean, flipped in place; no device is built,
+// moved or torn down either time.
 //
 #include <SDL2/SDL.h>
 #include "sdl2circle.h"
@@ -431,7 +432,7 @@ extern "C" int SDL2Circle_LogAttachScreen(void)
 }
 
 // ---------------------------------------------------------------------------
-// The display hand-off (SDL_Init, when an application starts video)
+// The display hand-off (SDL_CreateWindow / SDL_DestroyWindow)
 // ---------------------------------------------------------------------------
 
 void SDL2Circle_ConsoleReleaseScreen(void)
@@ -450,4 +451,23 @@ void SDL2Circle_ConsoleReleaseScreen(void)
     SDL2Circle_Log("sdl2console", SDL2CIRCLE_LOG_NOTICE,
                    "the application has the display; output is on the serial "
                    "port alone from here");
+}
+
+// The reverse of the above, for a window that goes away: the console did not
+// stop existing while the application had the display, it only stopped
+// drawing, so getting it back is the same flag turned the other way. A board
+// that never had a screen to give (s_started false, or ScreenPrepare failed)
+// has none to give back either, and a screen already live is left alone.
+void SDL2Circle_ConsoleGrantScreen(void)
+{
+    if (!s_started || s_base == nullptr || s_screenLive)
+        return;
+
+    s_lock.Acquire();
+    s_screenLive = true;
+    s_lock.Release();
+
+    SDL2Circle_Log("sdl2console", SDL2CIRCLE_LOG_NOTICE,
+                   "the application has released the display; output is on "
+                   "the screen again");
 }

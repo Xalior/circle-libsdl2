@@ -12,11 +12,11 @@
 #include <circle/types.h>
 #include <SDL2/SDL_circle.h>   // the public split/I-O surface backing this glue
 
-// Whether SDL2Circle_DeclareVirtualDevice (SDL_circle.h) has been called and
-// accepted. SDL_Init asks before it brings anything up: the virtual display
-// is what the library is built around and there is no fallback for it, so a
-// consumer that has not declared one cannot be started.
-bool SDL2Circle_VirtualDeviceDeclared(void);
+// The --rapi-vdisplay=WxH switch (src/bootargs.cpp), handed to video.cpp
+// as soon as the boot argument block has been read — well before SDL_Init,
+// let alone a window. It is the top of the precedence order the virtual
+// framebuffer's size is settled from; see src/video.cpp.
+void SDL2Circle_SetVDisplaySwitch(int width, int height);
 
 // ---- the one display grant (src/video.cpp) ---------------------------------
 //
@@ -71,10 +71,17 @@ int SDL2Circle_ConsoleInit(void);
 class CDevice;
 CDevice *SDL2Circle_ConsoleDevice(void);
 
-// The display hand-off, made when an application initialises SDL video. It
-// clears the flag and nothing else: no device is built, moved or taken away,
-// and the logger's target is the tee before and after. It cannot be undone.
+// The display hand-off, made when an application creates its window — the
+// moment it actually takes the framebuffer, not merely SDL_Init. Clears the
+// flag and nothing else: no device is built, moved or taken away, and the
+// logger's target is the tee before and after.
 void SDL2Circle_ConsoleReleaseScreen(void);
+
+// The reverse hand-off, made when an application destroys its window. Sets
+// the flag back on a board that had a screen to give in the first place; a
+// no-op everywhere else (no display, or the screen already showing the
+// console). The same tee, the same drawing code — nothing is rebuilt.
+void SDL2Circle_ConsoleGrantScreen(void);
 
 // ---- the C library's standard descriptors (src/stdio.cpp) ------------------
 //

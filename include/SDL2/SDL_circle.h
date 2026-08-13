@@ -139,11 +139,19 @@ int SDL2Circle_ThreadPinNext(unsigned nCore);
 // come from these numbers, whatever resolution the panel is really being
 // scanned at. The library carries the frame from the one to the other.
 //
-// THIS IS REQUIRED AND THERE IS NO FALLBACK. Not the boot command line, not
-// the physical display, nothing: a consumer that has not declared a virtual
-// device has not said what display its application is to be given, and
-// SDL_Init refuses to start the library rather than invent one. It fails
-// with an SDL error and a line on the console.
+// CALLING THIS IS OPTIONAL. A consumer that skips it gets a virtual display
+// sized from its own first SDL_CreateWindow instead — the window and the
+// virtual display then match 1:1, and nothing before that first window needs
+// a size at all. This declaration is one of two ways to ask for something
+// else:
+//
+//   1. The board's own --rapi-vdisplay=WxH boot switch, read by the library
+//      itself before any of this runs. It wins over everything below.
+//   2. This declaration, called by the application or its host kernel.
+//
+// So the order is: the boot switch first, this declaration second, the first
+// window's own size last. Only the loser of that order goes unused; nothing
+// here is an error just for being overridden.
 //
 // The declaration is FIXED. It is accepted once, before anything has asked
 // the library about the display, and after that the answer cannot change:
@@ -333,12 +341,14 @@ void SDL2Circle_WriteBytes(const char *bytes, unsigned len);
 // held by that one device and written on every line for the whole run, and the
 // serial write happens first so that drawing never delays it.
 //
-// THE SCREEN STOPS BEING DRAWN ON WHEN AN APPLICATION INITIALISES SDL VIDEO,
-// because that is the moment the guest takes the display, and from then on
-// output goes to the serial port alone. Nothing is attached or detached to do
-// that — it is one flag inside the device, cleared once and never set again —
-// so the console and the application can never hold the framebuffer at the
-// same time.
+// THE SCREEN STOPS BEING DRAWN ON WHEN AN APPLICATION CREATES ITS WINDOW,
+// because that is the moment the guest takes the framebuffer — SDL_Init
+// merely brings video up, which is not the same thing, and an application
+// that never creates a window keeps the screen log for its whole run. Output
+// goes to the serial port alone from the first window on, and comes back to
+// the screen when that window is destroyed. Nothing is attached or detached
+// to do either — it is one flag inside the device, flipped — so the console
+// and the application can never hold the framebuffer at the same time.
 //
 // THE LIBRARY DRAWS THE TEXT ITSELF, at the depth the firmware granted, which
 // it reads back rather than assumes — the pitch of the allocation over the

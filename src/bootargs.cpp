@@ -143,6 +143,21 @@ bool ParseUnsigned(const char *pValue, unsigned &nOut)
     return true;
 }
 
+// "WxH": digits, one 'x', digits. Anything else is not an answer.
+bool ParseSize(const char *pValue, unsigned &nWidth, unsigned &nHeight)
+{
+    const char *pX = strchr(pValue, 'x');
+    if (pX == nullptr || pX == pValue)
+        return false;
+    char Width[16];
+    size_t nLen = (size_t)(pX - pValue);
+    if (nLen >= sizeof(Width))
+        return false;
+    memcpy(Width, pValue, nLen);
+    Width[nLen] = '\0';
+    return ParseUnsigned(Width, nWidth) && ParseUnsigned(pX + 1, nHeight);
+}
+
 // One switch. Returns true when it was one of this library's, so that a
 // switch belonging to the application is passed over in silence — the
 // application reports on its own, and two complaints about one token would
@@ -168,6 +183,23 @@ bool Dispatch(const char *pSwitch)
         SDL2Circle_SetPerfInterval(nSeconds);
         SDL2Circle_Log(From, SDL2CIRCLE_LOG_NOTICE,
                        "--rapi-perf: performance reports every %u s", nSeconds);
+        return true;
+    }
+
+    // The virtual framebuffer size. It wins over a window's own size and
+    // over SDL2Circle_DeclareVirtualDevice — see src/video.cpp, which holds
+    // the value and the precedence between the three.
+    if (strncmp(pSwitch, "--rapi-vdisplay=", 16) == 0)
+    {
+        unsigned nWidth = 0, nHeight = 0;
+        if (!ParseSize(pSwitch + 16, nWidth, nHeight))
+            return false;       // not WxH: not ours to act on
+        if (nWidth == 0 || nHeight == 0)
+            return false;       // not a display size
+        SDL2Circle_SetVDisplaySwitch((int)nWidth, (int)nHeight);
+        SDL2Circle_Log(From, SDL2CIRCLE_LOG_NOTICE,
+                       "--rapi-vdisplay: virtual framebuffer %ux%u",
+                       nWidth, nHeight);
         return true;
     }
 
