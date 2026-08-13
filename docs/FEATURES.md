@@ -2,7 +2,7 @@
 
 | SDL2 subsystem | Circle backing |
 |---|---|
-| Video: fullscreen window, software `SDL_Renderer`, streaming ARGB8888 textures, alpha blending, scaled `SDL_RenderCopy` | `CBcmFrameBuffer` — double-buffered, vsync page flip. Where the firmware grants one screen instead of two, the finished frame is scaled onto it, on a core of the host's choosing |
+| Video: fullscreen window, software `SDL_Renderer`, streaming ARGB8888 textures, alpha blending, scaled `SDL_RenderCopy`, render targets | `CBcmFrameBuffer` — double-buffered, vsync page flip. Where the firmware grants one screen instead of two, the finished frame is scaled onto it, on a core of the host's choosing |
 | Display/renderer queries (modes, bounds, formats, masks) | single HDMI panel, or the virtual device the application declared for itself |
 | Keyboard → SDL events, `SDL_GetKeyboardState`, modifiers | Circle USB HID (raw reports; SDL scancodes *are* USB usage codes). Scancodes are physical positions and do not move with the keyboard layout. Off core 0: USB stays on core 0, events cross by ring |
 | Mouse → SDL events, `SDL_GetMouseState`, relative mode, warping | Circle USB mouse (raw reports — no Circle-drawn cursor). A mouse says how far it moved and never where it is, so the library keeps the position itself and clamps it to the window. Off core 0: USB and event synthesis stay on core 0; the position and buttons are held in memory both cores see |
@@ -31,6 +31,8 @@ The application's format is honoured at the EDGE instead. `SDL_CreateTexture` ac
 
 Surfaces carry no such restriction: any depth, any masks, and 8-bit paletted throughout.
 
+**A texture can be drawn into as well as read from.** `SDL_CreateTexture` accepts `SDL_TEXTUREACCESS_TARGET`, `SDL_SetRenderTarget` aims the renderer at such a texture, and every drawing call then lands in it instead of in the frame; aiming back at the frame is passing null. `SDL_RenderTargetSupported` answers true, and `SDL_GetRendererInfo` reports `SDL_RENDERER_TARGETTEXTURE`. It is the frame's own composition machinery pointed at a different buffer — see [Render targets](DISPLAY.md#render-targets), which also states where a target here answers differently from a desktop SDL.
+
 ## Not yet
 
 Each of these fails with a message saying so rather than quietly doing something else:
@@ -38,7 +40,6 @@ Each of these fails with a message saying so rather than quietly doing something
 - **No MIDI synthesiser.** `Mix_LoadMUS` reads WAV. A MIDI file is a score rather than a recording, and performing one is a sound engine in its own right.
 - **No fades in the mixer.** `Mix_FadeInMusic` and its relatives start and stop at volume.
 - **No rotation in `SDL_RenderCopyEx`.** Mirroring works, in all three combinations; an angle is refused.
-- **No render-to-texture.** `SDL_SetRenderTarget` accepts the default target and refuses a texture.
 - **No force-feedback device.** The `SDL_Haptic` calls exist and report that there is none, so an application's "rumble if it can" path takes its other branch.
 - **No OpenGL, Vulkan or Metal.** The Pi has no bare-metal GPU driver; software rendering is the design, not a temporary measure. The entry points all exist: `SDL_GL_CreateContext` returns null with an error, so a program with an optional accelerated renderer takes its software path, and `SDL_GL_DeleteContext` is a no-op so its shutdown path still runs. They are here because that shutdown path is usually written as `if (ctx) SDL_GL_DeleteContext(ctx)` — dead code that must still LINK.
 

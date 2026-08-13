@@ -4,6 +4,8 @@ Each is a complete bootable kernel exercising one subsystem. They are the librar
 
 - **`examples/gradient`** — animated full-screen gradient (video path)
 
+- **`examples/rendertarget`** — a picture composed into an off-screen texture and then magnified over the whole window, which is how a game gets a fixed low-resolution look on any panel. It checks the render-target contract on the way in — what the renderer reports, what the output size and the viewport become while a target is set, what is read back out of one, and the two things that are refused — and puts every answer on the serial console (render targets)
+
 - **`examples/keyecho`** — scancode display, modifier lights, held-key grid (input)
 
 - **`examples/mouseview`** — the pointer on screen with the button lights, the wheel total and the frame's own relative reading beside it, and a bar per event type so a click that produced no event is visible. It also hands its serial port to the library's input-injection channel, so the pointer can be driven from a terminal — `mouse to 100 100`, `mouse tap left` — when there is nobody at the desk. It carries a patchable-defaults block at image offset 0x800, so a network loader can stamp a switch into the image before it boots, and the build refuses to leave behind an image that lost the block (mouse)

@@ -46,6 +46,25 @@ struct SDL_Window
     void *hit_test_data;
 };
 
+// The coordinate state that belongs to whatever is being drawn into. SDL2
+// gives every render target its own: a viewport or a logical size set while a
+// texture is the target applies to that texture, and the window's own comes
+// back unchanged when the target is released.
+//
+// It is saved and restored as one block when the target changes, so the copy
+// held in the renderer is always the state of the CURRENT target and every
+// drawing call reads it without asking which target it is drawing into.
+struct RenderView
+{
+    int   logical_w, logical_h;
+    bool  integer_scale;
+    float scale_x, scale_y;
+    SDL_Rect viewport;
+    bool     viewport_set;
+    SDL_Rect clip;
+    bool     clip_enabled;
+};
+
 struct SDL_Renderer
 {
     SDL_Window *window;
@@ -78,6 +97,19 @@ struct SDL_Renderer
     bool     viewport_set;
     SDL_Rect clip;
     bool     clip_enabled;
+
+    // The texture drawing lands in, and null when that is the frame.
+    //
+    // A target's draw calls are never recorded and never cross to the
+    // presentation core. They are executed into the texture as they are
+    // made, because a target's pixels are not a frame going anywhere — they
+    // are a texture the application may copy from on its very next call.
+    SDL_Texture *target;
+
+    // The coordinate state the window's own drawing goes back to. The block
+    // above is the live state; this copy holds the window's for as long as a
+    // target is set.
+    RenderView window_view;
 
     // Draw calls held back, in canvas coordinates, while the frame is still
     // short enough to cross to the presentation core as a LIST. A frame that
@@ -179,7 +211,27 @@ struct SDL_Texture
     Uint8 colormod_r, colormod_g, colormod_b;
     SDL_ScaleMode scale_mode;
     void *userdata;
+
+    // Only for a texture created with SDL_TEXTUREACCESS_TARGET: the
+    // coordinate state to use while this texture is the render target. It
+    // starts at the whole texture, unscaled and unclipped, and keeps
+    // whatever the application sets between the times it is the target.
+    RenderView view;
 };
+
+// The size of what is being drawn into: the render target where one is set,
+// the window otherwise. Every rectangle an application hands over is placed
+// against it, so a call cannot be found honouring one and a call beside it
+// honouring the other.
+static inline int render_target_w(const SDL_Renderer *ren)
+{
+    return ren->target ? ren->target->w : ren->window->w;
+}
+
+static inline int render_target_h(const SDL_Renderer *ren)
+{
+    return ren->target ? ren->target->h : ren->window->h;
+}
 
 // The one fullscreen window (ID 1). Display-mode queries answer with its
 // size once it exists, and with the panel default before that.
@@ -1110,6 +1162,11 @@ static bool canvas_surface_alloc(void)
     return true;
 }
 
+// The store of a texture the application may write, declared here because
+// drawing into a render target needs it and is defined long before it. Its
+// own definition carries the rule it enforces.
+static u8 *texture_write_buffer(SDL_Texture *tex, bool preserve);
+
 // Stop recording and start drawing. Everything recorded so far goes into
 // the virtual framebuffer, and everything after it goes straight there.
 static void start_rasterizing(SDL_Renderer *ren)
@@ -1142,6 +1199,27 @@ static void emit_cmd(SDL_Renderer *ren, const SDL2CirclePresentCmd &cmd)
 {
     if (cmd.w <= 0 || cmd.h <= 0)
         return;
+
+    // A RENDER TARGET IS A FOURTH DESTINATION, and the only one that is not
+    // the frame. The command is executed into the texture's pixels here and
+    // now, at the texture's own pitch, by the same executor that composes the
+    // virtual framebuffer — a target is that machinery aimed somewhere else.
+    //
+    // Nothing about it may be held back. The recording path exists so that a
+    // short frame can cross to the presentation core as a list, and a target
+    // is not going to the presentation core at all: the application may copy
+    // from it on its very next call, so the pixels have to be there.
+    //
+    // The store is asked for on every command rather than remembered, because
+    // the answer can change under a frame in flight — see
+    // texture_write_buffer. When it does change, the content is carried
+    // across with it, so a target keeps what was drawn into it before.
+    if (ren->target)
+    {
+        exec_into(&cmd, texture_write_buffer(ren->target, true),
+                  (unsigned)ren->target->pitch);
+        return;
+    }
 
     if (!ren->rasterizing
         && ren->ncmds < (unsigned)SDL2CIRCLE_PRESENT_MAX_CMDS)
@@ -2029,6 +2107,8 @@ extern "C" SDL_Renderer *SDL_CreateRenderer(SDL_Window *win, int, Uint32 flags)
     ren->viewport_set = false;
     ren->clip = { 0, 0, 0, 0 };
     ren->clip_enabled = false;
+    ren->target = nullptr;
+    memset(&ren->window_view, 0, sizeof ren->window_view);
     ren->scratch[0] = ren->scratch[1] = nullptr;
     ren->scratch_bytes[0] = ren->scratch_bytes[1] = 0;
     ren->scratch_used = 0;
@@ -2090,8 +2170,8 @@ LogicalMap logical_map(const SDL_Renderer *ren)
 
     if (ren->logical_w > 0 && ren->logical_h > 0)
     {
-        const int ow = ren->window->w;
-        const int oh = ren->window->h;
+        const int ow = render_target_w(ren);
+        const int oh = render_target_h(ren);
         float sx = (float)ow / (float)ren->logical_w;
         float sy = (float)oh / (float)ren->logical_h;
 
@@ -2150,7 +2230,7 @@ SDL_Rect confine_rect(const SDL_Renderer *ren)
     }
     else
     {
-        r = { 0, 0, ren->window->w, ren->window->h };
+        r = { 0, 0, render_target_w(ren), render_target_h(ren) };
     }
 
     if (ren->clip_enabled)
@@ -2164,8 +2244,10 @@ SDL_Rect confine_rect(const SDL_Renderer *ren)
             r = { 0, 0, 0, 0 };
     }
 
-    // Never outside the window, whatever was asked for.
-    const SDL_Rect win = { 0, 0, ren->window->w, ren->window->h };
+    // Never outside what is being drawn into, whatever was asked for. The
+    // executor writes where it is told and has nothing underneath it to
+    // catch a rectangle that leaves the surface.
+    const SDL_Rect win = { 0, 0, render_target_w(ren), render_target_h(ren) };
     if (!SDL_IntersectRect(&r, &win, &r))
         r = { 0, 0, 0, 0 };
     return r;
@@ -2238,8 +2320,12 @@ extern "C" int SDL_CreateWindowAndRenderer(int width, int height,
     return 0;
 }
 
+// The size of what is being drawn into, which SDL answers with the render
+// target's size while one is set rather than the window's.
 extern "C" int SDL_GetRendererOutputSize(SDL_Renderer *ren, int *w, int *h)
 {
+    if (ren && ren->target)
+        return SDL_QueryTexture(ren->target, nullptr, nullptr, w, h);
     SDL_GetWindowSize(ren ? ren->window : nullptr, w, h);
     return 0;
 }
@@ -2259,8 +2345,8 @@ extern "C" int SDL_RenderClear(SDL_Renderer *ren)
     cmd.op = SDL2CirclePresentCmd::FILL;
     cmd.dx = 0;
     cmd.dy = 0;
-    cmd.w = ren->window->w;
-    cmd.h = ren->window->h;
+    cmd.w = render_target_w(ren);
+    cmd.h = render_target_h(ren);
     cmd.sw = 0;
     cmd.sh = 0;
     cmd.color = ((u32)ren->a << 24) | ((u32)ren->r << 16) |
@@ -2275,15 +2361,6 @@ extern "C" SDL_Texture *SDL_CreateTexture(SDL_Renderer *, Uint32 format,
     if (w <= 0 || h <= 0)
     {
         SDL_SetError("texture dimensions must be positive");
-        return nullptr;
-    }
-    if (access == SDL_TEXTUREACCESS_TARGET)
-    {
-        // Render-to-texture would need the whole draw path to be able to
-        // aim somewhere other than the frame, which it cannot. Saying so is
-        // the point: an application that checks
-        // SDL_RenderTargetSupported gets FALSE and takes its other path.
-        SDL_SetError("render targets are not supported");
         return nullptr;
     }
     const int app_bpp = SDL2Circle_BytesPerPixel(format);
@@ -2325,6 +2402,13 @@ extern "C" SDL_Texture *SDL_CreateTexture(SDL_Renderer *, Uint32 format,
     tex->colormod_r = tex->colormod_g = tex->colormod_b = 255;
     tex->scale_mode = SDL_ScaleModeNearest;
     tex->userdata = nullptr;
+
+    // The coordinate state this texture is drawn into with, once it is the
+    // render target: the whole texture, unscaled, unclipped.
+    memset(&tex->view, 0, sizeof tex->view);
+    tex->view.scale_x = 1.0f;
+    tex->view.scale_y = 1.0f;
+    tex->view.viewport = { 0, 0, w, h };
 
     if (tex->pixels[0] == nullptr)
     {
@@ -2588,6 +2672,11 @@ extern "C" void SDL_DestroyTexture(SDL_Texture *tex)
 {
     if (!tex)
         return;
+    // Destroying the texture the renderer is aimed at puts the aim back on
+    // the frame, as SDL2 does. Leaving it would point every later draw call
+    // at freed memory.
+    if (s_renderer && s_renderer->target == tex)
+        SDL_SetRenderTarget(s_renderer, nullptr);
     // A frame the worker has not finished with may still name this texture's
     // pixels as its source — the reduced frame IS the texture, in place.
     SDL2Circle_PresentQuiesce();
@@ -2726,10 +2815,18 @@ extern "C" int SDL_RenderCopy(SDL_Renderer *ren, SDL_Texture *tex,
     int sh = srcrect ? srcrect->h : tex->h;
     int dx = dstrect ? dstrect->x : 0;
     int dy = dstrect ? dstrect->y : 0;
-    int dw = dstrect ? dstrect->w : ren->window->w;
-    int dh = dstrect ? dstrect->h : ren->window->h;
+    int dw = dstrect ? dstrect->w : render_target_w(ren);
+    int dh = dstrect ? dstrect->h : render_target_h(ren);
     if (sw <= 0 || sh <= 0 || dw <= 0 || dh <= 0)
         return 0;
+
+    // A texture cannot be copied onto itself: source and destination would
+    // be the same store, and the blitter reads rows as it writes them. SDL
+    // does not define the result either; refusing says so, where drawing it
+    // would put a picture on screen that nothing explains.
+    if (ren->target != nullptr && tex == ren->target)
+        return SDL_SetError("SDL_RenderCopy: the texture is the render "
+                            "target it is being copied into");
 
     // An absent destination means the whole render target, which under a
     // logical size is the logical rectangle rather than the window.
@@ -2779,7 +2876,11 @@ extern "C" int SDL_RenderCopy(SDL_Renderer *ren, SDL_Texture *tex,
     // spoken for by the frame being assembled — which will be posted as the
     // next sequence — and nothing may write here until the worker
     // acknowledges that frame.
-    if (!ren->rasterizing)
+    //
+    // A copy INTO A RENDER TARGET was drawn as well, wherever it came from:
+    // nothing a target does crosses to the presentation core, so no frame
+    // can be holding this store either.
+    if (!ren->rasterizing && !ren->target)
         tex->busy_seq[tex->widx] = SDL2Circle_PresentPostedSeq() + 1;
     return 0;
 }
@@ -2809,6 +2910,10 @@ extern "C" int SDL_RenderCopyEx(SDL_Renderer *ren, SDL_Texture *tex,
 
     if (flip == SDL_FLIP_NONE)
         return SDL_RenderCopy(ren, tex, srcrect, dstrect);
+
+    if (ren->target != nullptr && tex == ren->target)
+        return SDL_SetError("SDL_RenderCopyEx: the texture is the render "
+                            "target it is being copied into");
 
     const int sx = srcrect ? srcrect->x : 0;
     const int sy = srcrect ? srcrect->y : 0;
@@ -2848,8 +2953,8 @@ extern "C" int SDL_RenderCopyEx(SDL_Renderer *ren, SDL_Texture *tex,
     // in the arena, so the destination mapping and clipping are the same.
     int dx = dstrect ? dstrect->x : 0;
     int dy = dstrect ? dstrect->y : 0;
-    int dw = dstrect ? dstrect->w : ren->window->w;
-    int dh = dstrect ? dstrect->h : ren->window->h;
+    int dw = dstrect ? dstrect->w : render_target_w(ren);
+    int dh = dstrect ? dstrect->h : render_target_h(ren);
     if (!dstrect && ren->logical_w > 0 && ren->logical_h > 0)
     {
         dw = ren->logical_w;
@@ -2884,11 +2989,12 @@ extern "C" int SDL_RenderCopyEx(SDL_Renderer *ren, SDL_Texture *tex,
     return 0;
 }
 
-// Reads back what has been drawn, out of the virtual framebuffer — the only
-// framebuffer SDL has, and the one every frame is composed into. The panel
-// does not come into it: it is a different size, it holds the picture fitted
-// and centred inside a black margin, and none of that is anything SDL was
-// ever told about.
+// Reads back what has been drawn, out of whatever is being drawn into: the
+// render target where one is set, and otherwise the virtual framebuffer —
+// the only framebuffer SDL has, and the one every frame is composed into.
+// The panel does not come into it: it is a different size, it holds the
+// picture fitted and centred inside a black margin, and none of that is
+// anything SDL was ever told about.
 //
 // The rectangle is in canvas coordinates, which is what the caller drew in,
 // and the answer is the frame as it stands right now: everything drawn since
@@ -2899,15 +3005,36 @@ extern "C" int SDL_RenderReadPixels(SDL_Renderer *ren, const SDL_Rect *rect,
 {
     if (!ren || !pixels)
         return SDL_SetError("SDL_RenderReadPixels: no renderer or destination");
-    if (!s_canvas_surface)
-        return SDL_SetError("SDL_RenderReadPixels: no virtual framebuffer");
 
-    // Anything the renderer is still holding back to cross as a list has not
-    // been drawn anywhere yet. Draw it, so the read sees the whole frame.
-    start_rasterizing(ren);
+    // The read comes from whatever is being drawn into. A render target is
+    // already complete — every call into it was executed as it was made —
+    // so there is nothing to finish first, and the store the last of them
+    // went into is the one holding the content.
+    const u8 *surface;
+    unsigned surface_pitch;
+    if (ren->target)
+    {
+        surface = ren->target->pixels[ren->target->widx];
+        surface_pitch = (unsigned)ren->target->pitch;
+    }
+    else
+    {
+        if (!s_canvas_surface)
+            return SDL_SetError("SDL_RenderReadPixels: no virtual framebuffer");
 
-    SDL_Rect r = rect ? *rect : SDL_Rect{ 0, 0, s_canvas_w, s_canvas_h };
-    const SDL_Rect canvas = { 0, 0, s_canvas_w, s_canvas_h };
+        // Anything the renderer is still holding back to cross as a list has
+        // not been drawn anywhere yet. Draw it, so the read sees the whole
+        // frame.
+        start_rasterizing(ren);
+        surface = s_canvas_surface;
+        surface_pitch = s_canvas_surface_pitch;
+    }
+
+    SDL_Rect r = rect ? *rect
+                      : SDL_Rect{ 0, 0, render_target_w(ren),
+                                  render_target_h(ren) };
+    const SDL_Rect canvas = { 0, 0, render_target_w(ren),
+                              render_target_h(ren) };
     if (!SDL_IntersectRect(&r, &canvas, &r))
         return 0;
 
@@ -2916,12 +3043,12 @@ extern "C" int SDL_RenderReadPixels(SDL_Renderer *ren, const SDL_Rect *rect,
 
     for (int y = 0; y < r.h; y++)
     {
-        const u8 *src = s_canvas_surface
-                      + (size_t)(r.y + y) * s_canvas_surface_pitch
+        const u8 *src = surface
+                      + (size_t)(r.y + y) * surface_pitch
                       + (size_t)r.x * 4;
         u8 *dst = (u8 *)pixels + (size_t)y * pitch;
         if (SDL_ConvertPixels(r.w, 1, SDL_PIXELFORMAT_ARGB8888, src,
-                              (int)s_canvas_surface_pitch,
+                              (int)surface_pitch,
                               format, dst, pitch) < 0)
             return -1;
     }
@@ -2932,7 +3059,8 @@ extern "C" int SDL_GetRendererInfo(SDL_Renderer *, SDL_RendererInfo *info)
 {
     memset(info, 0, sizeof(*info));
     info->name = "circle";
-    info->flags = SDL_RENDERER_SOFTWARE | SDL_RENDERER_PRESENTVSYNC;
+    info->flags = SDL_RENDERER_SOFTWARE | SDL_RENDERER_PRESENTVSYNC
+                | SDL_RENDERER_TARGETTEXTURE;
     info->num_texture_formats = 1;
     info->texture_formats[0] = SDL_PIXELFORMAT_ARGB8888;
     info->max_texture_width = 4096;
@@ -3021,7 +3149,7 @@ extern "C" int SDL_RenderSetViewport(SDL_Renderer *ren, const SDL_Rect *rect)
     if (!rect)
     {
         ren->viewport_set = false;
-        ren->viewport = { 0, 0, ren->window->w, ren->window->h };
+        ren->viewport = { 0, 0, render_target_w(ren), render_target_h(ren) };
         return 0;
     }
     if (rect->w < 0 || rect->h < 0)
@@ -3051,7 +3179,7 @@ extern "C" void SDL_RenderGetViewport(SDL_Renderer *ren, SDL_Rect *rect)
     }
     else
     {
-        *rect = { 0, 0, ren->window->w, ren->window->h };
+        *rect = { 0, 0, render_target_w(ren), render_target_h(ren) };
     }
 }
 
@@ -3086,28 +3214,75 @@ extern "C" SDL_bool SDL_RenderIsClipEnabled(SDL_Renderer *ren)
     return (ren && ren->clip_enabled) ? SDL_TRUE : SDL_FALSE;
 }
 
-// There is one render target — the canvas. A request for the default target
-// is what the renderer is already doing; a request for a texture target is
-// refused rather than silently ignored, because an application that believes
-// it is drawing into a texture and is in fact drawing onto the screen has no
-// way to notice.
+// ---------------------------------------------------------------------------
+// The render target
+//
+// Two destinations, and the renderer is aimed at one of them at a time: the
+// frame, or a texture created with SDL_TEXTUREACCESS_TARGET. Everything about
+// the second follows from one fact — a target's pixels are executed into as
+// each call is made, by the same executor that composes the frame — so the
+// only work here is aiming, and the coordinate state that goes with the aim.
+// ---------------------------------------------------------------------------
+
+namespace
+{
+void save_view(const SDL_Renderer *ren, RenderView *v)
+{
+    v->logical_w = ren->logical_w;
+    v->logical_h = ren->logical_h;
+    v->integer_scale = ren->integer_scale;
+    v->scale_x = ren->scale_x;
+    v->scale_y = ren->scale_y;
+    v->viewport = ren->viewport;
+    v->viewport_set = ren->viewport_set;
+    v->clip = ren->clip;
+    v->clip_enabled = ren->clip_enabled;
+}
+
+void load_view(SDL_Renderer *ren, const RenderView *v)
+{
+    ren->logical_w = v->logical_w;
+    ren->logical_h = v->logical_h;
+    ren->integer_scale = v->integer_scale;
+    ren->scale_x = v->scale_x;
+    ren->scale_y = v->scale_y;
+    ren->viewport = v->viewport;
+    ren->viewport_set = v->viewport_set;
+    ren->clip = v->clip;
+    ren->clip_enabled = v->clip_enabled;
+}
+} // namespace
+
+// Aim the renderer. A null texture means the frame, which is where a
+// renderer starts and what an application returns to before presenting.
+//
+// The texture's own coordinate state comes with it and the outgoing one is
+// put away, as SDL2 does: a viewport set while a texture is the target
+// belongs to that texture, and the window's own is untouched by it.
 extern "C" int SDL_SetRenderTarget(SDL_Renderer *ren, SDL_Texture *tex)
 {
     if (!ren)
         return SDL_SetError("SDL_SetRenderTarget: no renderer");
-    if (!tex)
+    if (tex && tex->access != SDL_TEXTUREACCESS_TARGET)
+        return SDL_SetError("SDL_SetRenderTarget: this texture was not "
+                            "created with SDL_TEXTUREACCESS_TARGET");
+    if (tex == ren->target)
         return 0;
-    return SDL_SetError("SDL_SetRenderTarget: render-to-texture is not supported");
+
+    save_view(ren, ren->target ? &ren->target->view : &ren->window_view);
+    ren->target = tex;
+    load_view(ren, tex ? &tex->view : &ren->window_view);
+    return 0;
 }
 
-extern "C" SDL_Texture *SDL_GetRenderTarget(SDL_Renderer *)
+extern "C" SDL_Texture *SDL_GetRenderTarget(SDL_Renderer *ren)
 {
-    return nullptr;   // always the default target
+    return ren ? ren->target : nullptr;
 }
 
 extern "C" SDL_bool SDL_RenderTargetSupported(SDL_Renderer *)
 {
-    return SDL_FALSE;
+    return SDL_TRUE;
 }
 
 extern "C" int SDL_GetRenderDrawColor(SDL_Renderer *ren, Uint8 *r, Uint8 *g,
@@ -3412,8 +3587,8 @@ extern "C" int SDL_RenderFillRect(SDL_Renderer *ren, const SDL_Rect *rect)
     SDL2CirclePerfScope perf(SDL2CIRCLE_PERF_RENDER);
     int x = rect ? rect->x : 0;
     int y = rect ? rect->y : 0;
-    int w = rect ? rect->w : ren->window->w;
-    int h = rect ? rect->h : ren->window->h;
+    int w = rect ? rect->w : render_target_w(ren);
+    int h = rect ? rect->h : render_target_h(ren);
 
     // An absent rectangle means the whole render target, which under a
     // logical size is the logical rectangle rather than the window.
@@ -3471,9 +3646,10 @@ extern "C" int SDL_RenderDrawLine(SDL_Renderer *ren, int x1, int y1,
 extern "C" int SDL_RenderDrawRect(SDL_Renderer *ren, const SDL_Rect *rect)
 {
     // The outline of a rectangle is its four edges. Without a rectangle SDL
-    // outlines the whole target, which here is the whole window.
+    // outlines the whole render target.
     SDL_Rect r = rect ? *rect
-                      : SDL_Rect{ 0, 0, ren->window->w, ren->window->h };
+                      : SDL_Rect{ 0, 0, render_target_w(ren),
+                                  render_target_h(ren) };
     if (r.w <= 0 || r.h <= 0)
         return 0;
 

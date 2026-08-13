@@ -10,6 +10,34 @@ followed.
 
 ## vPoC3
 
+### A texture can be drawn into
+
+Render targets work. `SDL_CreateTexture` accepts `SDL_TEXTUREACCESS_TARGET`,
+`SDL_SetRenderTarget` aims the renderer at such a texture, every drawing call
+then lands in that texture instead of in the frame, and passing null aims the
+renderer back at the frame. The texture is a source for `SDL_RenderCopy` like
+any other. `SDL_GetRenderTarget` answers with the texture the renderer is
+aimed at, `SDL_RenderTargetSupported` answers true, and `SDL_GetRendererInfo`
+reports `SDL_RENDERER_TARGETTEXTURE`.
+
+This is what a game does when it composes its whole picture at one fixed low
+resolution and magnifies the finished image in a single step. Such a game
+used to stop at start-up here, because the texture it wanted could not be
+created.
+
+Nothing new composes the picture: a render target is the executor that
+composes the frame, writing into the texture instead. What is different about
+a target is written down in [Display and video](DISPLAY.md#render-targets),
+including the one place it answers differently from a desktop SDL — a blended
+draw into a target leaves the pixels it touched opaque.
+
+Aiming at a texture that was not created as a target is refused, as upstream
+SDL refuses it. So is copying a target into itself, which upstream SDL leaves
+undefined and which here would be one buffer read as it is written.
+
+`examples/rendertarget` is the bootable demonstration, and checks each of
+those answers on the serial console before it starts drawing.
+
 ### SDL_SetWindowHitTest is accepted rather than left undefined
 
 `SDL_SetWindowHitTest` now exists: the callback and its data are recorded,
