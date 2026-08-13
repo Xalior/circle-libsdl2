@@ -150,8 +150,11 @@ int SDL2Circle_ThreadPinNext(unsigned nCore);
 //   2. This declaration, called by the application or its host kernel.
 //
 // So the order is: the boot switch first, this declaration second, the first
-// window's own size last. Only the loser of that order goes unused; nothing
-// here is an error just for being overridden.
+// window's own size third. Only the loser of that order goes unused; nothing
+// here is an error just for being overridden. A consumer that gives none of
+// the three still gets a virtual display: the library falls back to the
+// physical panel size read from the firmware, so it never refuses to start
+// for want of one.
 //
 // The declaration is FIXED. It is accepted once, before anything has asked
 // the library about the display, and after that the answer cannot change:

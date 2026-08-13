@@ -250,7 +250,7 @@ static SDL_Window *s_window = nullptr;
 //   CANVAS    the VIRTUAL display: the world the application is given, the
 //             shape that decides the letterboxing, and the shape every
 //             render target draws into that is not a texture of its own (see
-//             render_target_w/h below). Settled once, at the first of three
+//             render_target_w/h below). Settled once, at the first of four
 //             moments, in this order:
 //
 //               1. --rapi-vdisplay=WxH (src/bootargs.cpp). A boot switch, so
@@ -260,8 +260,11 @@ static SDL_Window *s_window = nullptr;
 //               3. The first SDL_CreateWindow's own width and height. A
 //                  window IS the canvas here, so with neither override this
 //                  is where the two become the same rectangle.
+//               4. The physical panel size, read from the firmware. Reached
+//                  only when none of the above named a size, so the library
+//                  never refuses to start for want of one.
 //
-//             Once any of the three has settled it, the canvas is fixed for
+//             Once any of the four has settled it, the canvas is fixed for
 //             the rest of the run — the placement, the window, the
 //             display-mode answers all derive from it from that point on.
 //
@@ -632,11 +635,12 @@ bool SDL2Circle_ScanoutAcquire(SDL2CircleScanout *out)
 }
 
 // Decide the canvas size, in precedence order: the --rapi-vdisplay switch,
-// then SDL2Circle_DeclareVirtualDevice, then the caller's own size — which
-// only a window has, so a display query arriving before any of the three
-// exist is passed 0,0 and finds nothing to fall back on. Nothing is written
-// to s_canvas_w/h here: the caller commits them only once the scanout is
-// known too, so a failed resolve leaves nothing partially set.
+// then SDL2Circle_DeclareVirtualDevice, then the caller's own size, then the
+// physical panel size read from the firmware — which only a window has, so a
+// display query arriving before any of the first three exist is passed 0,0
+// and falls through to the firmware. Nothing is written to s_canvas_w/h
+// here: the caller commits them only once the scanout is known too, so a
+// failed resolve leaves nothing partially set.
 static bool settle_canvas(int fallback_w, int fallback_h,
                           int *out_w, int *out_h, const char **out_how)
 {
@@ -661,6 +665,23 @@ static bool settle_canvas(int fallback_w, int fallback_h,
         *out_how = "first window created";
         return true;
     }
+
+    // The first three rungs all found nothing: no switch, no declaration, no
+    // window with a usable size. Last resort, ask the firmware what the
+    // panel actually is and use that as the canvas, so a Pascal consumer —
+    // which cannot reach Circle's property tags itself — still starts.
+    // acquire_scanout() is the same routine, and the same cached answer,
+    // that settles the scanout below; it performs the mailbox read once and
+    // every further call, this one included, reuses what it already has.
+    acquire_scanout();
+    if (s_phys_w > 0 && s_phys_h > 0)
+    {
+        *out_w = s_phys_w;
+        *out_h = s_phys_h;
+        *out_how = "physical panel size";
+        return true;
+    }
+
     if (fallback_w != 0 || fallback_h != 0)
         SDL_SetError("the window has no usable size (%dx%d)",
                      fallback_w, fallback_h);

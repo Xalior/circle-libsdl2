@@ -186,9 +186,10 @@ bool Dispatch(const char *pSwitch)
         return true;
     }
 
-    // The virtual framebuffer size. It wins over a window's own size and
-    // over SDL2Circle_DeclareVirtualDevice — see src/video.cpp, which holds
-    // the value and the precedence between the three.
+    // The virtual framebuffer size. It wins over a window's own size, over
+    // SDL2Circle_DeclareVirtualDevice and over the physical panel fallback —
+    // see src/video.cpp, which holds the value and the precedence between
+    // the four.
     if (strncmp(pSwitch, "--rapi-vdisplay=", 16) == 0)
     {
         unsigned nWidth = 0, nHeight = 0;
