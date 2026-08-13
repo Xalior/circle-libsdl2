@@ -143,7 +143,7 @@ The declaration is fixed, on the same terms as the virtual display: accepted onc
 
 ## Boot switches
 
-A boot argument block sits at a fixed offset inside the kernel image, and a loader writes a plain argument string into it before pushing the image — so a setting can ride a boot without anything being rebuilt.
+A boot argument block sits at a fixed offset inside the kernel image, and a loader writes a plain argument string into it before pushing the image — so a setting can ride a boot without anything being rebuilt. The same write can happen earlier, into a built image on disk rather than over the wire: `tools/stamp-bootargs` checks the block's magic before writing, refuses an image that was not linked against `sdl-app.ld`'s reserved space, and writes Capacity, Length and Text exactly as this library reads them back. A consumer that wants a switch to ride every boot with nothing passed at boot time — a virtual display size, say — stamps it into the image once, at build time, instead of relying on a loader to write it each time.
 
 **This library reads that block itself**, and acts on the switches that describe what IT does. An application does not forward them, is never asked for them, and cannot fail to pass them on. That last point is the whole reason: while each application interpreted these in turn, one that had never heard of a switch silently lost the capability — the switch was stamped, the loader confirmed it, and nothing happened, with nothing anywhere to say why.
 

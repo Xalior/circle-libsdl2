@@ -1,0 +1,85 @@
+#!/usr/bin/env python3
+#
+# stamp-bootargs -- write a boot-argument string into a built kernel image,
+# in place, so the image carries it with nothing passed at boot time.
+#
+#   usage: stamp-bootargs <image.img> <argument-string>
+#
+# THE BLOCK THIS WRITES IS AN INTERFACE, NOT OURS. circle-libsdl2's
+# sdl-app.ld reserves it at image offset 0x800 and src/bootargs.cpp reads it
+# back; both are reproduced here byte-compatibly and neither is touched by
+# this tool. The layout, exactly as bootargs.cpp defines it:
+#
+#   offset 0x800   4 bytes   magic "PM8D"
+#   offset 0x804   u16 LE    Capacity: bytes available in Text
+#   offset 0x806   u16 LE    Length:   bytes used in Text, excluding the NUL
+#   offset 0x808   Capacity  Text:     NUL-terminated argument string
+#                  bytes
+#
+# A loader can stamp the same block over the wire, at boot time, with pi-boot's
+# optional defaults argument -- that is a live write to a running chainload,
+# not a file edit, and is no part of what this tool does. This tool only ever
+# edits a built image on disk, before it is ever pushed anywhere, so a stamped
+# image boots correctly with no loader involved at all. A --rapi-vdisplay
+# passed by a loader at boot time still overrides what this tool wrote --
+# bootargs.cpp reads whichever bytes are in the block when the image runs,
+# and a wire write replaces them the same way this tool does.
+#
+# THE MAGIC IS A SEATBELT. It is verified before a byte is written, and a
+# missing or wrong magic refuses the write rather than corrupting whatever is
+# actually at that offset -- an image built against a linker script that does
+# not reserve the block, for instance.
+#
+import struct
+import sys
+
+MAGIC = b"PM8D"
+BLOCK_OFFSET = 0x800
+HEADER = struct.Struct("<4sHH")   # Magic, Capacity, Length
+
+
+def die(message):
+    sys.stderr.write("  STAMP %s\n" % message)
+    sys.exit(1)
+
+
+def main(argv):
+    if len(argv) != 3:
+        die("usage: stamp-bootargs <image.img> <argument-string>")
+    image_path, text = argv[1], argv[2]
+
+    encoded = text.encode("ascii", "strict") + b"\0"
+
+    with open(image_path, "r+b") as f:
+        f.seek(BLOCK_OFFSET)
+        header = f.read(HEADER.size)
+        if len(header) != HEADER.size:
+            die("%s: image too small to hold the boot argument block"
+                % image_path)
+
+        magic, capacity, _old_length = HEADER.unpack(header)
+        if magic != MAGIC:
+            die("%s: no %r magic at offset 0x%x -- refusing to write. "
+                "This image was not linked against sdl-app.ld's reserved "
+                "block." % (image_path, MAGIC, BLOCK_OFFSET))
+
+        if len(encoded) > capacity:
+            die("%s: %r is %u bytes with its NUL, the block's own capacity "
+                "is %u -- refusing to write a string it cannot hold."
+                % (image_path, text, len(encoded), capacity))
+
+        length = len(encoded) - 1   # excludes the NUL, matching bootargs.cpp
+        f.seek(BLOCK_OFFSET + 4)
+        f.write(struct.pack("<HH", capacity, length))
+
+        # The whole Text field is rewritten, not only the bytes the new
+        # string needs, so a shorter string stamped over a longer previous
+        # one leaves no old bytes behind after its own NUL.
+        f.write(encoded + b"\0" * (capacity - len(encoded)))
+
+    sys.stderr.write("  STAMP %s: \"%s\" at offset 0x%x\n"
+                      % (image_path, text, BLOCK_OFFSET))
+
+
+if __name__ == "__main__":
+    main(sys.argv)
