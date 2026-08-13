@@ -10,6 +10,19 @@ followed.
 
 ## vPoC3
 
+### SDL_SetWindowHitTest is accepted rather than left undefined
+
+`SDL_SetWindowHitTest` now exists: the callback and its data are recorded,
+and the call always succeeds. A hit test tells a window manager which part
+of a window drags it or resizes it, standing in for a title bar. There is no
+window manager here — one window, filling the one display — so the
+condition the callback exists to answer never arises, and it is never
+called. A NULL callback still means what it means upstream: hit-testing is
+disabled, which was already true of every window.
+
+There is no `SDL_GetWindowHitTest` to accept alongside it — that entry point
+does not exist in upstream SDL2 either.
+
 ### A program's own output is no longer treated as a log line
 
 Where output goes and what output looks like are now two separate things.

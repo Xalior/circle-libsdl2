@@ -34,6 +34,16 @@ struct SDL_Window
     int max_w, max_h;
     SDL_bool grabbed;
     char title[128];
+
+    // A hit test tells a window manager which part of a window acts as a
+    // title bar or a resize edge. There is no window manager here — one
+    // window, the whole display — so the condition the callback exists to
+    // answer never arises. It is kept rather than refused so that an
+    // application which relies on it for a borderless drag bar still links
+    // and still gets the success SDL promises; the callback itself is
+    // simply never the thing that decides anything on this board.
+    SDL_HitTest hit_test;
+    void *hit_test_data;
 };
 
 struct SDL_Renderer
@@ -1388,6 +1398,8 @@ static void create_window_on0(void *p)
     win->max_w = win->max_h = 0;
     win->grabbed = SDL_FALSE;
     win->title[0] = '\0';
+    win->hit_test = nullptr;
+    win->hit_test_data = nullptr;
 
     // Publish the presentation geometry before the window becomes visible to
     // the application core or the worker. This side is SCANOUT geometry, and
@@ -1720,6 +1732,29 @@ extern "C" int SDL_SetWindowMouseRect(SDL_Window *, const SDL_Rect *)
 extern "C" const SDL_Rect *SDL_GetWindowMouseRect(SDL_Window *)
 {
     return nullptr;
+}
+
+// A hit test exists so a window manager can be told which part of a window
+// drags it or resizes it, in place of a title bar. There is no window
+// manager here — one window, filling the one display, nothing else on the
+// glass to hand a region to — so the condition it exists to answer can never
+// come up, and the callback can never fire. Upstream reserves -1 for
+// "platform does not support this"; that would be honest for a board with
+// no window manager at all, except that the application calling this one
+// treats -1 as fatal. So the call is accepted instead: the callback and its
+// data are recorded, in case a future caller reads them back, and success is
+// returned, matching what SDL_SetWindowHitTest promises when a callback is
+// genuinely in effect. A NULL callback means what it means upstream —
+// disable hit-testing — which costs nothing extra to honour, since hit
+// testing was never going to run either way.
+extern "C" int SDL_SetWindowHitTest(SDL_Window *win, SDL_HitTest callback, void *callback_data)
+{
+    if (!win)
+        return SDL_SetError("SDL_SetWindowHitTest: no window");
+
+    win->hit_test = callback;
+    win->hit_test_data = callback_data;
+    return 0;
 }
 
 // The window cannot leave the screen it is, so these are the states it is
