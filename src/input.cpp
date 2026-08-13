@@ -990,10 +990,26 @@ void SDL2Circle_InputPump(void)
         if (pDevice)
         {
             s_keyboard = (CUSBKeyboardDevice *)pDevice;
-            s_keyboard->RegisterKeyStatusHandlerRaw(RawKeyHandler);
+
+            // MIXED MODE, NOT RAW ALONE. The raw handler below is what drives
+            // this file's own scancode -> SDL event path, and it must keep
+            // seeing every report untouched for the game to work. TRUE is
+            // what keeps Circle's cooked path running alongside it: without
+            // it, the vendored ReportHandler returns the instant the raw
+            // handler has run (circle-stdlib usbkeyboard.cpp), and
+            // CKeyboardBehaviour::KeyPressed — the call that turns a report
+            // into a character for a console read — never happens. Standard
+            // input has no other way to a keypress than this flag.
+            s_keyboard->RegisterKeyStatusHandlerRaw(RawKeyHandler, TRUE);
             s_keyboard->RegisterRemovedHandler(KeyboardRemovedHandler);
         }
     }
+
+    // Standard input's own console (src/stdio.cpp) finds this same keyboard
+    // by the same name, on its own plug-and-play. Called every pass rather
+    // than only on bChanged so it converges even if a change was consumed by
+    // the check above before the console's own search ran.
+    SDL2Circle_ConsolePumpPlugAndPlay();
 
     static u32 lastSeq = 0;
     u32 seq = s_reportSeq;

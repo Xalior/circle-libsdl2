@@ -6,9 +6,10 @@
 //   core 0    the Circle world: scheduler, IRQs, USB, EMMC/FatFs, sound.
 //             Gains the SERVO task (drains the call mailbox, executes the
 //             I/O service, pumps USB input into the event ring, feeds the
-//             sound device from the audio ring, ticks the CPU throttle) and
-//             the WATCHDOG task (dumps state when the app's heartbeat
-//             stalls).
+//             sound device from the audio ring, ticks the CPU throttle), the
+//             WATCHDOG task (dumps state when the app's heartbeat stalls),
+//             and the STDIN task (owns the one call that may block: a read
+//             on standard input waiting for a keypress).
 //   application core  the application, alone. Calls plain SDL_* functions; the shim
 //             marshals here. Its per-frame pump touches nothing but shared
 //             memory (rings, atomics) — no Circle service is ever called
@@ -920,7 +921,68 @@ extern "C" void SDL2Circle_IOCloseDir(intptr_t dir)
 }
 
 // ---------------------------------------------------------------------------
-// Core-0 tasks: the servo and the watchdog.
+// Standard input: read on fd 0, the descriptor circle-libsdl2 binds to its
+// own console (src/stdio.cpp). A read there can wait indefinitely for a
+// keypress, and the call mailbox above is bounded on purpose — the servo
+// drains it inline, on the same path that also has to pump USB and drain
+// every other core's log ring, so nothing put through it may block.
+//
+// So this is not a call the servo serves. It is a REQUEST HANDED TO A TASK
+// OF ITS OWN (CSplitStdinTask, below), which is free to sit inside a
+// blocking read() because nothing else on core 0 waits on that task. The
+// mailbox shape is the same one-outstanding-request handoff as the call box,
+// just answered by a different task.
+// ---------------------------------------------------------------------------
+
+namespace
+{
+
+struct alignas(64) StdinBox
+{
+    std::atomic<u64> req{0};    // caller bumps to ask for a read
+    std::atomic<u64> ack{0};    // the stdin task bumps once the result is in
+    void            *buf;
+    uint32_t         len;
+    long             result;    // >= 0 bytes read, < 0 a negated errno
+};
+
+StdinBox g_stdin;
+
+long read_stdin_now(void *buf, uint32_t len)
+{
+    errno = 0;
+    long n = (long)::read(0, buf, len);
+    return (n < 0) ? -errno : n;
+}
+
+} // namespace
+
+extern "C" long SDL2Circle_ReadStdin(void *buf, uint32_t len)
+{
+    // No split, or already the core that owns the descriptor: nothing to
+    // hand off, and core 0 is where CScheduler::Yield() inside the C
+    // library's own blocking read is legitimate to run.
+    if (!g_split.load(std::memory_order_acquire) || SDL2Circle_ThisCore() == 0)
+        return read_stdin_now(buf, len);
+
+    g_stdin.buf = buf;
+    g_stdin.len = len;
+    u64 seq = g_stdin.req.load(std::memory_order_relaxed) + 1;
+    g_stdin.req.store(seq, std::memory_order_release);
+    publish();
+    {
+        StallWatch watch("a keypress on standard input");
+        while (g_stdin.ack.load(std::memory_order_acquire) < seq)
+        {
+            wfe();
+            watch.tick();
+        }
+    }
+    return g_stdin.result;
+}
+
+// ---------------------------------------------------------------------------
+// Core-0 tasks: the servo, the watchdog, and standard input.
 // ---------------------------------------------------------------------------
 
 class CSplitServoTask : public CTask
@@ -1083,6 +1145,40 @@ public:
     }
 };
 
+class CSplitStdinTask : public CTask
+{
+public:
+    CSplitStdinTask(void) : CTask(TASK_STACK_SIZE) { SetName("sdl-stdin"); }
+
+    void Run(void) override
+    {
+        // Same as the servo: Circle hands a new task a null thread pointer.
+        SDL2Circle_SetThreadPointer(SDL2Circle_AllocTLSBlock());
+
+        u64 done = 0;
+        for (;;)
+        {
+            u64 req = g_stdin.req.load(std::memory_order_acquire);
+            if (req == done)
+            {
+                CScheduler::Get()->Yield();
+                continue;
+            }
+
+            // THE ACTUAL, BLOCKING READ ON THE BOUND DESCRIPTOR. It may sit
+            // here for as long as no key is pressed, yielding internally
+            // (circle-newlib's console glue) the whole time. That yield only
+            // cedes to this task's neighbours on core 0 — the servo and the
+            // watchdog keep running — because it is this task that is
+            // waiting, not the servo's own path.
+            g_stdin.result = read_stdin_now(g_stdin.buf, g_stdin.len);
+            done = req;
+            g_stdin.ack.store(done, std::memory_order_release);
+            publish();
+        }
+    }
+};
+
 // The scheduler, where this library had to make one.
 //
 // Circle's CTask registers itself with the scheduler while it is being
@@ -1133,6 +1229,7 @@ extern "C" void SDL2Circle_SplitInit(void)
 
     new CSplitServoTask;      // CTask registers itself with the scheduler
     new CSplitWatchdogTask;
+    new CSplitStdinTask;
 
     // The C++ threading runtime's creator task, on the same terms. It is
     // started from SDL2Circle_ArmCoreRuntime too, and does nothing without a
@@ -1144,7 +1241,7 @@ extern "C" void SDL2Circle_SplitInit(void)
     publish();
 
     CLogger::Get()->Write(From, LogNotice,
-                          "core split active: servo + watchdog on core 0");
+                          "core split active: servo + watchdog + stdin on core 0");
 #else
     CLogger::Get()->Write(From, LogError,
                           "core split requires the multicore world; staying single-core");

@@ -324,6 +324,16 @@ void SDL2Circle_LogBytes(const char *from, const char *bytes, unsigned len);
 // labelled like the rest of the log.
 void SDL2Circle_WriteBytes(const char *bytes, unsigned len);
 
+// A PROGRAM'S OWN INPUT: a read on standard input, the console's keyboard
+// half. Valid from any core. It can wait indefinitely for a key, so under
+// the core split it is answered by a dedicated core-0 task rather than the
+// bounded call mailbox everything else above uses — nothing here may block
+// the servo's own path.
+//
+// Returns the number of bytes read (0 only at true end of file, which this
+// console never reaches), or a negated errno.
+long SDL2Circle_ReadStdin(void *buf, uint32_t len);
+
 // ---- the log on the screen --------------------------------------------------
 
 // NOTHING HAS TO CALL THIS, AND THERE IS NOTHING TO CONFIGURE. Output goes to

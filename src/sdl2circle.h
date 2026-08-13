@@ -85,13 +85,20 @@ void SDL2Circle_ConsoleGrantScreen(void);
 
 // ---- the C library's standard descriptors (src/stdio.cpp) ------------------
 //
-// Bind standard output and standard error to the raw output channel, so an
+// Bind standard input, standard output and standard error to this board's one
+// console: input from the USB keyboard, output through the raw channel, so an
 // ordinary printf goes where everything else on this board goes and arrives
 // exactly as it was written. Core 0 only, once, early — before anything opens
 // a file, because the C library binds all three standard descriptors together
-// and takes the lowest free slots. It does nothing at all when a host kernel
-// has bound its own console.
+// and takes the lowest free slots.
 void SDL2Circle_StdioInit(void);
+
+// Let the console's own USB plug-and-play catch up: called from
+// SDL2Circle_InputPump (src/input.cpp), which already finds the keyboard by
+// name every pass, so the console's search costs nothing extra once a
+// keyboard is attached and nothing at all before SDL2Circle_StdioInit has
+// run. Idempotent — the console keeps the device once it finds one.
+void SDL2Circle_ConsolePumpPlugAndPlay(void);
 
 // Build the USB host controller, unless the host kernel already built one
 // (src/input.cpp). Called once, on core 0, from SDL2Circle_ArmCoreRuntime —
