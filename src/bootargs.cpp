@@ -58,7 +58,6 @@ const char From[] = "bootargs";
 
 bool s_read = false;
 bool s_debugUart = false;
-bool s_noScreenLog = false;
 
 // Digits only. Anything else is not an answer, and is refused rather than
 // turned into a number nobody asked for.
@@ -91,25 +90,6 @@ bool Dispatch(const char *pSwitch)
         s_debugUart = true;
         SDL2Circle_Log(From, SDL2CIRCLE_LOG_NOTICE,
                        "--rapi-debug-uart: serial key injection armed");
-        return true;
-    }
-
-    // KEEP THE SCREEN OUT OF IT. The screen is a destination for the log from
-    // boot on every board, because where output goes is a property of the
-    // machine. This is how a machine says otherwise — and it is a switch on
-    // the machine rather than a call in a kernel for exactly that reason.
-    //
-    // Two things it turns off, and the second is the one worth knowing about.
-    // The log is not drawn. And the display grant is not made at boot: asking
-    // for it is what sets the display mode, so a machine that wants the mode
-    // settled by the application's first window and by nothing before it says
-    // so here.
-    if (strcmp(pSwitch, "--rapi-no-screen-log") == 0)
-    {
-        s_noScreenLog = true;
-        SDL2Circle_Log(From, SDL2CIRCLE_LOG_NOTICE,
-                       "--rapi-no-screen-log: the log stays on the serial "
-                       "port and no display grant is made at boot");
         return true;
     }
 
@@ -198,13 +178,4 @@ bool SDL2Circle_DebugUartArmed(void)
 {
     SDL2Circle_ReadBootArgs();
     return s_debugUart;
-}
-
-// Whether this machine has asked to be left off the screen. Read at the one
-// moment the screen would otherwise be attached, so the block is read by then
-// whatever else has or has not happened first.
-bool SDL2Circle_ScreenLogDeclined(void)
-{
-    SDL2Circle_ReadBootArgs();
-    return s_noScreenLog;
 }

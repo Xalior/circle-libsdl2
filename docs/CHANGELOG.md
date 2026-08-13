@@ -49,42 +49,40 @@ the card.
 Standard input is bound but no character ever arrives on it, because this
 board has no console input. A C program that reads standard input waits.
 
-### The log is on the screen from boot, drawn by this library
+### Output goes to serial and to the screen, and there is nothing to arrange
 
 Every board now shows its output on the display as well as on the serial port,
-and nothing has to ask for it. The library attaches the screen itself inside
-`SDL2Circle_ArmCoreRuntime`, the call every host kernel already makes on core
-0, so a kernel that has never heard of any of this gets both destinations by
-doing nothing.
+until an application takes the display. That is the whole rule. Nothing has to
+be called and nothing can be configured.
 
-Where output goes is a property of the machine, and that is why it is not
-something a kernel opts into. A destination a kernel can forget is one that
-goes missing in silence — nothing on the wire and nothing on the glass says
-that half the output is not arriving.
+It is one device, built during `SDL2Circle_ArmCoreRuntime` — the call every
+host kernel already makes on core 0 — holding the serial device the kernel gave
+Circle's logger, the screen, and a flag saying whether the screen is still the
+library's to draw on. Its write puts the bytes on serial always and draws them
+while the flag is set. **Circle's logger is pointed at that device once and
+never pointed anywhere else again.** So a kernel that has never heard of any of
+this gets both destinations by doing nothing.
 
-The serial destination is not replaced: the screen is added in front of
-whatever device the logger already had, and the serial write happens first so
-drawing never delays it. The screen is dropped when an application initialises
-SDL video, because that is the moment the application takes the display, and
-from then on the log goes to the serial port alone. Nothing is ever attached
-after that. A board with no display is not a fault — it is a machine with one
-destination instead of two, said once at notice.
+The display hand-off is no longer an event that rearranges anything. When an
+application initialises SDL video the flag is cleared, and that is all: the
+logger's destination is the same device before and after, and the serial half
+is untouched. There is only ever one destination object and what it will do was
+settled before anything ran, so the console and the application writing the same
+framebuffer has no mechanism rather than being forbidden by a rule.
 
-**A machine that wants the serial port alone** stamps `--rapi-no-screen-log`
-into the boot argument block. That also stops the display grant being made at
-boot, for a machine that wants the display mode settled by the application's
-first window and by nothing before it.
+A board with no display is not a fault — it is a machine with one destination
+instead of two, said once at notice.
 
-`SDL2Circle_LogAttachScreen` remains, for a host kernel that wants the screen
-EARLIER than the arming call — one with bring-up of its own worth watching on
-the glass. Two things about it changed. It now answers 0 when the screen is
-already a destination, instead of reporting a refusal, so a kernel that makes
-the call after the library has is not told of a problem it does not have. And
-it refuses once an application has taken the display, which the documented
-"nothing is ever attached after boot" previously rested on nobody asking.
+`SDL2Circle_LogAttachScreen` is no longer something a consumer needs to call at
+all. It remains for one case: a host kernel with bring-up of its own worth
+watching on the glass, such as mounting a card, which happens before the arming
+call. It builds the same one device at that earlier moment, and calling it
+twice — or calling it after the library already has — does nothing and answers
+0, so a kernel that made this call before is unaffected and can drop it.
 
-Kernels used to do this by building Circle's own screen device and putting a
-splitter in front of the logger. That console is wrong on some boards and
+Kernels used to reach both places by building Circle's own screen device and
+teeing it with the serial device themselves. The shape is the same one; what
+changes is whose screen it is. Circle's console is wrong on some boards and
 cannot be made right: its colour depth is a compile-time value, and the
 framebuffer object reads the granted pitch back out of the firmware's reply but
 never the granted depth, so it goes on reporting the depth it was constructed

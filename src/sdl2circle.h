@@ -48,24 +48,25 @@ struct SDL2CircleScanout
 };
 bool SDL2Circle_ScanoutAcquire(SDL2CircleScanout *out);
 
-// ---- the screen log destination (src/console.cpp) --------------------------
+// ---- the one output device (src/console.cpp) --------------------------------
 //
-// The attach the LIBRARY makes, on every board, from SDL2Circle_ArmCoreRuntime
-// on core 0 — because where output goes is a property of the machine and not
-// something each host kernel has to remember to ask for. It does nothing when
-// the machine's command line carries --rapi-no-screen-log, and it reports a
-// board with no usable display as a notice rather than a fault.
+// Build the tee — the serial device the host kernel gave the logger, the
+// screen, and the flag saying the screen is still ours — and point Circle's
+// logger at it. The logger is never pointed anywhere else again.
 //
-// SDL2Circle_LogAttachScreen (SDL_circle.h) remains the host kernel's way to
-// have it EARLIER than this, for a kernel with bring-up of its own worth
-// watching on the glass.
-void SDL2Circle_LogAttachScreenAtBoot(void);
+// Called from SDL2Circle_ArmCoreRuntime on core 0, so every board gets both
+// destinations without a host kernel asking. Idempotent, because a kernel that
+// wants the screen during its own earlier bring-up can bring this moment
+// forward with SDL2Circle_LogAttachScreen (SDL_circle.h) — the same build, at
+// whichever of the two comes first. Returns -1 with SDL_GetError only when the
+// logger has no destination yet; a board with no display is a working machine
+// with one destination and returns 0.
+int SDL2Circle_ConsoleInit(void);
 
-// The other end: the drop, made when an application initialises SDL video,
-// because that is the moment the guest takes the display. A no-op when the
-// screen was never attached, and it cannot be undone — the screen is never a
-// destination again afterwards.
-void SDL2Circle_LogDetachScreen(void);
+// The display hand-off, made when an application initialises SDL video. It
+// clears the flag and nothing else: no device is built, moved or taken away,
+// and the logger's target is the tee before and after. It cannot be undone.
+void SDL2Circle_ConsoleReleaseScreen(void);
 
 // ---- the C library's standard descriptors (src/stdio.cpp) ------------------
 //
@@ -143,10 +144,6 @@ bool SDL2Circle_KernelTimeUTC(unsigned *pSeconds, unsigned *pMicroSeconds);
 // The library's own switches, found by the library rather than forwarded to
 // it. Idempotent; safe to call from any start-up order.
 void SDL2Circle_ReadBootArgs(void);
-
-// Whether --rapi-no-screen-log was stamped on this image: the machine saying
-// the log stays on the serial port and no display grant is made at boot.
-bool SDL2Circle_ScreenLogDeclined(void);
 
 // The application's static constructors, deferred by sdl-app-init.ld until
 // the kernel exists. Called once, on core 0, from SDL2Circle_ArmCoreRuntime.

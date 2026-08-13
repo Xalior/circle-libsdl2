@@ -1,13 +1,31 @@
 //
-// console.cpp — the log on the screen, drawn for the mode the firmware
-// granted.
+// console.cpp — THE output device, and the screen half of it drawn for the
+// mode the firmware granted.
 //
-// A host kernel that wants its log on HDMI as well as on the wire asks this
-// library for it, because this library owns the display. It allocates the
-// framebuffer, it reads the firmware's answers back, and it is the only place
-// on the board that knows what the picture really is. A console built anywhere
-// else is a second opinion about the same hardware, and on a board whose
-// firmware ignores the depth that was asked for, it is the wrong one.
+// ONE DEVICE, MADE ONCE, AND NOTHING IS EVER ATTACHED OR DETACHED. The tee
+// below holds the serial device, the screen, and one flag saying whether the
+// screen is still ours. Its write puts the bytes on serial always, and draws
+// them unless an application has taken the display. Circle's logger is pointed
+// at it once and never pointed anywhere else again.
+//
+// That is how a plain Circle kernel already does it: declare a tee over the
+// screen and the serial device, hand it to the logger, and every line reaches
+// both places for the rest of the run. This board adds the one thing such a
+// kernel never faces — the screen going away when an application takes the
+// display — and that one thing is the flag. The display hand-off is not an
+// event that rearranges the plumbing; it is a boolean.
+//
+// WHY THAT SHAPE AND NOT A DESTINATION THAT COMES AND GOES. There is only ever
+// one destination object, and what it will do is settled before anything runs.
+// So "the console and the game writing the same framebuffer" has no mechanism
+// at all, rather than being prevented by a rule somebody has to keep.
+//
+// THE SCREEN HALF IS THIS LIBRARY'S TO DRAW, because this library owns the
+// display. It allocates the framebuffer, it reads the firmware's answers back,
+// and it is the only place on the board that knows what the picture really is.
+// A console built anywhere else is a second opinion about the same hardware,
+// and on a board whose firmware ignores the depth that was asked for, it is
+// the wrong one.
 //
 // WHY CIRCLE'S OWN SCREEN DEVICE CANNOT DO THIS JOB. Its colour depth is a
 // compile-time macro, and nothing ever corrects it: CBcmFrameBuffer::Initialize
@@ -35,12 +53,10 @@
 // black in every one of them. So the console is right on a board this library
 // has never seen, which is the whole point of it.
 //
-// WHEN IT GOES. The screen destination is dropped the moment an application
+// WHEN THE SCREEN GOES. The flag is cleared the moment an application
 // initialises SDL video, because that is the moment the guest takes the
-// display. Nothing is ever attached after boot: the only transition available
-// afterwards is removal, and a removal cannot corrupt a picture. That is what
-// makes "the console and the game writing the same framebuffer" unreachable
-// rather than merely forbidden.
+// display. It is the only transition there is, it happens once, and it cannot
+// be undone.
 //
 #include <SDL2/SDL.h>
 #include "sdl2circle.h"
@@ -76,25 +92,21 @@ unsigned s_col = 0, s_row = 0;          // where the next character goes
 // board has brought anything up.
 CCharGenerator s_font;
 
-// True only between the attach and the drop, and cleared before the logger's
-// target moves back. A write that arrives while the target is still the tee —
-// one already in flight when the drop began — sees this and forwards to the
-// serial port without drawing.
-bool s_drawing = false;
+// THE FLAG. True while the screen is a place this library may draw: set once,
+// when the tee is built, if the machine has a display and has not asked to be
+// left off it — and cleared once, when an application takes the display. There
+// is no other transition and no way back.
+bool s_screenLive = false;
 
-// Set by the drop and never cleared. THE SCREEN IS ATTACHED ONCE OR NOT AT
-// ALL: after an application has taken the display, drawing text into the
-// framebuffer would paint over its picture. The invariant used to rest on
-// nobody asking twice; it is written down here because the attach now answers
-// "the screen is a destination" rather than refusing, and a caller that reads
-// that as "so a later call is harmless" would otherwise reattach over a
-// running game.
-bool s_dropped = false;
-
-// What the logger's target was before the tee was put in front of it — the
-// serial device the host kernel gave it. It is never replaced, only wrapped,
-// and it is what the target goes back to when the screen is dropped.
+// The serial device the host kernel gave Circle's logger. The tee holds it and
+// writes it on every line for the whole run; it is never replaced.
 CDevice *s_serial = nullptr;
+
+// Whether the tee has been built. The build is idempotent because it can be
+// asked for at either of two moments — a host kernel wanting the screen during
+// its own bring-up, or the arming call every kernel makes — and whichever
+// comes first is the one that does it.
+bool s_started = false;
 
 // The logger writes to its target without a lock of its own, and a log line
 // can be produced by any core when the core split is not carrying it. One
@@ -241,17 +253,13 @@ void put_char(char c)
     s_col++;
 }
 
-// TWO DESTINATIONS FOR ONE LOG.
+// THE ONE OUTPUT DEVICE.
 //
-// Circle's logger writes to a single device, so a second destination is a
+// Circle's logger writes to a single device, so reaching two places is a
 // device that reaches two. The serial port goes first, because it is the
 // destination a bench run is settled by and it must not wait on the drawing;
-// the screen follows.
-//
-// It is also what makes the drop cheap and safe: the log's route back to the
-// serial port alone is one pointer, restored on the core that owns the
-// devices, with nothing half-drawn left behind.
-class CScreenLogDevice : public CDevice
+// the screen follows, and only while it is still ours.
+class CLogTee : public CDevice
 {
 public:
     int Write(const void *pBuffer, size_t nCount) override
@@ -260,15 +268,12 @@ public:
                                 ? s_serial->Write(pBuffer, nCount)
                                 : (int)nCount;
 
-        if (s_drawing)
+        if (s_screenLive)
         {
             s_lock.Acquire();
-            if (s_drawing)
-            {
-                const char *p = (const char *)pBuffer;
-                for (size_t i = 0; i < nCount; i++)
-                    put_char(p[i]);
-            }
+            const char *p = (const char *)pBuffer;
+            for (size_t i = 0; i < nCount; i++)
+                put_char(p[i]);
             s_lock.Release();
         }
 
@@ -276,56 +281,23 @@ public:
     }
 };
 
-CScreenLogDevice s_screenLog;
+CLogTee s_tee;
 
-}   // namespace
-
-// ---------------------------------------------------------------------------
-// Attaching (the host kernel, once, at initialisation)
-// ---------------------------------------------------------------------------
-
-extern "C" int SDL2Circle_LogAttachScreen(void)
+// Read the display back and lay a character cell over it. Everything here is
+// the firmware's own answer; nothing echoes a request. Returns 0 when the
+// screen can be drawn on, -1 with SDL_GetError when it cannot.
+int ScreenPrepare(void)
 {
-    // ALREADY A DESTINATION IS THE ANSWER THE CALLER ASKED FOR, so it is
-    // success. The library attaches the screen itself while the machine comes
-    // up (SDL2Circle_LogAttachScreenAtBoot below), which means a host kernel
-    // making this call is now usually the second to arrive rather than the
-    // first. What it wanted is true either way, and a kernel that reports a
-    // refusal — every kernel that made this call before the library did —
-    // would otherwise print a warning about a screen that is working.
-    if (s_drawing)
-        return 0;
-
-    if (s_dropped)
-        return SDL_SetError("SDL2Circle_LogAttachScreen: the application has "
-                            "the display; the screen cannot be a log "
-                            "destination again");
-
-    // A LOGGER WITH A DESTINATION ALREADY, and the check is on the
-    // destination rather than on the logger. Circle's CLogger::Get() never
-    // returns nothing — it makes a silent stand-in where no logger exists —
-    // so the object is not the question. Serial is always a destination, and
-    // a logger that has none has not been initialised yet: attaching the
-    // screen in front of nothing would put the whole log on the glass and
-    // take it off the wire, which is the one arrangement this must not
-    // produce.
-    CLogger *pLogger = CLogger::Get();
-    if (pLogger->GetTarget() == nullptr)
-        return SDL_SetError("SDL2Circle_LogAttachScreen: the logger has no "
-                            "destination yet — initialise it on the serial "
-                            "device first");
-
     // The framebuffer, and the numbers the firmware granted for it. This is
     // the same one an application's window adopts later — there is one grant
     // on this board and everything that draws shares it.
     SDL2CircleScanout fb;
     if (!SDL2Circle_ScanoutAcquire(&fb))
-        return SDL_SetError("SDL2Circle_LogAttachScreen: there is no display "
-                            "to draw on");
+        return SDL_SetError("there is no display to draw on");
 
     if (fb.base == nullptr || fb.pitch == 0 || fb.width <= 0 || fb.height <= 0)
-        return SDL_SetError("SDL2Circle_LogAttachScreen: the display grant is "
-                            "not usable (pitch %u, %u bytes, %dx%d)",
+        return SDL_SetError("the display grant is not usable "
+                            "(pitch %u, %u bytes, %dx%d)",
                             fb.pitch, fb.bytes, fb.width, fb.height);
 
     // BYTES PER PIXEL, DERIVED FROM TWO THINGS THE FIRMWARE SAID. The pitch is
@@ -334,9 +306,8 @@ extern "C" int SDL2Circle_LogAttachScreen(void)
     // whatever depth was asked for and whatever Circle still believes it got.
     const unsigned bpp = fb.pitch / (unsigned)fb.width;
     if (bpp != 2 && bpp != 4)
-        return SDL_SetError("SDL2Circle_LogAttachScreen: %u bytes per pixel "
-                            "(pitch %u over %d pixels) is not a format this "
-                            "console can draw",
+        return SDL_SetError("%u bytes per pixel (pitch %u over %d pixels) is "
+                            "not a format this console can draw",
                             bpp, fb.pitch, fb.width);
 
     // Rows this console may write. The grant is the ceiling and not the mode:
@@ -347,9 +318,8 @@ extern "C" int SDL2Circle_LogAttachScreen(void)
     if (rows > (unsigned)fb.height)
         rows = (unsigned)fb.height;
     if (rows == 0)
-        return SDL_SetError("SDL2Circle_LogAttachScreen: the display grant "
-                            "holds no whole row (%u bytes, pitch %u)",
-                            fb.bytes, fb.pitch);
+        return SDL_SetError("the display grant holds no whole row "
+                            "(%u bytes, pitch %u)", fb.bytes, fb.pitch);
 
     s_base   = fb.base;
     s_pitch  = fb.pitch;
@@ -360,91 +330,114 @@ extern "C" int SDL2Circle_LogAttachScreen(void)
     s_cellw = s_font.GetCharWidth();
     s_cellh = s_font.GetCharHeight();
     if (s_cellw == 0 || s_cellh == 0)
-        return SDL_SetError("SDL2Circle_LogAttachScreen: the console font has "
-                            "no character cell");
+        return SDL_SetError("the console font has no character cell");
 
     s_cols = s_width / s_cellw;
     s_rows = s_height / s_cellh;
     if (s_cols == 0 || s_rows == 0)
-        return SDL_SetError("SDL2Circle_LogAttachScreen: %ux%u pixels holds no "
-                            "character cell of %ux%u",
+        return SDL_SetError("%ux%u pixels holds no character cell of %ux%u",
                             s_width, s_height, s_cellw, s_cellh);
 
     s_col = s_row = 0;
     s_escape = EscapeNone;
     clear_screen();
-
-    // The device the logger already had is the serial port the host kernel
-    // gave it. It is kept, not replaced: serial is a destination for the whole
-    // run and this only adds one in front of it.
-    s_serial = pLogger->GetTarget();
-    s_drawing = true;
-    pLogger->SetNewTarget(&s_screenLog);
-
-    // Said on both destinations, because it is now on both. Every number in it
-    // was read back from the firmware.
-    SDL2Circle_Log("sdl2console", SDL2CIRCLE_LOG_NOTICE,
-                   "screen log: %ux%u pixels, %u bytes per pixel (pitch %u), "
-                   "%ux%u characters of %ux%u",
-                   s_width, s_height, s_bpp, s_pitch,
-                   s_cols, s_rows, s_cellw, s_cellh);
     return 0;
 }
 
+}   // namespace
+
 // ---------------------------------------------------------------------------
-// Attaching at boot (the library, on every board, without being asked)
+// Building the tee (once, whichever moment comes first)
 // ---------------------------------------------------------------------------
 
-void SDL2Circle_LogAttachScreenAtBoot(void)
+int SDL2Circle_ConsoleInit(void)
 {
-    // WHERE OUTPUT GOES IS A PROPERTY OF THE MACHINE, so the machine decides
-    // it and not each host kernel in turn. This used to be a call a kernel
-    // made, which made the screen an opt-in: a kernel that had never heard of
-    // it printed to the wire alone, and there was nothing on the wire or on
-    // the glass to say that a destination was missing. Silence is exactly
-    // what a forgotten destination looks like.
-    //
-    // A machine that wants the screen left out of it says so on its own
-    // command line (src/bootargs.cpp), which keeps the decision on the same
-    // side as the rest of the machine's description.
-    if (SDL2Circle_ScreenLogDeclined())
-        return;
+    if (s_started)
+        return 0;
 
-    // A board with no display, or a grant this console cannot draw into, is
-    // not a fault: it is a machine with one destination instead of two, and
-    // the serial log carries on unaffected. Said once, at notice, because a
-    // headless board would otherwise report an error on every boot for
-    // working exactly as it is wired.
-    if (SDL2Circle_LogAttachScreen() != 0)
+    // A LOGGER WITH A DESTINATION ALREADY, and the check is on the destination
+    // rather than on the logger. Circle's CLogger::Get() never returns
+    // nothing — it makes a silent stand-in where no logger exists — so the
+    // object is not the question. A logger with no destination has not been
+    // initialised yet, and a tee built over nothing would hold nothing to
+    // write the serial half to.
+    CLogger *pLogger = CLogger::Get();
+    if (pLogger->GetTarget() == nullptr)
+        return SDL_SetError("SDL2Circle_ConsoleInit: the logger has no "
+                            "destination yet — initialise it on the serial "
+                            "device first");
+
+    s_started = true;
+
+    // WHAT THE TEE WILL DO IS SETTLED HERE AND NOWHERE ELSE. The serial half
+    // is whatever device the host kernel gave the logger, kept for the whole
+    // run. The screen half is live if this board has a display it can draw on.
+    //
+    // THERE IS NOTHING TO CONFIGURE, and that is the rule rather than a
+    // default. Output goes to the serial port and to the screen until an
+    // application takes the display: a switch turning half of it off would
+    // make a machine that prints to one place indistinguishable from a machine
+    // whose second destination has quietly failed.
+    s_serial = pLogger->GetTarget();
+    if (ScreenPrepare() == 0)
+        s_screenLive = true;
+
+    // The one pointing. The logger is never pointed anywhere else again — not
+    // when the application takes the display, not ever — so there is no moment
+    // at which output has no destination and no second object to keep in step.
+    pLogger->SetNewTarget(&s_tee);
+
+    if (s_screenLive)
+        // Said on both destinations, because it is now on both. Every number
+        // in it was read back from the firmware.
+        SDL2Circle_Log("sdl2console", SDL2CIRCLE_LOG_NOTICE,
+                       "screen log: %ux%u pixels, %u bytes per pixel "
+                       "(pitch %u), %ux%u characters of %ux%u",
+                       s_width, s_height, s_bpp, s_pitch,
+                       s_cols, s_rows, s_cellw, s_cellh);
+    else
+        // A board with no display is not a fault, so this is a notice: it is a
+        // machine with one destination instead of two, and a headless board
+        // would otherwise report an error on every boot for working exactly as
+        // it is wired.
         SDL2Circle_Log("sdl2console", SDL2CIRCLE_LOG_NOTICE,
                        "no screen log: %s", SDL_GetError());
+
+    return 0;
+}
+
+extern "C" int SDL2Circle_LogAttachScreen(void)
+{
+    // NOTHING HAS TO CALL THIS. The library builds the tee itself while the
+    // machine comes up, so where output goes is settled for every board
+    // whether or not a kernel has heard of this.
+    //
+    // What it is still for is HAVING IT SOONER: a host kernel with bring-up of
+    // its own worth watching on the glass — mounting a card, say — makes this
+    // call and gets the same one tee, built at its moment instead of at the
+    // arming call. There is no second mechanism behind it; this and the arming
+    // call are two doors into the same idempotent build.
+    return SDL2Circle_ConsoleInit();
 }
 
 // ---------------------------------------------------------------------------
-// Dropping (SDL_Init, when an application starts video)
+// The display hand-off (SDL_Init, when an application starts video)
 // ---------------------------------------------------------------------------
 
-void SDL2Circle_LogDetachScreen(void)
+void SDL2Circle_ConsoleReleaseScreen(void)
 {
-    // Recorded even where there was nothing to drop, because what this marks
-    // is that the application now has the display — which is true whether or
-    // not the screen was ever drawn on.
-    s_dropped = true;
-
-    if (!s_drawing)
+    if (!s_screenLive)
         return;
 
-    // The drawing stops under the same lock a line is drawn under, so a line
-    // that is part way onto the screen finishes before the target moves.
+    // Under the same lock a line is drawn under, so a line already part way
+    // onto the screen finishes rather than stopping mid-word. Nothing else
+    // moves: the logger's target is the tee before this and the tee after it,
+    // and the serial half is untouched.
     s_lock.Acquire();
-    s_drawing = false;
+    s_screenLive = false;
     s_lock.Release();
 
-    CLogger *pLogger = CLogger::Get();
-    if (pLogger != nullptr && pLogger->GetTarget() == &s_screenLog)
-        pLogger->SetNewTarget(s_serial);
-
     SDL2Circle_Log("sdl2console", SDL2CIRCLE_LOG_NOTICE,
-                   "screen log dropped: the application has the display, and "
-                   "the log is on the serial port alone from here");
+                   "the application has the display; output is on the serial "
+                   "port alone from here");
 }

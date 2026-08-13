@@ -251,9 +251,9 @@ static void init_input_on0(void *)
     SDL2Circle_InputInit();
 }
 
-static void drop_screen_log_on0(void *)
+static void release_screen_on0(void *)
 {
-    SDL2Circle_LogDetachScreen();
+    SDL2Circle_ConsoleReleaseScreen();
 }
 
 extern "C" int SDL_InitSubSystem(Uint32 flags)
@@ -290,9 +290,9 @@ extern "C" int SDL_InitSubSystem(Uint32 flags)
                             "(SDL2Circle_DeclareVirtualDevice)");
     }
 
-    // THE SCREEN STOPS BEING A LOG DESTINATION HERE, if the host kernel made
-    // it one. Starting video is the application taking the display, and the
-    // console and the application must never hold the framebuffer at once.
+    // THE SCREEN STOPS BEING DRAWN ON HERE. Starting video is the application
+    // taking the display, and the console and the application must never hold
+    // the framebuffer at once.
     //
     // It happens AFTER the refusal above, deliberately: a consumer that has
     // declared no virtual device is turned away without ever reaching the
@@ -300,11 +300,14 @@ extern "C" int SDL_InitSubSystem(Uint32 flags)
     // could tell anyone why. Dropping the console first would take that line
     // off the glass and leave a black screen and a silent board.
     //
-    // A removal, never an attachment — the only transition there is after
-    // boot. Marshalled to core 0 because the logger's target is a device
-    // pointer read by the core that owns the devices.
+    // ONE FLAG, CLEARED ONCE. Nothing is attached, detached or moved: the
+    // logger's destination is the same device before this and after it, and
+    // all that changes is whether that device draws as well as writes.
+    // Marshalled to core 0 because clearing it waits on any line already part
+    // way onto the screen, and that drawing belongs to the core that owns the
+    // devices.
     if (flags & SDL_INIT_VIDEO)
-        SDL2Circle_CallOn0(drop_screen_log_on0, nullptr);
+        SDL2Circle_CallOn0(release_screen_on0, nullptr);
 
     // Board hardware — the CPU clock and the case fan — is brought up from
     // SDL2Circle_ArmCoreRuntime, not here. Every host kernel already makes

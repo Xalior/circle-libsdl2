@@ -34,33 +34,33 @@ So they do not write. **Each core copies into a ring of its own and returns**, a
 
 ## Where output lands
 
-**The machine decides, and neither the application nor the host kernel has to ask.** An application writes into a channel and knows of nothing beyond it. The destinations are attached once, while the machine is coming up, and that is the only moment anything is attached.
+**Serial always, and the screen until an application takes the display.** That is the whole rule. There is nothing to call, nothing to configure and no way to turn half of it off.
 
-**The serial port is always a destination.** It is whatever device the kernel gave Circle's logger, and it stays that for the whole run.
+It is one device. The library builds it during `SDL2Circle_ArmCoreRuntime` — the call every host kernel already makes on core 0 — holding the serial device the kernel gave Circle's logger, the screen, and a flag saying whether the screen is still ours. **Circle's logger is pointed at that device once and never pointed anywhere else again.** Every line the logger carries, and every byte written raw, goes to serial and is drawn, for the rest of the run.
 
-**The screen is a second destination from boot, on every board, and this library both attaches and draws it.** It happens inside `SDL2Circle_ArmCoreRuntime`, the call every host kernel already makes on core 0, so a kernel that has never heard of any of this gets both destinations by doing nothing.
+A plain Circle kernel already works this way: declare a tee over the screen and the serial device, hand it to the logger, done. This board adds the one thing such a kernel never faces — the screen going away when an application takes the display — and that one thing is the flag.
 
-That is deliberately not something a kernel opts into. A destination a kernel can forget is a destination that goes missing in silence: there is nothing on the wire, and nothing on the glass, to say that half the output is not arriving.
-
-Every line the logger carries — the kernel's own, this library's, and everything an application writes or prints — appears on the display as well as on the wire. The library reports the console it built on both of them:
+The library reports the console it built, on both destinations:
 
 ```
 sdl2console: screen log: 1920x1080 pixels, 4 bytes per pixel (pitch 7680), 240x67 characters of 8x16
 ```
 
-**A board with no display is not a fault.** It is a machine with one destination instead of two; the library says so once, at notice, and the serial log carries on unaffected.
+**A board with no display is not a fault.** It is a machine with one destination instead of two; the library says so once, at notice, and the serial output carries on unaffected.
 
-### Saying no, and asking earlier
+### The display hand-off
 
-**A machine that wants the serial port alone stamps `--rapi-no-screen-log`** into the boot argument block, alongside the library's other switches. It is a switch on the machine rather than a call in a kernel for the same reason the rule itself is the machine's.
+**The screen stops being drawn on when an application initialises SDL video**, because that is the moment the application takes the display. From then on output goes to the serial port alone, and the library says so before it stops.
 
-It turns off two things. The log is not drawn. And **the display grant is not made at boot** — asking the firmware for the framebuffer is what sets the display mode, so this is how a machine says the mode is to be settled by the application's first window and by nothing before it.
+Nothing is attached, detached or moved to do that. The logger's destination is the same device before and after; all that changes is a boolean inside it. So "the console and the application writing the same framebuffer" has no mechanism at all, rather than being prevented by a rule somebody has to keep — there is only ever one destination object, and what it will do was settled before anything ran.
 
-**`SDL2Circle_LogAttachScreen` remains, for a kernel that wants the screen EARLIER than the arming call** — one with bring-up of its own worth watching on the glass, such as mounting a card. Call it on core 0 once the logger is on the serial device. It answers 0 when the screen is a destination, including when it already was, so a kernel that calls it after the library has is not told of a problem it does not have.
+The hand-off happens after `SDL_Init` has decided whether it will start at all, so a consumer turned away at the door — no virtual display device declared — still gets the line saying why, on the screen as well as on the wire.
 
-**The screen destination is dropped when an application initialises SDL video**, because that is the moment the application takes the display. From then on the log goes to the serial port alone, and the library says so before it goes. Nothing is ever attached after that: `SDL2Circle_LogAttachScreen` refuses once the application has the display, and a removal cannot spoil a picture. That is what makes a console and a game writing the same framebuffer unreachable rather than merely discouraged.
+### Asking for it earlier
 
-The drop happens after `SDL_Init` has decided whether it will start at all, so a consumer turned away at the door — no virtual display device declared — still gets the line saying why, on the screen as well as on the wire.
+`SDL2Circle_LogAttachScreen` exists for one case: a host kernel with bring-up of its own worth watching on the glass, such as mounting a card, which happens before the arming call. Call it on core 0 once the logger is on the serial device and the same one device is built at that moment instead.
+
+It is the same build through a second door, not a second mechanism. Calling it twice, or calling it after the library already has, does nothing and answers 0. **No kernel needs it**; a kernel that has never heard of it gets both destinations regardless.
 
 ### Why this library draws it and not Circle
 
@@ -68,7 +68,7 @@ The drop happens after `SDL_Init` has decided whether it will start at all, so a
 
 **This library reads its numbers back.** The pitch and the buffer address are the firmware's reply to the allocation; the width and height are the firmware's report of the display it is scanning; and the bytes per pixel are that pitch divided by that width — a granted quantity over a granted quantity, with nothing assumed between them. There is no board test anywhere in it and nothing to configure, so it is right on a board this library has never seen. The same reading is what makes the picture correct for every application drawing through SDL, which is why only a kernel reaching past this library to Circle's own console ever had the fault.
 
-**The console and an application's window share the one framebuffer grant.** There is one allocation on this board; asking for it is what sets the display mode, so a second, different request would be a second mode. Attaching the screen at boot makes that grant early, with the same request an application's first window would have made — including `width=` and `height=` from `cmdline.txt` — and the window then adopts it.
+**The console and an application's window share the one framebuffer grant.** There is one allocation on this board; asking for it is what sets the display mode, so a second, different request would be a second mode. Building the console makes that grant early, with the same request an application's first window would have made — including `width=` and `height=` from `cmdline.txt` — and the window then adopts it.
 
 **The text is white on black.** Any other colour needs the channel order the firmware chose, which is a further question this library does not ask. All bits set is white in every pixel format a Pi grants, and all bits clear is black in every one. Circle's logger brackets its lines in colour escape sequences; the console recognises them in order to throw them away, so they are never drawn as text.
 

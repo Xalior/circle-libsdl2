@@ -110,13 +110,15 @@ extern "C" void SDL2Circle_ArmCoreRuntime(void)
         // mini UART itself — costs nothing extra here.
         SDL2Circle_HardwareInit();
 
-        // The screen, as a second destination for everything printed from
-        // here on. Where output goes is a property of the machine, so the
-        // library makes this itself rather than leaving each host kernel to
-        // remember it — a forgotten destination is silent, and silence is
-        // indistinguishable from a board with no display. Before the two
-        // calls below, so that what they say appears on the glass as well.
-        SDL2Circle_LogAttachScreenAtBoot();
+        // THE OUTPUT DEVICE, before anything on this core prints. It holds the
+        // serial device and the screen, and Circle's logger is pointed at it
+        // here and never pointed anywhere else again. Where output goes is a
+        // property of the machine, so the library builds it rather than
+        // leaving each host kernel to remember — a forgotten destination is
+        // silent, and silence is indistinguishable from a board with no
+        // display. Before the two calls below, so that what they say appears
+        // on the glass as well.
+        SDL2Circle_ConsoleInit();
 
         // The C library's standard output and standard error, bound to this
         // board's output router before anything can print. Here for the same
