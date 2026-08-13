@@ -207,15 +207,41 @@ namespace
 class StallWatch
 {
 public:
-    explicit StallWatch(const char *what)
-    : m_what(what), m_start(CTimer::GetClockTicks64()), m_reported(false) {}
+    // gate_on_servo: this wait has no deadline of its own — the far side is
+    // a human, not a peer that owes an answer — so elapsed time alone would
+    // report the wait itself as the fault. Gated, the clock instead tracks
+    // g_servo_beats, core 0's own per-lap counter: for as long as it keeps
+    // advancing, core 0 is alive and simply has nothing yet to hand back,
+    // which is not a stall. Only the beats themselves going quiet — core 0
+    // stuck somewhere, unable to complete a lap — is.
+    explicit StallWatch(const char *what, bool gate_on_servo = false)
+    : m_what(what), m_start(CTimer::GetClockTicks64()), m_reported(false),
+      m_gate(gate_on_servo),
+      m_lastBeats(g_servo_beats.load(std::memory_order_relaxed)),
+      m_lastBeatChange(m_start) {}
 
     void tick(void)
     {
         if (m_reported)
             return;
-        if (CTimer::GetClockTicks64() - m_start < STALL_REPORT_US)
+
+        u64 now = CTimer::GetClockTicks64();
+        if (m_gate)
+        {
+            u64 beats = g_servo_beats.load(std::memory_order_relaxed);
+            if (beats != m_lastBeats)
+            {
+                m_lastBeats = beats;
+                m_lastBeatChange = now;
+            }
+            if (now - m_lastBeatChange < STALL_REPORT_US)
+                return;
+        }
+        else if (now - m_start < STALL_REPORT_US)
+        {
             return;
+        }
+
         m_reported = true;
         SDL2Circle_Log("split", SDL2CIRCLE_LOG_ERROR,
                        "core %u has waited %us for %s "
@@ -229,13 +255,18 @@ public:
                            != g_calls_served.load(std::memory_order_relaxed)
                            ? "core 0 is INSIDE a marshalled call and has not "
                              "returned from it"
-                           : "core 0 is not inside a marshalled call");
+                           : m_gate
+                             ? "core 0's servo has stopped completing laps"
+                             : "core 0 is not inside a marshalled call");
     }
 
 private:
     const char *m_what;
     u64 m_start;
     bool m_reported;
+    bool m_gate;
+    u64 m_lastBeats;
+    u64 m_lastBeatChange;
 };
 }   // namespace
 
@@ -970,11 +1001,33 @@ extern "C" long SDL2Circle_ReadStdin(void *buf, uint32_t len)
     u64 seq = g_stdin.req.load(std::memory_order_relaxed) + 1;
     g_stdin.req.store(seq, std::memory_order_release);
     publish();
+
+    // THE HEARTBEAT THE WATCHDOG WATCHES OTHERWISE ONLY BEATS INSIDE
+    // SDL_PumpEvents (src/events.cpp) — no help to a program with no pump,
+    // reading standard input as its whole main loop instead. That loop's own
+    // truthful proof of life is this call: bumped once per request, so a
+    // program reading a character at a time beats once per keystroke, and
+    // bumped again at the same modest pace below for as long as one request
+    // sits waiting, so a program blocked a long time on a single keystroke
+    // keeps beating too — legitimately, not wedged.
+    SDL2Circle_HeartbeatBump();
     {
-        StallWatch watch("a keypress on standard input");
+        // Waiting for a keypress has no deadline: the far side is a human,
+        // who may sit at a prompt for as long as they like, and that is not
+        // a fault. Gated so the report tracks core 0 itself instead — see
+        // StallWatch — which is what a program actually wedged there still
+        // trips.
+        StallWatch watch("a keypress on standard input", true);
+        u64 lastBump = CTimer::GetClockTicks64();
         while (g_stdin.ack.load(std::memory_order_acquire) < seq)
         {
             wfe();
+            u64 now = CTimer::GetClockTicks64();
+            if (now - lastBump >= 1000000)
+            {
+                lastBump = now;
+                SDL2Circle_HeartbeatBump();
+            }
             watch.tick();
         }
     }
