@@ -82,7 +82,7 @@ The character shapes come from Circle's character generator, which turns a chara
 
 **A host kernel that wants its own console for C output keeps it, and must bind it BEFORE `SDL2Circle_ArmCoreRuntime`.** The C library binds its three standard descriptors together and refuses — inside an assertion, which stops the board — to bind them twice. So the library checks first and leaves them alone when they are already bound, and a kernel that binds after that call is the one arrangement that fails.
 
-**All three descriptors stay held for the life of the program, standard input included**, although nothing on this board ever types at it. The C library hands out the lowest free descriptor, so a released standard descriptor would go to the first file a program opened — and a language runtime that reads descriptor 0, 1 or 2 as the console would then send that file's writes to the console instead of to the card. A C program that reads standard input waits, because no character arrives.
+**All three descriptors stay held for the life of the program, standard input included** — which is now the keyboard, read through this same console (see `stdio.cpp`). The C library hands out the lowest free descriptor, so a released standard descriptor would go to the first file a program opened — and a language runtime that reads descriptor 0, 1 or 2 as the console would then send that file's writes to the console instead of to the card.
 
 ## Format and delivery
 
