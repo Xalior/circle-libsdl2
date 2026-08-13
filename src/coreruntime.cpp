@@ -116,9 +116,24 @@ extern "C" void SDL2Circle_ArmCoreRuntime(void)
         // property of the machine, so the library builds it rather than
         // leaving each host kernel to remember — a forgotten destination is
         // silent, and silence is indistinguishable from a board with no
-        // display. Before the two calls below, so that what they say appears
+        // display. Before the calls below, so that what they say appears
         // on the glass as well.
         SDL2Circle_ConsoleInit();
+
+        // THE USB HOST CONTROLLER, if the host kernel has not already built
+        // one — the same ownership CCPUThrottle already has above. Must run
+        // here and not inside SDL_Init: SDL_Init's device work is marshalled
+        // to core 0's servo, and construction is a long, interrupt-driven
+        // bring-up that would block it (see the history above
+        // SDL2Circle_InputInit, src/input.cpp). Here, before the servo
+        // exists at all, blocking costs nothing — and it is early enough
+        // that a program which never calls SDL_Init still gets a working
+        // keyboard, which is what Circle's own standard input reads from.
+        //
+        // Safe to reach CInterruptSystem::Get()/CTimer::Get() here (see
+        // SDL2Circle_UsbCtrlInit): docs/CORE-SPLIT.md step 1 has the host
+        // kernel bring both up before this call is ever made, on any core.
+        SDL2Circle_UsbCtrlInit();
 
         // The C library's standard output and standard error, bound to this
         // board's output router before anything can print. Here for the same

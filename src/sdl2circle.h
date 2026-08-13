@@ -78,7 +78,16 @@ void SDL2Circle_ConsoleReleaseScreen(void);
 // has bound its own console.
 void SDL2Circle_StdioInit(void);
 
-void SDL2Circle_InputInit(void);   // find the host's USB controller (idempotent)
+// Build the USB host controller, unless the host kernel already built one
+// (src/input.cpp). Called once, on core 0, from SDL2Circle_ArmCoreRuntime —
+// well before any SDL_Init, which is what lets a program that never calls
+// SDL_Init still get a working keyboard. Idempotent, and it never makes a
+// second controller: Circle allows exactly one CUSBHCIDevice and halts
+// inside the constructor of a second, so a host kernel's own member,
+// initialised before this runs, is left alone and adopted instead — the
+// same rule SDL2Circle_HardwareInit already follows for CCPUThrottle.
+void SDL2Circle_UsbCtrlInit(void);
+void SDL2Circle_InputInit(void);   // adopt the (host's or this library's) USB controller (idempotent)
 void SDL2Circle_InputPump(void);   // PnP + translate HID reports to events
 
 // Asking for robot hands on a board that can have no real input device is a

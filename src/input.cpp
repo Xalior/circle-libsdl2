@@ -18,6 +18,7 @@
 #include "sdl2circle.h"
 #include "shim_internal.h"
 
+#include <circle/interrupt.h>
 #include <circle/timer.h>
 #include <circle/devicenameservice.h>
 #include <circle/usb/usbcontroller.h>
@@ -45,6 +46,21 @@ CUSBController *s_usb = nullptr;
 // means "not asked yet", so a board with no USB is not searched on every
 // pass for the rest of the run.
 CUSBController *const USB_NONE = (CUSBController *)-1;
+
+// Whether SDL2Circle_UsbCtrlInit built the controller itself, and whether
+// that build's Initialize() succeeded. Recorded because IsActive() cannot
+// tell an adopted controller from this library's own, and because a
+// self-built controller can still fail its Initialize(): the object exists
+// either way, so IsActive() reports it, but nothing it manages will ever
+// appear when the second flag is false.
+bool s_bUsbOwned = false;
+bool s_bUsbInitOK = false;
+
+// Storage for the one controller this library may build. Placement new,
+// like CCPUThrottle in hardware.cpp: it cannot be an ordinary static object
+// because the constructor needs CInterruptSystem and CTimer, neither of
+// which exists when statics run.
+alignas(CUSBHCIDevice) u8 s_UsbStore[sizeof(CUSBHCIDevice)];
 
 // Set on core 0 when the controller is missing and injection is armed; acted
 // on by the caller, off core 0. See SDL2Circle_InputInit.
@@ -772,56 +788,106 @@ void InjectDispatch(char *line)
 
 } // namespace
 
-// FIND THE HOST CONTROLLER; NEVER BUILD ONE.
+// BUILD THE USB HOST CONTROLLER, UNLESS THE HOST KERNEL ALREADY DID.
 //
-// A USB host controller is a device, and every device on this board belongs
-// to the host kernel — brought up in CKernel::Initialize alongside the serial
-// console, the interrupt system, the timer and the SD card, and brought up
-// there because that is the one place on the machine where a long, blocking,
-// interrupt-driven bring-up is allowed to take as much time as it needs.
+// A USB host controller is a device, and Circle allows exactly one — it
+// halts inside the constructor of a second. So this checks the controller's
+// own static accessor first: a host kernel that declares a CUSBHCIDevice
+// member and initialises it in its own CKernel::Initialize, which is still
+// where a long, blocking, interrupt-driven bring-up belongs if the kernel
+// has other devices to sequence around it, is left alone — found and adopted
+// exactly as one this library made would be. THIS CHECK IS NOT OPTIONAL: it
+// is the only thing standing between a host's own member and the halt.
 //
-// This library used to construct and initialise one here instead, and because
-// SDL_Init marshals its work to core 0, that construction ran INSIDE the
-// servo's call handler. The servo is the only thing that makes core 0 answer
-// anybody — the console, the scheduler, the log drain, the watchdog and USB
-// itself are all downstream of it — so a bring-up that took a long time took
-// the whole machine with it, silently, with nothing left running to report it.
-// The invariant this library documents is that nothing on the servo's path
-// may block; a host controller constructed on the servo could never honour it.
+// Where nothing has claimed the controller yet, this library owns it, on the
+// same terms it already owns CCPUThrottle (SDL2Circle_HardwareInit,
+// hardware.cpp): Circle offers nothing else that will call it, a host kernel
+// with no per-frame loop of its own has no natural place to, and this
+// library already runs one. Plug-and-play is on, so a keyboard or pad
+// connected after boot is still found — the same setting every consumer
+// that declares its own member passes.
 //
-// So the kernel builds it and this finds it, which is the same arrangement
-// the serial console already has, in the other direction. Neither side
-// constructs what the other owns.
+// CALLED FROM SDL2Circle_ArmCoreRuntime, ON CORE 0, NOT FROM SDL_Init. Two
+// reasons, and both are load-bearing:
 //
-// Found through the controller's own static accessor rather than the device
-// name service: a host controller registers no name (its enumerated devices
-// do — "ukbd1", "upad1", "umouse1", which is how the pumps below reach them),
-// but every board's controller class answers IsActive()/Get(). CUSBHCIDevice
-// is Circle's alias for whichever class that is on this board, so one
-// spelling serves the Pi 3's DWHCI, the Pi 4's xHCI and the Pi 5's USB
-// sub-system.
+//  - SDL_Init's device work is marshalled to core 0's servo, and this
+//    library used to construct the controller there. The servo is the only
+//    thing that makes core 0 answer anybody — the console, the scheduler,
+//    the log drain, the watchdog and USB itself are all downstream of it —
+//    so a bring-up that took a long time took the whole machine with it,
+//    silently, with nothing left running to report it. ArmCoreRuntime runs
+//    before the servo exists at all, which is where that invariant (nothing
+//    on the servo's path may block) is safe to keep.
+//  - ArmCoreRuntime runs whether or not the application ever calls SDL_Init.
+//    A plain Pascal or C command-line program built against this library
+//    reads its standard input from the keyboard through Circle's own
+//    console, not through SDL, so a build that constructed the controller
+//    only inside SDL_Init would leave such a program with a standard input
+//    that could never produce a character.
+//
+// CInterruptSystem::Get() and CTimer::Get() rather than a parameter to
+// either this or ArmCoreRuntime: both assert if asked before their object
+// exists, and docs/CORE-SPLIT.md step 1 already has the host kernel bring
+// both up before ArmCoreRuntime is ever called, on any core — earlier even
+// than the host contract's "before SDL_Init" requires.
+void SDL2Circle_UsbCtrlInit(void)
+{
+    if (CUSBHCIDevice::IsActive())
+        return;   // a host kernel's own member; SDL2Circle_InputInit adopts it
+
+    s_bUsbOwned = true;
+    CUSBHCIDevice *pController = new (s_UsbStore) CUSBHCIDevice(
+        CInterruptSystem::Get(), CTimer::Get(), TRUE /* plug-and-play */);
+    s_bUsbInitOK = pController->Initialize() != FALSE;
+}
+
+// ADOPT THE CONTROLLER SDL2Circle_UsbCtrlInit LEFT WAITING; NEVER BUILD ONE
+// HERE.
+//
+// By the time this runs, SDL2Circle_UsbCtrlInit has already made sure a
+// controller exists (its own, or an adopted host member) or tried and
+// failed. This function's whole job is to look: through the controller's
+// own static accessor rather than the device name service, because a host
+// controller registers no name (its enumerated devices do — "ukbd1",
+// "upad1", "umouse1", which is how the pumps below reach them), but every
+// board's controller class answers IsActive()/Get(). CUSBHCIDevice is
+// Circle's alias for whichever class that is on this board, so one spelling
+// serves the Pi 3's DWHCI, the Pi 4's xHCI and the Pi 5's USB sub-system.
 void SDL2Circle_InputInit(void)
 {
     if (s_usb)
         return;
 
-    if (CUSBHCIDevice::IsActive())
+    if (CUSBHCIDevice::IsActive() && (!s_bUsbOwned || s_bUsbInitOK))
     {
         s_usb = CUSBHCIDevice::Get();
         return;
     }
 
-    // No USB is not fatal on its own — headless and keyboardless payloads are
-    // valid, and this library will not stop a board that is running fine
-    // without input. But it is almost never intended, and the reason is not
+    // No functional controller. Two different roads lead here now that
+    // SDL2Circle_UsbCtrlInit builds one whenever nothing else has:
+    //
+    //  - CUSBHCIDevice::IsActive() is false: SDL2Circle_ArmCoreRuntime's
+    //    core-0 branch has not run yet. Every host kernel calls it, on core
+    //    0, ahead of SDL_Init without exception (docs/CORE-SPLIT.md step 3),
+    //    so reaching here this way is a start-up ordering mistake, not an
+    //    absent controller.
+    //  - IsActive() is true but this library's own build failed its
+    //    Initialize(): the object exists, so IsActive() reports it, but no
+    //    device it manages will ever appear. This is the one case left that
+    //    is a genuine hardware absence — the board's USB block itself never
+    //    came up — rather than something to fix in a kernel.
+    //
+    // Either way, it is almost never intended, and the reason is not
     // guessable from a game that simply never responds to a key, so it is
-    // said once and it names the fix.
+    // said once and it names both possibilities.
     s_usb = USB_NONE;
     SDL2Circle_Log("input", SDL2CIRCLE_LOG_WARNING,
-                   "no USB host controller on this board: input is off. "
-                   "The host kernel brings USB up (a CUSBHCIDevice member "
-                   "initialised in CKernel::Initialize); this library only "
-                   "finds and pumps it.");
+                   "no working USB host controller on this board: input is "
+                   "off. This library builds and initialises the controller "
+                   "itself; reaching this state means either it has not run "
+                   "yet (SDL2Circle_ArmCoreRuntime, before SDL_Init) or the "
+                   "board's USB hardware failed to come up.");
 
     // WITH INJECTION ARMED IT IS FATAL, and the reason is that this exact
     // pair hides itself.
@@ -873,18 +939,19 @@ void SDL2Circle_NoInputHalt(void)
         // exactly the part that fell off the end.
         SDL2Circle_Log("input", SDL2CIRCLE_LOG_ERROR,
                        "STOPPED: robot hands are armed (--rapi-debug-uart) and "
-                       "this kernel never brought USB up. No keyboard, mouse or "
-                       "pad can ever work on it.");
+                       "there is no working USB host controller. No keyboard, "
+                       "mouse or pad can ever work on it.");
 
         SDL2Circle_Log("input", SDL2CIRCLE_LOG_ERROR,
-                       "Nothing here built a host controller, so the fault is in "
-                       "the kernel. Do not go looking at the board, the ports, or "
-                       "anything plugged in.");
+                       "This library builds and initialises USB itself, so the "
+                       "fault is either a start-up ordering mistake or the "
+                       "board's own USB hardware — not a kernel that forgot to "
+                       "bring USB up.");
 
         SDL2Circle_Log("input", SDL2CIRCLE_LOG_ERROR,
-                       "FIX: give the host kernel a CUSBHCIDevice member and call "
-                       "Initialize() on it in CKernel::Initialize, beside the SD "
-                       "card and the console.");
+                       "FIX: check that SDL2Circle_ArmCoreRuntime runs, on core "
+                       "0, before SDL_Init. If it does, this board's USB "
+                       "hardware itself is not coming up.");
 
         SDL2Circle_Log("input", SDL2CIRCLE_LOG_ERROR,
                        "Stopped rather than run because injection does not go "
