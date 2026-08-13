@@ -63,6 +63,14 @@ bool SDL2Circle_ScanoutAcquire(SDL2CircleScanout *out);
 // with one destination and returns 0.
 int SDL2Circle_ConsoleInit(void);
 
+// The device the tee wraps — whatever the host kernel gave Circle's logger,
+// before this library ever touched it. Exposed so that debug UART key
+// injection (src/input.cpp) can read the SAME device the console and stdio
+// write to, rather than looking one up again by name and hoping to find the
+// same object. Null until SDL2Circle_ConsoleInit has built the tee.
+class CDevice;
+CDevice *SDL2Circle_ConsoleDevice(void);
+
 // The display hand-off, made when an application initialises SDL video. It
 // clears the flag and nothing else: no device is built, moved or taken away,
 // and the logger's target is the tee before and after. It cannot be undone.
@@ -117,19 +125,32 @@ void SDL2Circle_HardwareTick(void);
 // Debug UART key injection: the pump reads serial-RX bytes and types them
 // into the machine as SDL key events.
 //
-// THE LIBRARY FINDS THE SERIAL DEVICE ITSELF, and whether it injects through
-// it is decided by --rapi-debug-uart, which it reads out of the boot argument
-// block (src/bootargs.cpp). Both halves are the library's, so a kernel that
-// has never heard of any of this gets injection working by doing nothing at
-// all — the whole point, because the half a kernel used to own was the half
-// that could be forgotten, silently, with everything still looking healthy.
+// THE LIBRARY ARMS ITSELF, from the same device the console and stdio already
+// write to (SDL2Circle_ConsoleDevice, above) — found once, on core 0, from
+// SDL2Circle_ArmCoreRuntime, right after the console exists and before
+// anything runs that could pump. Whether it then injects through that device
+// is decided by --rapi-debug-uart, which it reads out of the boot argument
+// block (src/bootargs.cpp). Every half of this is the library's, so a kernel
+// that has never heard of any of this gets injection working by doing
+// nothing at all — the whole point, because the half a kernel used to own
+// was the half that could be forgotten, silently, with everything still
+// looking healthy.
 //
 // SDL2Circle_SetInjectSerial is the OVERRIDE, for a kernel that wants to lend
-// a DIFFERENT device from the console UART the library would find. It must
-// lend a device it already owns and never construct one to hand over: a
-// second device on the same slot halts the board in its constructor.
+// a DIFFERENT device from the console UART the library would arm itself
+// with. It wins whenever it is called, before or after the library's own
+// arming: it must lend a device it already owns and never construct one to
+// hand over, since a second device on the same slot halts the board in its
+// constructor.
 class CSerialDevice;
 void SDL2Circle_SetInjectSerial(CSerialDevice *pSerial);
+
+// Arms injection from SDL2Circle_ConsoleDevice, unless a kernel has already
+// lent a device through SDL2Circle_SetInjectSerial. Called once, from
+// SDL2Circle_ArmCoreRuntime on core 0, immediately after SDL2Circle_ConsoleInit
+// — before SDL2Circle_SplitInit ever creates the servo that pumps injection,
+// so the first pump always has a device or an explicit reason it does not.
+void SDL2Circle_InjectArmFromConsole(void);
 void SDL2Circle_InjectPump(void);
 
 // ---- the kernel's calendar clock (src/init.cpp) -----------------------------

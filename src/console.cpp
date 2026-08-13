@@ -406,6 +406,16 @@ int SDL2Circle_ConsoleInit(void)
     return 0;
 }
 
+// THE DEVICE, FOR WHOEVER ELSE NEEDS THE SAME ONE. Debug UART key injection
+// (src/input.cpp) types serial-RX bytes into the machine, and the device it
+// must read from is this one — the console's own, already found and already
+// held — not a device looked up again by name and hoped to be the same
+// object. Null before SDL2Circle_ConsoleInit has run.
+CDevice *SDL2Circle_ConsoleDevice(void)
+{
+    return s_serial;
+}
+
 extern "C" int SDL2Circle_LogAttachScreen(void)
 {
     // NOTHING HAS TO CALL THIS. The library builds the tee itself while the

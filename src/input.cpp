@@ -406,8 +406,9 @@ bool InReport(const RawReport &r, unsigned char key)
 // worse than no click at all, so tap goes through the hold queue while
 // down/up post immediately.
 //
-// The device injection reads from: whatever the library found for itself, or
-// whatever a kernel lent it through SDL2Circle_SetInjectSerial.
+// The device injection reads from: the console's own serial device, armed by
+// the library itself (SDL2Circle_InjectArmFromConsole, below), or whatever a
+// kernel lent instead through SDL2Circle_SetInjectSerial.
 CSerialDevice *s_injectSerial = nullptr;
 
 // One self-timed press-and-release, of either kind. Keys and mouse buttons
@@ -1029,12 +1030,14 @@ void SDL2Circle_InputPump(void)
 }
 
 // An OVERRIDE, for a kernel that wants injection to read from a device other
-// than the console UART the library finds on its own. It wins because it is
-// set before the first pump, which is the only place the library looks.
+// than the one the library arms itself with (SDL2Circle_InjectArmFromConsole,
+// below). This always sets s_injectSerial, so it wins whenever it is called —
+// before SDL2Circle_ArmCoreRuntime's own arming or after it, the last write
+// stands.
 //
-// A kernel that says nothing gets the console UART, so the old failure —
-// declaring this function, meaning to call it, and never calling it — no
-// longer costs anything: the switch on its own is now enough.
+// A kernel that says nothing gets the console's own device, so the old
+// failure — declaring this function, meaning to call it, and never calling
+// it — no longer costs anything: the switch on its own is now enough.
 void SDL2Circle_SetInjectSerial(CSerialDevice *pSerial)
 {
     s_injectSerial = pSerial;
@@ -1044,68 +1047,51 @@ void SDL2Circle_SetInjectSerial(CSerialDevice *pSerial)
                        "stamp --rapi-debug-uart to arm it");
 }
 
-// Borrow the kernel's console UART from Circle's device name service.
+// ARM FROM THE CONSOLE'S OWN DEVICE — the one SDL2Circle_ConsoleInit already
+// found and holds (src/console.cpp), not a device looked up again by name and
+// hoped to be the same object.
 //
-// BORROW, never construct: CSerialDevice claims its slot in its constructor
-// and asserts if the slot is taken, so a second one on device 0 would halt
-// the board. The name is Circle's own — CSerialDevice::Initialize ends with
+// Called once, from SDL2Circle_ArmCoreRuntime on core 0, right after
+// SDL2Circle_ConsoleInit and well before SDL2Circle_SplitInit ever creates
+// the servo task that runs SDL2Circle_InjectPump. So the first pump always
+// either has a device to read or already knows, from the log, exactly why it
+// does not — there is no window between arming and the first pump for a
+// kernel's own SDL2Circle_SetInjectSerial to have run first, which is why
+// this only fills the device in when nothing has lent one yet.
 //
-//     CDeviceNameService::Get ()->AddDevice ("ttyS", m_nDevice+1, this, FALSE)
-//
-// so serial device 0, the console the bench is wired to, is "ttyS1". Asked
-// for by literal name rather than by prefix-and-index because the index form
-// formats a CString, and this runs on the hardware core's servo.
-//
-// LOOKED UP LAZILY, at the first pump. The device registers itself when the
-// kernel initialises it, which is long after the library first reads the boot
-// argument block; looking at arming time would find nothing on a kernel that
-// happened to parse its arguments first. By the first pump every device the
-// kernel owns is up, whichever order it built them in.
-static void ResolveInjectSerial(void)
+// Runs whether or not --rapi-debug-uart is stamped: finding the device costs
+// nothing when the switch is off. Doing the finding HERE, rather than lazily
+// at the first pump the way this library used to, is what makes an armed
+// switch with no device impossible to ship silently — this is the one place
+// that still has something to say about why, and it says it once.
+void SDL2Circle_InjectArmFromConsole(void)
 {
-    CDevice *pDevice = CDeviceNameService::Get()->GetDevice("ttyS1", FALSE);
-    if (!pDevice)
+    if (!s_injectSerial)
+        s_injectSerial =
+            static_cast<CSerialDevice *>(SDL2Circle_ConsoleDevice());
+
+    if (!SDL2Circle_DebugUartArmed())
         return;
 
-    s_injectSerial = static_cast<CSerialDevice *>(pDevice);
-    SDL2Circle_Log("input", SDL2CIRCLE_LOG_DEBUG,
-                   "serial key injection reads the kernel's ttyS1");
+    if (s_injectSerial)
+        SDL2Circle_Log("input", SDL2CIRCLE_LOG_NOTICE,
+                       "--rapi-debug-uart is armed; serial key injection "
+                       "reads the console's own serial device");
+    else
+        SDL2Circle_Log("input", SDL2CIRCLE_LOG_ERROR,
+                       "--rapi-debug-uart is armed but there is no serial "
+                       "device to read: the logger has no destination for "
+                       "SDL2Circle_ConsoleInit to hold, and no kernel lent "
+                       "one either, so nothing sent to the console can reach "
+                       "the application");
 }
 
 void SDL2Circle_InjectPump(void)
 {
     if (!SDL2Circle_DebugUartArmed())
         return;
-
-    static bool bResolved = false;
-    if (!bResolved)
-    {
-        bResolved = true;
-        if (!s_injectSerial)
-            ResolveInjectSerial();
-    }
-
-    // Armed, and there is no serial device to read — not through omission any
-    // more, since the library looks for one itself, but because this kernel
-    // has no console UART registered at all. Without this it says so nowhere:
-    // the boot log carries "serial key injection armed" from the switch, and
-    // then every command sent from the bench disappears with the machine
-    // looking healthy — a game that draws, animates and answers nothing. Said
-    // once, because this runs every pass.
     if (!s_injectSerial)
-    {
-        static bool bComplained = false;
-        if (!bComplained)
-        {
-            bComplained = true;
-            SDL2Circle_Log("input", SDL2CIRCLE_LOG_WARNING,
-                           "--rapi-debug-uart is armed but there is no serial "
-                           "device to read: no ttyS1 is registered and no kernel "
-                           "lent one, so nothing sent to the console can reach "
-                           "the application");
-        }
-        return;
-    }
+        return;   // SDL2Circle_InjectArmFromConsole already said why
 
     // Drain serial RX, accumulating command lines; dispatch on each newline.
     char buf[64];

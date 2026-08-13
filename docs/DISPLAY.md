@@ -140,12 +140,14 @@ A boot argument block sits at a fixed offset inside the kernel image, and a load
 
 An application still reads the same block for its own arguments, and still strips every `--rapi-` switch before its program sees them. Those are its arguments; reading the block twice is harmless, because nothing here writes to it.
 
-Serial key injection needs two things, and neither turns it on alone: the switch, and a serial device. **A kernel lends its own device unconditionally** — it must not construct one, because a second device on the same slot halts the board inside its constructor:
+Serial key injection needs a serial device to read, and the library arms itself with one: the same device it already holds for the console and standard output (`src/console.cpp`), found the moment that device exists and before anything can pump it. **A kernel does nothing** — the switch alone is enough, on any kernel built against this library, whether or not it has heard of injection at all.
+
+A kernel that wants injection to read a *different* device — one other than the console's own — still can, as an override:
 
 ```c
-SDL2Circle_SetInjectSerial (&m_Serial);   // no condition around it
+SDL2Circle_SetInjectSerial (&m_Serial);   // reads this device instead
 ```
 
-Whether anything is injected through it is then the library's decision, taken from the switch it found for itself.
+It must lend a device it already owns rather than construct one, because a second device on the same slot halts the board inside its constructor. Whether anything is injected through either device is the library's decision, taken from the switch it found for itself: armed and a device found, the log names the device; armed and no device anywhere, the log says so as an error.
 
 Anything that decides how the KERNEL starts stays with the kernel, and `rapi-split` is the example: it chooses whether the core split is set up at all, which means choosing which cores are started. That happens before this library exists, and it is read from `cmdline.txt` rather than from the block.

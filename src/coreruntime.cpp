@@ -120,6 +120,13 @@ extern "C" void SDL2Circle_ArmCoreRuntime(void)
         // on the glass as well.
         SDL2Circle_ConsoleInit();
 
+        // DEBUG UART KEY INJECTION, armed from the console's own device
+        // (src/input.cpp) right after that device exists and well before
+        // SDL2Circle_SplitInit can ever create the servo task that pumps it —
+        // so the first pump always finds a device already in place, or a log
+        // line already explaining why it does not.
+        SDL2Circle_InjectArmFromConsole();
+
         // THE USB HOST CONTROLLER, if the host kernel has not already built
         // one — the same ownership CCPUThrottle already has above. Must run
         // here and not inside SDL_Init: SDL_Init's device work is marshalled
