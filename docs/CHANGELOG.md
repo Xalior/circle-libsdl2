@@ -31,25 +31,26 @@ for the one byte that matters.
 **Consumers must act** if anything reads standard input through this
 library and expected to see it echoed for free: it will not be, and must
 draw what it reads itself. Free Pascal's target for this board already does
-(`fpc/rtl/circlesdl2/sysfile.inc`, `Do_Read` and `CircleReadLine`); nothing
-else here reads standard input.
+(`fpc/rtl/circlesdl2/sysfile.inc`, `Do_Read`); nothing else here reads
+standard input.
 
 ### A typed line can be corrected before it is read
 
-`fpc/rtl/circlesdl2/sysfile.inc` gained `CircleReadLine`, a Pascal function
-that reads a line from standard input with backspace editing it in place:
-the character behind the cursor is removed from the line and erased on
-screen, and what the function hands back once Enter is pressed is the
-corrected text, never the keys that typed it. Backspace at the start of an
-empty line does nothing, rather than erasing whatever this console printed
-before the line began.
+`Do_Read`, in `fpc/rtl/circlesdl2/sysfile.inc`, reads and edits a whole line
+from standard input before it hands anything back: backspace removes the
+character behind the cursor, from the line and from the screen, and what
+comes back once Enter is pressed is the corrected text, never the keys that
+typed it. Backspace at the start of an empty line does nothing, rather than
+erasing whatever this console printed before the line began.
 
 It is built entirely on the single-character read this library has always
 offered (`SDL2Circle_ReadStdin`) and the raw write this library has always
 offered (`SDL2Circle_WriteBytes`) — nothing new crosses from Pascal into this
-library for it. A single character read is untouched by its existence: both
-still return the instant a key is pressed, because both are built on the
-same primitive and neither waits on the other.
+library for it. Free Pascal cannot tell a single-character Read from a
+ReadLn apart at this level, since both reach `Do_Read` the same way, so
+`Do_Read` does not try: every read from standard input assembles a line and
+returns it whole, and Read(Char) simply takes the first character of it —
+the same as a single-character read behaves on any other platform's console.
 
 ### A texture can be drawn into
 

@@ -35,8 +35,7 @@
 // what a read on this target always is. There is no line assembled here and
 // none is asked for; a caller wanting an edited line builds it itself, one
 // raw character at a time, the way any caller wanting a single character
-// already does (fpc/rtl/circlesdl2/sysfile.inc, Do_Read and
-// CircleReadLine).
+// already does (fpc/rtl/circlesdl2/sysfile.inc, Do_Read).
 //
 // ECHO IS NEITHER SET NOR LEFT TO CONSOLE.CPP'S LINE DISCIPLINE — it is
 // off here, on purpose, so that every caller of SDL2Circle_ReadStdin decides
