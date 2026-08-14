@@ -27,26 +27,28 @@
 //
 // EVERY READ IS RAW, ONE CHARACTER AT A TIME, DELIVERED THE MOMENT IT IS
 // TYPED — never held back for a line to end. CConsole's other mode, its
-// default, is canonical: it still echoes each character as it is typed, but
-// it hands nothing back to a read until Enter, and then the whole line at
-// once. A Pascal Read of a single character went through that same read, so
-// it wore the whole line's wait for one keystroke, and a KEYPROBE watching
-// standard input saw nothing for as long as a line was open. Raw mode below
-// (SetOptions, CONSOLE_OPTION_ECHO alone — see console.h) turns that off:
-// what circle-libsdl2's console.cpp calls raw is what Do_Read (rtl/circlesdl2/
-// sysfile.inc) needs every read on this target to be, because Free Pascal's
-// own text buffer (rtl/inc/text.inc, FileReadFunc) always asks Do_Read for a
-// full buffer's worth regardless of whether a Read or a ReadLn is what asked
-// for it — that choice is made above Do_Read and never reaches this file, so
-// there is no count here to switch behaviour on. RAW STILL ECHOES: the
-// option cleared is ICANON, not ECHO, so what is typed still appears as it
-// is typed. A ReadLn still waits for its line: nothing here changes that,
-// because ReadLn's wait is Free Pascal's own — it keeps asking Do_Read for
-// the next character until one of them is the line ending, and every one of
-// those characters still arrives only once its key is pressed, exactly as a
-// raw read always has. THE ONE THING RAW MODE DOES NOT DO IS EDIT A LINE
-// IN PLACE: backspace is a character like any other here, not an erase, so a
-// ReadLn no longer lets a mistyped line be corrected before Enter.
+// default, is canonical: it hands nothing back to a read until Enter, and
+// then the whole line at once. A Pascal Read of a single character went
+// through that same read, so it wore the whole line's wait for one
+// keystroke. Raw mode below (SetOptions with neither option bit set — see
+// console.h) turns that off: what circle-libsdl2's console.cpp calls raw is
+// what a read on this target always is. There is no line assembled here and
+// none is asked for; a caller wanting an edited line builds it itself, one
+// raw character at a time, the way any caller wanting a single character
+// already does (fpc/rtl/circlesdl2/sysfile.inc, Do_Read and
+// CircleReadLine).
+//
+// ECHO IS NEITHER SET NOR LEFT TO CONSOLE.CPP'S LINE DISCIPLINE — it is
+// off here, on purpose, so that every caller of SDL2Circle_ReadStdin decides
+// for itself what a character it just read draws on screen. A caller with
+// no line of its own to edit needs only to draw the byte it read, backspace
+// included. A caller building an edited line needs something different for
+// that same byte: a space drawn over the character behind it and the cursor
+// backed up again, never the backspace byte itself. Leaving Circle's own
+// echo on would already have drawn the byte, the wrong one for the second
+// caller, before either caller ever saw it — and there is no undrawing it.
+// So every reader of standard input on this target echoes its own bytes,
+// and this file does not.
 //
 // NOTHING VENDORED IS TOUCHED. circle-newlib binds its three standard
 // descriptors through CGlueStdioInit, which takes a CConsole and asks it to
@@ -123,14 +125,15 @@ void SDL2Circle_StdioInit(void)
     s_pConsole = new (s_ConsoleStore) CConsole(nullptr, TRUE);
     s_pConsole->Initialize();
 
-    // RAW, NOT CANONICAL — see the file header for why a held-back line
-    // breaks a single-character Read. ECHO stays on: only ICANON is missing
-    // from this mask. Set once, on the console rather than the line
-    // discipline UpdatePlugAndPlay builds and rebuilds as a keyboard comes
-    // and goes: CConsole::SetOptions stores the mask and re-applies it to
-    // every line discipline it (re)creates, so this reaches a keyboard
-    // attached after boot and one reattached later, not only the first.
-    s_pConsole->SetOptions(CONSOLE_OPTION_ECHO);
+    // RAW, AND SILENT — see the file header for why a held-back line breaks
+    // a single-character Read, and why echo belongs to the caller rather
+    // than to this console. Neither ICANON nor ECHO is in this mask. Set
+    // once, on the console rather than the line discipline UpdatePlugAndPlay
+    // builds and rebuilds as a keyboard comes and goes: CConsole::SetOptions
+    // stores the mask and re-applies it to every line discipline it
+    // (re)creates, so this reaches a keyboard attached after boot and one
+    // reattached later, not only the first.
+    s_pConsole->SetOptions(0);
 
     CGlueStdioInit(*s_pConsole);
 

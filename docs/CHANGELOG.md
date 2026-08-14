@@ -10,6 +10,47 @@ followed.
 
 ## vPoC3
 
+### Standard input echoes what its reader chooses, not what Circle chose
+
+The console no longer echoes a typed character itself. `CConsole::SetOptions`
+is called with neither `CONSOLE_OPTION_ICANON` nor `CONSOLE_OPTION_ECHO` set,
+so a read still hands back a character the instant its key is pressed — that
+has not changed — but nothing draws it. Every reader of standard input draws
+its own bytes now.
+
+The reason is backspace. A reader building an edited line needs to draw
+something different for the character behind a backspace than for every
+other character it reads: a space over the old glyph and the cursor stepped
+back, not the backspace byte itself. Circle's own echo cannot make that
+distinction — it draws every byte it sees the same way, backspace included,
+which is why the console never erases in place — so a reader that wants
+in-place editing has to own its echo entirely, and a console that echoed
+some of the time and left the rest to the reader would draw the wrong thing
+for the one byte that matters.
+
+**Consumers must act** if anything reads standard input through this
+library and expected to see it echoed for free: it will not be, and must
+draw what it reads itself. Free Pascal's target for this board already does
+(`fpc/rtl/circlesdl2/sysfile.inc`, `Do_Read` and `CircleReadLine`); nothing
+else here reads standard input.
+
+### A typed line can be corrected before it is read
+
+`fpc/rtl/circlesdl2/sysfile.inc` gained `CircleReadLine`, a Pascal function
+that reads a line from standard input with backspace editing it in place:
+the character behind the cursor is removed from the line and erased on
+screen, and what the function hands back once Enter is pressed is the
+corrected text, never the keys that typed it. Backspace at the start of an
+empty line does nothing, rather than erasing whatever this console printed
+before the line began.
+
+It is built entirely on the single-character read this library has always
+offered (`SDL2Circle_ReadStdin`) and the raw write this library has always
+offered (`SDL2Circle_WriteBytes`) — nothing new crosses from Pascal into this
+library for it. A single character read is untouched by its existence: both
+still return the instant a key is pressed, because both are built on the
+same primitive and neither waits on the other.
+
 ### A texture can be drawn into
 
 Render targets work. `SDL_CreateTexture` accepts `SDL_TEXTUREACCESS_TARGET`,
