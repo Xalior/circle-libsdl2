@@ -494,6 +494,19 @@ void SDL2Circle_PresentWaitAck(u64 seq)
     }
 }
 
+void SDL2Circle_PresentWaitDone(u64 seq)
+{
+    if (!g_split.load(std::memory_order_acquire))
+        return;
+    SDL2CirclePerfScope wait(SDL2CIRCLE_PERF_WAIT);
+    StallWatch watch("the presentation core to finish presenting a frame");
+    while (g_frame.done.load(std::memory_order_acquire) < seq)
+    {
+        wfe();
+        watch.tick();
+    }
+}
+
 void SDL2Circle_PresentQuiesce(void)
 {
     if (!g_split.load(std::memory_order_acquire))

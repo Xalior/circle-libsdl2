@@ -367,6 +367,16 @@ u64 SDL2Circle_PresentPostedSeq(void);
 u64 SDL2Circle_PresentAckedSeq(void);
 void SDL2Circle_PresentWaitAck(u64 seq);
 
+// Block until the frame at `seq` is past VideoFlip - the worker has taken
+// it, executed it, and handed it to the display path, not merely read it.
+// A PRESENTVSYNC caller uses this to pace itself to the presentation
+// worker's own cadence, which is vsync-locked inside VideoFlip: without it
+// the poster can refill the single-frame box far faster than the worker
+// drains it, and the worker never gets the idle gap between frames that
+// keeps its transfer to the glass safely ahead of the raster. A no-op
+// without the split.
+void SDL2Circle_PresentWaitDone(u64 seq);
+
 // video.cpp services for the worker: execute one command into a framebuffer
 // half; page-flip to a half.
 void SDL2Circle_VideoExecCmd(const SDL2CirclePresentCmd *cmd, unsigned half);

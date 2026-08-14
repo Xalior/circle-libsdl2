@@ -3960,6 +3960,19 @@ extern "C" void SDL_RenderPresent(SDL_Renderer *ren)
         SDL2Circle_PresentPost(out, nout, ren->back);
         if (s_fb_halves == 2)
             ren->back ^= 1;
+
+        // Only when the app asked for vsync: an app that did not is free to
+        // keep refilling the box, and whatever the worker cannot keep up
+        // with is coalesced away, same as always. An app that did ask waits
+        // here for the worker to have carried this frame through VideoFlip -
+        // which itself is vsync-locked - so this call paces the poster to
+        // the display's real rate instead of letting it post as fast as it
+        // can compute. Without this the worker is handed a fresh frame the
+        // instant it finishes the last one, is never idle, and its transfer
+        // to the glass is squeezed against the raster instead of started
+        // into a clear frame.
+        if (ren->vsync)
+            SDL2Circle_PresentWaitDone(SDL2Circle_PresentPostedSeq());
         return;
     }
 
