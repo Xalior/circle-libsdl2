@@ -2259,6 +2259,12 @@ extern "C" SDL_Renderer *SDL_CreateRenderer(SDL_Window *win, int, Uint32 flags)
     // grant forced single-buffering, where half 0 is all there is.
     ren->back = s_fb_halves == 2 ? 1 : 0;
     ren->vsync = (flags & SDL_RENDERER_PRESENTVSYNC) != 0;
+    // Diagnostic: which flags the caller actually asked for and what this
+    // resolved to, so a consumer's own fallback chain (retrying with fewer
+    // flags after a failed create elsewhere) is visible rather than assumed.
+    SDL2Circle_Log("sdl2video", SDL2CIRCLE_LOG_NOTICE,
+                  "SDL_CreateRenderer: flags 0x%x -> vsync %s",
+                  flags, ren->vsync ? "on" : "off");
     ren->r = ren->g = ren->b = 0;
     ren->a = 255;
     ren->ncmds = 0;

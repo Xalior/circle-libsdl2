@@ -498,12 +498,39 @@ void SDL2Circle_PresentWaitDone(u64 seq)
 {
     if (!g_split.load(std::memory_order_acquire))
         return;
+
+    // Diagnostic, bounded to a handful of lines across the run: whether
+    // `done` was already at or past `seq` when this was called (the wait
+    // did nothing) or genuinely behind it (the wait blocked), and for how
+    // long. One line near boot plus a few later ones settle whether a
+    // PRESENTVSYNC caller's wait here is pacing it or standing idle,
+    // without flooding the log at frame rate.
+    static unsigned s_logged = 0;
+    static unsigned s_calls = 0;
+    bool diag = s_logged < 6 && (s_calls++ % 64) == 0;
+    u64 before = 0, t0 = 0;
+    if (diag)
+    {
+        before = g_frame.done.load(std::memory_order_acquire);
+        t0 = CTimer::GetClockTicks64();
+    }
+
     SDL2CirclePerfScope wait(SDL2CIRCLE_PERF_WAIT);
     StallWatch watch("the presentation core to finish presenting a frame");
     while (g_frame.done.load(std::memory_order_acquire) < seq)
     {
         wfe();
         watch.tick();
+    }
+
+    if (diag)
+    {
+        s_logged++;
+        SDL2Circle_Log("sdl2video", SDL2CIRCLE_LOG_NOTICE,
+                      "present: vsync wait seq %llu done-before %llu (%s), %llu us",
+                      (unsigned long long)seq, (unsigned long long)before,
+                      before >= seq ? "already done, no block" : "blocked",
+                      (unsigned long long)(CTimer::GetClockTicks64() - t0));
     }
 }
 
