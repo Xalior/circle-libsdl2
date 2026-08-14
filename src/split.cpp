@@ -621,6 +621,12 @@ extern "C" void SDL2Circle_SplitPresentCore(void)
 // Heartbeat: the application core bumps it once per pump; the watchdog task dumps
 // state when it stalls — the split's replacement for the in-band pump
 // deadman, and it can see a wedged application core the in-band version couldn't.
+//
+// One case the application core cannot bump this for itself: parked in
+// SDL2Circle_ReadStdin, asleep in wfe(), waiting on a human. The watchdog
+// task (below) covers that case on the application's behalf, by reading
+// the stdin request/ack pair and core 0's own servo lap counter directly —
+// see the comment on CSplitWatchdogTask::Run.
 // ---------------------------------------------------------------------------
 
 static std::atomic<u64> g_heartbeat{0};
@@ -1006,10 +1012,7 @@ extern "C" long SDL2Circle_ReadStdin(void *buf, uint32_t len)
     // SDL_PumpEvents (src/events.cpp) — no help to a program with no pump,
     // reading standard input as its whole main loop instead. That loop's own
     // truthful proof of life is this call: bumped once per request, so a
-    // program reading a character at a time beats once per keystroke, and
-    // bumped again at the same modest pace below for as long as one request
-    // sits waiting, so a program blocked a long time on a single keystroke
-    // keeps beating too — legitimately, not wedged.
+    // program reading a character at a time beats once per keystroke.
     SDL2Circle_HeartbeatBump();
     {
         // Waiting for a keypress has no deadline: the far side is a human,
@@ -1017,17 +1020,19 @@ extern "C" long SDL2Circle_ReadStdin(void *buf, uint32_t len)
         // a fault. Gated so the report tracks core 0 itself instead — see
         // StallWatch — which is what a program actually wedged there still
         // trips.
+        //
+        // Nothing bumps the heartbeat again in here. wfe() below is a true
+        // sleep: the only thing that wakes it is the sev() CSplitStdinTask
+        // issues when the real read completes, so a wait that runs long has
+        // no periodic wakeup to run a timer check on — a loop timing itself
+        // against CTimer here would sit in wfe() the whole second and never
+        // see it. The watchdog task (below, this file) reads g_stdin
+        // directly instead, so this core does not have to do anything for
+        // an outstanding request to keep counting as alive.
         StallWatch watch("a keypress on standard input", true);
-        u64 lastBump = CTimer::GetClockTicks64();
         while (g_stdin.ack.load(std::memory_order_acquire) < seq)
         {
             wfe();
-            u64 now = CTimer::GetClockTicks64();
-            if (now - lastBump >= 1000000)
-            {
-                lastBump = now;
-                SDL2Circle_HeartbeatBump();
-            }
             watch.tick();
         }
     }
@@ -1145,6 +1150,7 @@ public:
         SDL2Circle_SetThreadPointer(SDL2Circle_AllocTLSBlock());
 
         u64 lastBeat = 0;
+        u64 lastServo = g_servo_beats.load(std::memory_order_relaxed);
         u64 lastChange = CTimer::GetClockTicks64();
         bool dumped = false;
 
@@ -1153,8 +1159,26 @@ public:
             CScheduler::Get()->MsSleep(5000);
 
             u64 beat = g_heartbeat.load(std::memory_order_relaxed);
+            u64 servo = g_servo_beats.load(std::memory_order_relaxed);
             u64 now = CTimer::GetClockTicks64();
-            if (beat != lastBeat)
+
+            // A program parked in SDL2Circle_ReadStdin cannot beat this
+            // itself while it waits: it is asleep in wfe(), and nothing
+            // wakes it early to run a timer check (see the comment there).
+            // What this task can check instead, on the application's
+            // behalf, is whether a stdin request is still outstanding
+            // (req != ack) while core 0's own servo is still lapping —
+            // the same evidence StallWatch already trusts for its own
+            // report on the waiting side. That is proof the program is
+            // waiting on a human, not wedged, without needing the program
+            // to do anything: the beat this tick represents is core 0
+            // still serving the call, not the application pumping.
+            u64 req = g_stdin.req.load(std::memory_order_acquire);
+            u64 ack = g_stdin.ack.load(std::memory_order_acquire);
+            bool servingStdin = (req != ack) && (servo != lastServo);
+            lastServo = servo;
+
+            if (beat != lastBeat || servingStdin)
             {
                 lastBeat = beat;
                 lastChange = now;
