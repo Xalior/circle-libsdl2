@@ -113,15 +113,15 @@ circle-newlib is changed to do this - the library gives the C library's own
 console glue a device of its own.
 
 **Consumers must act** if the host kernel binds its own console with
-`CGlueStdioInit`: that call must be made before `SDL2Circle_ArmCoreRuntime`.
-The C library binds its three standard descriptors together and stops the
-board inside an assertion if they are bound twice. This library checks first
-and leaves them alone when a kernel has already bound them, so a kernel that
-binds first keeps its own arrangement and nothing else changes for it. A
-kernel that binds afterwards is the one order that fails.
+`CGlueStdioInit`. This library binds the three standard descriptors itself,
+in `SDL2Circle_ArmCoreRuntime`, to a console with a keyboard on it. The C
+library binds those descriptors together and stops the board inside an
+assertion if they are bound twice, so a kernel that also binds its own halts
+before the application starts. Remove the `CConsole` member and the
+`CGlueStdioInit` call from the kernel: it needs neither.
 
-A kernel that binds nothing gains something as well: all three standard
-descriptors are now held for the life of the program. They used to be free,
+All three standard descriptors are now held for the life of the program.
+They used to be free,
 and the C library hands out the lowest free descriptor, so the first file such
 a program opened was given descriptor 0 - which a language runtime reads as
 the console, quietly sending that file's writes to the console instead of to
