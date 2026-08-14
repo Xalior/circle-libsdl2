@@ -10,9 +10,12 @@
 # Objects are built in place, as Circle's rules do, so switching boards means
 # `make clean` first.
 #
-# The probe uses no SDL, so it links against Circle and the C++ runtime only.
-# It still links through sdl-app.ld, which keeps the TLS sections adjacent as
-# libc++'s threading support requires.
+# The probe calls no SDL function, but it still links through sdl-app.ld,
+# and that script makes every image's entry point the boot-argument
+# trampoline in src/bootargs.cpp (see the header there). That file is only
+# ever compiled into libSDL2-$(BOARD).a, so the archive is on this probe's
+# LIBS line too — not because the probe uses SDL, but because the trampoline
+# it needs to be bootable at all lives nowhere else.
 #
 
 BOARD ?= rpi4
@@ -29,14 +32,11 @@ include $(CIRCLEHOME)/Rules.mk
 
 INCLUDE := -I ../../include $(CIRCLE_STDLIB_INCLUDES) $(INCLUDE)
 
-# No libSDL2-$(BOARD).a here — deliberately: this probe links no SDL and
-# uses none of this library's threading. That is also why kernel.cpp never
-# calls SDL2Circle_ArmCoreRuntime: the symbol lives in that archive, so
-# calling it would need this library linked in to arm a thread pointer
-# nothing here reads (the probe throws no C++ exception and starts no
-# thread). Adding the call without adding the archive is an undefined
-# reference at link time.
-LIBS := $(CIRCLE_STDLIB_LIBS)
+# libSDL2-$(BOARD).a for the boot trampoline (see above); kernel.cpp still
+# calls no SDL function and never calls SDL2Circle_ArmCoreRuntime, so the
+# probe stays single-core and throws no C++ exception whether or not that
+# call is made.
+LIBS := ../../libSDL2-$(BOARD).a $(CIRCLE_STDLIB_LIBS)
 
 -include $(DEPS)
 

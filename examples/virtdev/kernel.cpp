@@ -1,10 +1,12 @@
 //
 // kernel.cpp — virtdev: the display an application declares for itself.
 //
-// Every application says what display it is to be given, before SDL_Init,
-// with SDL2Circle_DeclareVirtualDevice(depth, width, height). It is required
-// and it has no fallback: the library never invents a display, so without a
-// declaration it refuses to start at all.
+// An application may say what display it is to be given, before SDL_Init,
+// with SDL2Circle_DeclareVirtualDevice(depth, width, height). Nothing
+// requires this: it is one of four ways the canvas can be settled, and the
+// library falls back through the rest — the boot switch, the first window,
+// the physical panel size — when none is called. See "Declaring the
+// display" in docs/DISPLAY.md for the full order.
 //
 // THIS EXAMPLE DECLARES A SIZE THAT DELIBERATELY MATCHES NOTHING — not the
 // panel, not any display mode, not the boot options. That is its whole
@@ -14,9 +16,10 @@
 // the panel is really doing.
 //
 // The other examples show the opposite and more usual intent — gradient,
-// keyecho, tone, padview and videocycle each ask the firmware how big the
-// panel is and declare THAT, so their virtual display matches the physical
-// one. Compare this file with any of them to see both halves.
+// keyecho, mouseview, padview, paletted, rendertarget, tone and videocycle
+// each ask the firmware how big the panel is and declare THAT, so their
+// virtual display matches the physical one. Compare this file with any of
+// them to see both halves.
 //
 // The two resolutions are separate throughout: this declares the VIRTUAL
 // display, and cmdline.txt width=/height= asks the firmware for a PHYSICAL

@@ -122,7 +122,7 @@ if (Tags.GetTag(PROPTAG_GET_DISPLAY_DIMENSIONS, &Dim, sizeof Dim)
 }
 ```
 
-**`examples/gradient`, `examples/keyecho`, `examples/tone`, `examples/padview` and `examples/videocycle` each do exactly this** - every one carries the query in its own kernel source rather than sharing a helper, so each stands alone as a complete worked example. `examples/videocycle` shows the variation an application off core 0 needs: the firmware mailbox belongs to core 0, so its host kernel asks and declares before the application core is released.
+**`examples/gradient`, `examples/keyecho`, `examples/mouseview`, `examples/padview`, `examples/paletted`, `examples/rendertarget`, `examples/tone` and `examples/videocycle` each do exactly this** - every one carries the query in its own kernel source rather than sharing a helper, so each stands alone as a complete worked example. `examples/videocycle` shows the variation an application off core 0 needs: the firmware mailbox belongs to core 0, so its host kernel asks and declares before the application core is released.
 
 **`examples/virtdev` is the opposite demonstration** - it declares a size matching nothing on the board, because the virtual display is whatever the application says it is and need not resemble the hardware.
 

@@ -310,11 +310,14 @@ TShutdownMode CKernel::Run(void)
                    "application core 1, presentation core 2");
 
     // Match the virtual display to the physical one: ask the firmware what
-    // the panel is, then declare that. Done here, on core 0, because the
-    // firmware mailbox belongs to core 0 and the application core has not
-    // been let go yet. The declaration is required and has no fallback, so
-    // an example that cannot learn the size has nothing honest to declare
-    // and stops here rather than guessing one.
+    // the panel is, then declare that. Done here, on core 0, before the
+    // application core is released, so the match is settled and logged
+    // before anything runs that could ask about the display first. Nothing
+    // requires this call - the library falls back to the same physical size
+    // on its own, as a last resort - but asking and declaring explicitly is
+    // what this example is for, so it stops here rather than letting a
+    // firmware that will not answer surface later as someone else's
+    // failure.
     if (!PhysicalDisplaySize(&WIN_W, &WIN_H))
     {
         m_Logger.Write(From, LogError,

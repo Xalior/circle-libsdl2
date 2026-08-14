@@ -18,6 +18,8 @@ Each is a complete bootable kernel exercising one subsystem. They are the librar
 
 - **`examples/videocycle`** - the whole video and audio subsystem destroyed and recreated in a loop, at alternating source geometry, while a presentation core keeps running: what a settings menu does on every change, with nobody at the keyboard (core split, present-path lifetime)
 
-- **`examples/dispinfo`** - no SDL at all: a serial-only probe that logs what the firmware reports about the attached display, and what Circle's framebuffer returns for a series of allocation requests. It is where the raw numbers behind the presentation geometry come from
+- **`examples/dispinfo`** - no SDL call at all: a serial-only probe that logs what the firmware reports about the attached display, and what Circle's framebuffer returns for a series of allocation requests. It is where the raw numbers behind the presentation geometry come from
+
+- **`examples/paletted`** - 8-bit indexed surfaces, the way a VGA-era game like Doom or Duke Nukem animates without touching a pixel. `SDL_CreateRGBSurface` at depth 8, `SDL_SetPaletteColors`, `SDL_SetColorKey` keyed on an index, a blit into a 32-bit surface resolved through the palette, and `SDL_ConvertSurfaceFormat` as the other route to the same place - each checked and reported on the serial console before the picture runs. Then a single indexed picture is drawn once, and every frame after that is nothing but its 256-colour palette rotating underneath it (palette)
 
 - **`examples/cxxthreads`** - the C++ standard library's threading, run on core 1 where an application runs and where none of it used to work: recursive mutexes, a condition variable woken by a thread the application core created, per-thread `thread_local` storage and its destructors, a timed wait that runs out, and `call_once`. It reports each result by name on the serial console, so a board with no display still says what happened (C++ runtime)
