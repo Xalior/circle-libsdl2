@@ -2,6 +2,8 @@
 
 Each is a complete bootable kernel exercising one subsystem. They are the library's worked examples and its test harness at the same time - useful as templates, and the way a change is proven before it ships.
 
+`make examples` from the repository root builds all of them at once, against a freshly rebuilt archive - see [Building](BUILDING.md#building-the-examples). Each also builds on its own from its own directory, the way any application against this library would.
+
 - **`examples/gradient`** - animated full-screen gradient (video path)
 
 - **`examples/rendertarget`** - a picture composed into an off-screen texture and then magnified over the whole window, which is how a game gets a fixed low-resolution look on any panel. It checks the render-target contract on the way in - what the renderer reports, what the output size and the viewport become while a target is set, what is read back out of one, and the two things that are refused - and puts every answer on the serial console (render targets)

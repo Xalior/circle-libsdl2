@@ -13,13 +13,18 @@
 # platform calls back to core 0 so an application runs on another core, and
 # offers a presentation worker for one — neither is possible single-core.
 #
-#   make deps            configure+build all three worlds, then all archives
-#   make                 build the default board's archive (BOARD=rpi4)
-#   make BOARD=rpi3      build one board's archive against its world
-#   make all-boards      (re)build all three archives (worlds already built)
-#   make rebuild         drop one board's objects and archive and build both
-#                        from nothing
-#   make rebuild-all     the same for all three boards
+#   make                       list the targets below (also the default goal)
+#   make deps                  configure+build all three worlds, then all archives
+#   make libSDL2-rpi4.a        build one board's archive against its world
+#   make BOARD=rpi3 libSDL2-rpi3.a   the same, another board (default rpi4)
+#   make all-boards            (re)build all three archives (worlds already built)
+#   make rebuild               drop one board's objects and archive and build both
+#                              from nothing
+#   make rebuild-all           the same for all three boards
+#   make examples              build every example under examples/, against a
+#                              freshly rebuilt archive for one board
+#   make audit BOARD=rpi5      report symbols the archive promises but does not
+#                              define
 #
 # The consumer picks a board's archive+world explicitly; nothing here assumes
 # a single board. `make CIRCLE_WORLDS=/path/to/worlds` puts every board's
@@ -171,7 +176,35 @@ CIRCLESTDLIBHOME ?= $(abspath $(CIRCLE_STDLIB))
 # previous count's archive.
 OBJDIR = build/$(BOARD)-cmds$(PRESENT_CMDS)
 
-.DEFAULT_GOAL := libSDL2-$(BOARD).a
+# Plain `make` names no target, so it has to say what is available rather
+# than pick one archive to build silently. Nothing in this repository or the
+# one enclosing it calls `make` here without naming a target, so this is safe
+# to change without breaking an existing caller.
+.DEFAULT_GOAL := help
+
+# Every application under examples/, discovered from the directory rather
+# than listed here, so adding one needs no matching line in this file.
+EXAMPLES := $(patsubst examples/%/,%,$(sort $(dir $(wildcard examples/*/Makefile))))
+
+.PHONY: help
+help:
+	@echo "circle-libsdl2 - SDL2-compatible shim over the Circle bare-metal framework."
+	@echo ""
+	@echo "  make help                        this text (also the default goal)"
+	@echo "  make deps                        configure+build all three worlds, then all archives"
+	@echo "  make libSDL2-$(BOARD).a              build BOARD's archive against its world (BOARD=$(BOARD))"
+	@echo "  make BOARD=rpi3 libSDL2-rpi3.a   the same, another board"
+	@echo "  make all-boards                  (re)build all three archives (worlds already built)"
+	@echo "  make rebuild                     drop BOARD's objects and archive, build both from nothing"
+	@echo "  make rebuild-all                 the same for all three boards"
+	@echo "  make examples                    build every example under examples/, against a freshly"
+	@echo "                                   rebuilt archive for BOARD"
+	@echo "  make audit BOARD=rpi5            symbols the archive references but does not define, and"
+	@echo "                                   symbols its headers declare but src/ does not"
+	@echo "  make world BOARD=rpi3            fetch and configure+build one board's world alone"
+	@echo ""
+	@echo "boards: $(BOARDS)"
+	@echo "examples: $(EXAMPLES)"
 
 # One BOARD is configured per invocation, so the other boards' archives have
 # no rule here. Asking for one by name got "Nothing to be done" and an exit
@@ -351,6 +384,38 @@ rebuild:
 rebuild-all:
 	+@$(NOT_DRY_RUN)
 	@for b in $(BOARDS); do $(MAKE) rebuild BOARD=$$b || exit 1; done
+
+# Every example, built standalone (each has its own Makefile under
+# examples/, and links against ../../libSDL2-$(BOARD).a the way any consumer
+# of this library would). This only walks the list and refuses to be fooled
+# by anything already sitting on disk:
+#
+#   the archive is rebuilt from nothing first (`rebuild`, above), so every
+#   example that follows links a library this invocation actually produced,
+#   not one left over from an earlier build with different sources;
+#
+#   each example's own image is deleted before it is asked to build again,
+#   so a build that fails, or that make decides needs nothing done, cannot
+#   leave yesterday's image sitting there to be mistaken for today's.
+#
+# It keeps going past a failure — one broken example must never hide the
+# other ten — and reports at the end which examples built and which did not.
+.PHONY: examples
+examples: rebuild
+	+@$(NOT_DRY_RUN)
+	@built=""; broke=""; \
+	for e in $(EXAMPLES); do \
+		echo ""; echo "===== $$e ====="; \
+		rm -f examples/$$e/*.img; \
+		if $(MAKE) -C examples/$$e BOARD=$(BOARD) \
+			&& ls examples/$$e/*.img >/dev/null 2>&1; then \
+			built="$$built $$e"; \
+		else \
+			broke="$$broke $$e"; \
+		fi; \
+	done; \
+	echo ""; echo "===== built =====$$built"; \
+	[ -z "$$broke" ] || { echo "===== DID NOT BUILD =====$$broke" >&2; exit 1; }
 
 # THE TWO WAYS A SYMBOL CAN BE MISSING, and only one of them shows up in an
 # ordinary build.

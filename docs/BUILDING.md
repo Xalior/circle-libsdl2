@@ -25,13 +25,26 @@ This library **supplies its own runtime world** - the configured `circle-stdlib`
 
 `make deps` does all of them. For each board it fetches the world's sources - including libc++ from an immutable LLVM tag, because Codeberg regenerates its archives and downloading the tarball fails its hash check on a clean build - then configures that world (`-r <board> -p aarch64-none-elf- --libcxx-repo --kernel-max-size 256 -o ARM_ALLOW_MULTI_CORE -o KERNEL_STACK_SIZE=0x200000`) and builds it, and finally builds this library against each. The first build is long: newlib and libc++ are compiled from source, once per board.
 
-Afterwards, a plain `make` rebuilds one board's archive - `BOARD` selects which, and defaults to `rpi4`:
+Afterwards, name the archive to rebuild one board - `BOARD` selects which, and defaults to `rpi4`:
 
 ```sh
-make                  # libSDL2-rpi4.a
-make BOARD=rpi5       # libSDL2-rpi5.a
-make all-boards       # every board
+make libSDL2-rpi4.a              # the default board
+make BOARD=rpi5 libSDL2-rpi5.a   # another board
+make all-boards                  # every board
 ```
+
+Plain `make`, with no target named, prints the list of targets instead of building anything - run `make help` for the same list on demand.
+
+## Building the examples
+
+```sh
+make examples                 # every example under examples/, for BOARD
+make BOARD=rpi5 examples      # the same, against the Pi 5 archive
+```
+
+This rebuilds BOARD's archive from nothing first, so every example links a library this run actually produced, then builds each example under `examples/` in turn, having deleted its own last image first so a failed or skipped build cannot leave a stale one behind to be mistaken for a fresh one. It keeps going past a failure and reports, at the end, which examples built and which did not - a single broken example does not stop the rest from being tried.
+
+An individual example still builds standalone from its own directory (`cd examples/gradient && make BOARD=rpi5`), which is what `make examples` does for each of them in turn.
 
 ## Choosing single-core or multicore
 
