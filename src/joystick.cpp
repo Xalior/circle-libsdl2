@@ -1,27 +1,27 @@
 //
-// joystick.cpp — Circle USB gamepads behind the SDL joystick API.
+// joystick.cpp - Circle USB gamepads behind the SDL joystick API.
 //
-// Circle publishes every gamepad it binds — the generic HID driver and the
-// five vendor drivers alike — as a character device named "upadN", N from 1.
+// Circle publishes every gamepad it binds - the generic HID driver and the
+// five vendor drivers alike - as a character device named "upadN", N from 1.
 // This file turns that into SDL's two-level identity scheme:
 //
-//   a DEVICE INDEX is a position in the list of currently attached pads,
+//   a device index is a position in the list of currently attached pads,
 //   0..SDL_NumJoysticks()-1, and it renumbers whenever a pad comes or goes;
 //
-//   an INSTANCE ID is handed out once at attach, never reused, and is what
+//   an instance ID is handed out once at attach, never reused, and is what
 //   every SDL event carries.
 //
 // A pad's slot in the table below is neither: it is the Circle device number
 // minus one, so a pad keeps its slot for as long as it is plugged in.
 //
-// WHICH CORE DOES WHAT. USB belongs to core 0, so attach, detach, report
-// decoding and event synthesis all happen there — from SDL2Circle_InputPump,
-// which is the core-0 servo's job under the split and the application's own
-// pump without it. Everything an application asks for afterwards (how many
-// pads, what is this axis reading) is answered from the shared table by
-// whichever core asks, with no call to core 0 at all: the state fields are
-// atomics written on core 0 and read anywhere. The one exception is rumble,
-// which is a USB control transfer, so it is marshalled.
+// USB belongs to core 0, so attach, detach, report decoding and event
+// synthesis all happen there - from SDL2Circle_InputPump, which is the
+// core-0 servo's job under the split and the application's own pump without
+// it. Everything an application asks for afterwards (how many pads, what is
+// this axis reading) is answered from the shared table by whichever core
+// asks, with no call to core 0 at all: the state fields are atomics written
+// on core 0 and read anywhere. The one exception is rumble, which is a USB
+// control transfer, so it is marshalled.
 //
 // Circle's report callback runs in interrupt context. Like the keyboard path
 // it only snapshots, behind a sequence counter; the pump does the diffing.
@@ -217,12 +217,11 @@ Sint16 ScaleAxis(int value, int minimum, int maximum)
     return (Sint16)scaled;
 }
 
-// Circle stores the hat's raw HID field: a DIRECTION INDEX, clockwise from
+// Circle stores the hat's raw HID field: a direction index, clockwise from
 // up, plus whatever out-of-range value the device uses for centred (15 and 8
 // are both common). SDL wants a bitmask. Circle keeps no record of the hat's
-// declared logical range, so anything outside 0..7 is read as centred — which
-// is right for every hat whose logical minimum is zero, and that is the
-// overwhelming majority.
+// declared logical range, so anything outside 0..7 is read as centred, which
+// is right for every hat whose logical minimum is zero.
 Uint8 HatToSDL(int value)
 {
     static const Uint8 kMask[8] = {
@@ -312,8 +311,8 @@ void AttachSlot(unsigned slot, CUSBGamePadDevice *pPad)
 
     // The name. Circle stashes the USB manufacturer and product strings on
     // the driver object as device properties. Joining them with one space is
-    // what Linux's USB HID layer does too, so the name — and therefore the
-    // CRC inside the GUID — matches what a mapping database was generated
+    // what Linux's USB HID layer does too, so the name - and therefore the
+    // CRC inside the GUID - matches what a mapping database was generated
     // against. Empty strings are normal on cheap pads; fall back to the IDs.
     const char *pVendorStr  = pPad->GetProperty(CDevice::PropertyVendor);
     const char *pProductStr = pPad->GetProperty(CDevice::PropertyProduct);
@@ -557,7 +556,7 @@ void SDL2Circle_JoystickPump(bool bPlugAndPlayChanged)
             DetachSlot(i);
 
     // Circle names a pad the moment it has configured it, and a pad can turn
-    // up at any time — hours into a session. UpdatePlugAndPlay saying
+    // up at any time - hours into a session. UpdatePlugAndPlay saying
     // "something changed" is the only attach signal there is, so a scan of
     // the free slots follows every one of them.
     if (bPlugAndPlayChanged)
@@ -1068,7 +1067,7 @@ extern "C" SDL_bool SDL_JoystickHasRumble(SDL_Joystick *joystick)
                                                                : SDL_FALSE;
 }
 
-// Circle's rumble control is three states — off, low, high — so that is
+// Circle's rumble control is three states - off, low, high - so that is
 // exactly what this offers. SDL's two magnitudes are reduced to whichever is
 // stronger, and anything past halfway is "high". There is no per-motor
 // control underneath to expose, and no envelope: pretending otherwise would

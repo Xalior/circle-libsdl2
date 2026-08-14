@@ -1,32 +1,31 @@
 //
-// log.cpp — output from any core, without touching the hardware.
+// log.cpp - output from any core, without touching the hardware.
 //
-// TWO QUESTIONS THAT ARE NOT THE SAME QUESTION, and this file is where they
-// are kept apart.
+// This file keeps two questions apart: where output goes, and what it looks
+// like once it gets there.
 //
-// WHERE OUTPUT GOES is a property of the machine. The serial port always, and
-// the screen as well until an application takes the display. It is one
-// decision for the whole board and no caller has a say in it. That decision is
-// held as Circle's logger target device: src/console.cpp puts a tee in front
-// of the serial device when the screen is attached and puts the serial device
-// back when it is dropped, so the target IS the destination set at any moment.
-// DestinationWrite below is the whole of reaching it.
+// Where output goes is a property of the machine: the serial port always,
+// and the screen as well until an application takes the display. It is one
+// decision for the whole board, held as Circle's logger target device.
+// src/console.cpp puts a tee in front of the serial device when the screen
+// is attached and puts the serial device back when it is dropped, so the
+// target is the destination set at any moment. DestinationWrite below is
+// the whole of reaching it.
 //
-// WHAT OUTPUT LOOKS LIKE is a property of whoever is printing, and that is the
-// only difference between the two ways in. A LOG RECORD carries a source, a
-// severity and a timestamp, because that is what makes a log useful, and it
-// gets them from Circle's logger. RAW OUTPUT — a program's own standard
-// output — carries nothing at all: a program printing a number expects that
-// number and not a decorated version of it, and it may print half a line or
-// bytes that are not text. So the raw channel adds no source, no severity, no
-// timestamp and no line discipline.
+// What output looks like is a property of whoever is printing. A log record
+// carries a source, a severity and a timestamp, taken from Circle's logger.
+// Raw output - a program's own standard output - carries nothing at all: a
+// program printing a number expects that number back, not a decorated
+// version of it, and it may print half a line or bytes that are not text.
+// So the raw channel adds no source, no severity, no timestamp and no line
+// discipline.
 //
-// Both go to the same destinations by the same rules, and neither is built on
-// top of the other.
+// Both go to the same destinations by the same rules, and neither is built
+// on top of the other.
 //
 // The serial console is a device, and devices belong to the hardware core.
-// So every other core writes its lines into a ring of its own instead, and
-// the hardware core's servo drains all the rings into the logger. Nothing
+// Every other core writes its lines into a ring of its own instead, and the
+// hardware core's servo drains all the rings into the logger. Nothing
 // crosses but memory, and a core that logs is never blocked by a core that
 // is printing.
 //
@@ -34,26 +33,25 @@
 // event and audio rings next door: the owning core is the only writer, the
 // servo is the only reader, and the two never need a lock between them.
 //
-// Log records and raw output share that ring, so a program's printed line and
-// the log line it writes next come out in the order it produced them. A record
-// says which of the two it is and the drain gives it to the right one.
+// Log records and raw output share that ring, so a program's printed line
+// and the log line it writes next come out in the order it produced them.
+// A record says which of the two it is and the drain gives it to the right
+// one.
 //
-// A ring that is full DROPS the line and counts it. Losing a line is bad;
-// stalling the core that produced it, or overwriting a line already in the
-// ring, is worse. The console is a fixed, slow width — an application can
-// always ask for more than it will carry — so dropping is the steady state
-// for a chatty one, not a fault. The drain says when dropping starts and
-// when it stops, so the record is honest about its own gaps without
-// narrating them line by line.
+// A ring that is full drops the line and counts it, rather than stalling
+// the producing core or overwriting a line already in the ring. The console
+// is a fixed, slow width, so dropping is the steady state for a chatty
+// application, not a fault. The drain reports when dropping starts and when
+// it stops, rather than once per dropped line.
 //
-// The servo's drain is BOUNDED, and that is what keeps core 0 alive. See
-// LOG_DRAIN_MAX_US below: an unbounded drain and a producer that never waits
-// are between them enough to stop the board.
+// The servo's drain is bounded (see LOG_DRAIN_MAX_US below), which is what
+// keeps core 0 alive: an unbounded drain paired with a producer that never
+// waits would be enough to stop the board.
 //
-// The hardware core does not use a ring. It owns the console, so it writes
-// straight through — which keeps the boot log immediate, before any servo
-// exists to drain anything, and keeps interrupt handlers safe: an interrupt
-// on the hardware core can log without ever landing in the middle of a
+// The hardware core does not use a ring: it owns the console and writes
+// straight through. That keeps the boot log immediate, before any servo
+// exists to drain anything, and keeps interrupt handlers safe, since an
+// interrupt on the hardware core can log without landing in the middle of a
 // half-written record.
 //
 #include <SDL2/SDL.h>
@@ -72,38 +70,36 @@
 // so there is no value in carrying more than it will print.
 static const unsigned LOG_LINE_MAX = 200;
 
-// Per core. Sized to hold a START-UP BURST, not just a frame's worth: the
+// Per core. Sized to hold a start-up burst, not just a frame's worth: the
 // lines a port most needs are the ones it produces while bringing itself up,
 // before anything is steady, and those are exactly the ones a small ring
 // loses. Memory is not what is scarce on these boards.
 //
-// MUST BE A POWER OF TWO. The head and tail are free-running counters that
-// are reduced modulo this, so a size that does not divide 2^32 would make
+// Must be a power of two: the head and tail are free-running counters
+// reduced modulo this size, so a size that does not divide 2^32 would make
 // the two disagree about where a record sits the first time they wrap.
 static const unsigned LOG_RING_BYTES = 32768;
 static const unsigned LOG_MAX_CORES = 4;
 
-// HOW MUCH THE SERVO WILL PRINT IN ONE PASS, and why there is a limit at all.
+// How much the servo prints in one pass, and why there is a limit at all.
 //
 // The console is a device on core 0, and core 0's servo is also what pumps
-// USB, feeds the sound device and yields to the scheduler. A drain that runs
-// until its ring is empty gives that ring priority over every one of those.
+// USB, feeds the sound device and yields to the scheduler. A drain that ran
+// until its ring was empty would give that ring priority over every one of
+// those, and could fail to terminate: the producer never waits - a full
+// ring drops the line and returns - so an application that logs faster than
+// the console can carry keeps the ring permanently non-empty, `head` never
+// meets `tail`, and the drain never returns. Core 0 then stops servicing
+// everything it owns: USB never finishes enumerating, video never comes up,
+// and the application's own lines never appear, because they are being
+// dropped into a ring nobody is emptying.
 //
-// It is worse than unfair, it does not terminate. The producer never waits —
-// a full ring drops the line and returns — so an application that logs faster
-// than the console can carry keeps the ring permanently non-empty, `head`
-// never meets `tail`, and the drain never returns. Core 0 then stops
-// servicing everything it owns: USB never finishes enumerating, video never
-// comes up, and the application's own lines never appear, because they are
-// being dropped into a ring nobody is emptying. A chatty application, not a
-// large one, is all it takes.
-//
-// So the drain takes a bounded bite and returns. A time slice rather than a
-// line count, because what is being rationed is time on the console: at
+// So the drain takes a bounded bite and returns: a time slice rather than a
+// line count, because what is being rationed is time on the console. At
 // 115200 baud in polling mode one 80-character line is around 7 ms, and the
 // same budget stays honest at a different rate or on a different device.
-// The record cap is a second bound for the case where lines are short enough
-// that the clock has barely moved.
+// The record cap is a second bound for the case where lines are short
+// enough that the clock has barely moved.
 static const unsigned LOG_DRAIN_MAX_US = 2000;
 static const unsigned LOG_DRAIN_MAX_RECORDS = 16;
 
@@ -113,9 +109,9 @@ namespace
 // A record is this header followed by its bytes. The header is copied byte
 // by byte into the ring, so nothing here needs the ring to be aligned.
 //
-// `from` is stored as a POINTER, not a copy: every subsystem tag in this
+// `from` is stored as a pointer, not a copy: every subsystem tag in this
 // library is a string literal, so it outlives any record that names it and
-// every core sees it at the same address. Callers must respect that — a tag
+// every core sees it at the same address. Callers must respect that - a tag
 // built on the stack would be gone by the time the servo printed it.
 //
 // `raw` is which of the two channels produced the record. A raw record's
@@ -145,7 +141,7 @@ LogRing g_rings[LOG_MAX_CORES];
 //
 // The text is one byte longer than the longest line it may hold. A line that
 // reaches LOG_LINE_MAX characters without a newline is flushed by length, and
-// terminating it writes at index LOG_LINE_MAX — which without the extra byte
+// terminating it writes at index LOG_LINE_MAX - which without the extra byte
 // is one past the end, landing in the next core's buffer.
 struct LineBuffer
 {
@@ -166,21 +162,20 @@ inline TLogSeverity ToCircle(unsigned severity)
     }
 }
 
-// EVERY DESTINATION AT ONCE, and nothing added on the way.
+// Reaches every destination at once, adding nothing on the way.
 //
 // Circle's logger holds the target device, and src/console.cpp is what makes
-// that device reach more than one place: the tee it installs at attach writes
-// the serial port and then the screen, and the drop puts the plain serial
-// device back. So reading the target back is reading the destination set as it
-// stands, with no second copy of the rule to keep in step.
+// that device reach more than one place: the tee it installs at attach
+// writes the serial port and then the screen, and the drop puts the plain
+// serial device back. So reading the target back is reading the destination
+// set as it stands, with no second copy of the rule to keep in step.
 //
 // There is no target before the host kernel has initialised its logger, and
 // bytes handed over then have nowhere to go.
 //
-// CLogger writes its own text to the target OUTSIDE its lock (lib/logger.cpp,
-// CLogger::Write(const char *): the target write happens before
-// m_SpinLock.Acquire), so this takes nothing the logger does not, and adds no
-// hazard that was not there already.
+// CLogger writes its own text to the target outside its lock
+// (lib/logger.cpp, CLogger::Write(const char *): the target write happens
+// before m_SpinLock.Acquire), so this takes nothing the logger does not.
 void DestinationWrite(const char *bytes, unsigned len)
 {
     CDevice *pTarget = CLogger::Get()->GetTarget();
@@ -193,11 +188,11 @@ void DestinationWrite(const char *bytes, unsigned len)
 bool g_dropping[LOG_MAX_CORES] = {};
 u32  g_droppedTotal[LOG_MAX_CORES] = {};
 
-// Say when a ring STARTS losing records and when it STOPS, rather than once
-// per pass. A ring is full precisely when the console cannot keep up, so a
-// line per pass about it would be spending the scarce thing on describing
-// its own scarcity — and would push out the very records it is reporting the
-// loss of. Two lines per episode say the same thing and cost nothing.
+// Reports when a ring starts losing records and when it stops, rather than
+// once per pass. A ring is full precisely when the console cannot keep up,
+// so a line per pass about it would spend the scarce console time
+// describing its own scarcity, pushing out the very records it is
+// reporting the loss of. Two lines per episode say the same thing.
 void ReportDrops(unsigned core, LogRing &ring)
 {
     const u32 lost = ring.dropped.exchange(0, std::memory_order_relaxed);
@@ -342,13 +337,13 @@ extern "C" void SDL2Circle_Log(const char *from, unsigned severity,
 extern "C" void SDL2Circle_LogBytes(const char *from, const char *bytes,
                                     unsigned len)
 {
-    // Byte-oriented material that IS a log — a subsystem that produces its
-    // diagnostics as a stream rather than a line at a time — arrives in
+    // Byte-oriented material that is a log - a subsystem that produces its
+    // diagnostics as a stream rather than a line at a time - arrives in
     // whatever pieces it was written in, so lines are assembled here and
-    // published one at a time. The logger prints lines; it has nowhere to put
-    // half of one.
+    // published one at a time. The logger prints lines; it has nowhere to
+    // put half of one.
     //
-    // A program's ordinary output is NOT this. It goes to
+    // A program's ordinary output is not this: it goes to
     // SDL2Circle_WriteBytes below, which labels nothing and waits for
     // nothing.
     LineBuffer &buf = g_lines[SDL2Circle_ThisCore() % LOG_MAX_CORES];
@@ -374,10 +369,10 @@ extern "C" void SDL2Circle_LogBytes(const char *from, const char *bytes,
 
 extern "C" void SDL2Circle_WriteBytes(const char *bytes, unsigned len)
 {
-    // A PROGRAM'S OWN OUTPUT, WHICH NOTHING HERE MAY TOUCH. No tag, no
-    // severity, no timestamp, and no waiting for an end of line: half a line
-    // is output, a byte that is not text is output, and a program that prints
-    // a number expects that number back and nothing else.
+    // A program's own output. Nothing here may touch it: no tag, no
+    // severity, no timestamp, and no waiting for an end of line. Half a
+    // line is output, a byte that is not text is output, and a program
+    // that prints a number gets that number back and nothing else.
     //
     // The only thing this shares with the log is where the bytes end up.
     if (bytes == nullptr || len == 0)
@@ -398,12 +393,12 @@ void SDL2Circle_LogDrain(void)
     const u64 started = CTimer::GetClockTicks64();   // CLOCKHZ is 1 MHz
     unsigned printed = 0;
 
-    // WHERE THIS PASS STARTS, and why it moves. The bounded bite has to be
+    // Where this pass starts, and why it moves. The bounded bite has to be
     // shared out, or the lowest-numbered core that keeps logging would spend
     // the whole budget every pass and the cores above it would never be
-    // drained at all — silence that would look exactly like a core that had
-    // stopped. Each pass resumes at the core after the one the budget ran out
-    // on, so every ring gets its turn.
+    // drained at all - silence that would look exactly like a core that had
+    // stopped. Each pass resumes at the core after the one the budget ran
+    // out on, so every ring gets its turn.
     static unsigned s_nextCore = 0;
 
     for (unsigned i = 0; i < LOG_MAX_CORES; i++)
@@ -418,12 +413,12 @@ void SDL2Circle_LogDrain(void)
             if (printed >= LOG_DRAIN_MAX_RECORDS
                 || CTimer::GetClockTicks64() - started >= LOG_DRAIN_MAX_US)
             {
-                // Out of budget. Next pass starts at the core AFTER this one:
-                // starting at this one again would hand the whole budget back
-                // to the ring that just used it, and a core that logs without
-                // pause would keep every core above it permanently silent.
-                // What is left here waits one turn, which is a delay rather
-                // than a loss.
+                // Out of budget. Next pass starts at the core after this
+                // one: starting at this one again would hand the whole
+                // budget back to the ring that just used it, and a core
+                // that logs without pause would keep every core above it
+                // permanently silent. What is left here waits one turn,
+                // which is a delay rather than a loss.
                 s_nextCore = (c + 1) % LOG_MAX_CORES;
                 return;
             }
@@ -472,7 +467,7 @@ void SDL2Circle_LogDrain(void)
 // some applications the only one they have. Every one of them ends up in
 // SDL2Circle_Log, so a line an application writes takes exactly the same
 // route as a line the library writes: into the calling core's ring, drained
-// by core 0's servo. That matters more here than it looks — the serial
+// by core 0's servo. That matters more here than it looks - the serial
 // console is a device, a device belongs to core 0, and an application runs
 // on another core by construction. Writing it directly would be writing a
 // device from the wrong core.

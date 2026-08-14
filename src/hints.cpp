@@ -1,5 +1,5 @@
 //
-// hints.cpp — minimal hint storage (MAME sets a handful at startup)
+// hints.cpp - minimal hint storage (MAME sets a handful at startup)
 //
 #include <SDL2/SDL.h>
 #include <cstring>

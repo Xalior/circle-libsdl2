@@ -1,15 +1,15 @@
 //
-// surface.cpp — SDL_Surface: memory-backed images in any pixel format
+// surface.cpp - SDL_Surface: memory-backed images in any pixel format
 //
 // A surface is a block of pixels with a width, a height, a pitch and a
 // format record saying what a pixel means. SDL2 applications use them for
 // two quite different jobs and this file serves both:
 //
-//   - as a STAGING BUFFER for a texture upload, which is all this library's
+//   - as a staging buffer for a texture upload, which is all this library's
 //     renderer ever needs, and
-//   - as an IMAGE the application draws on: filling rectangles, blitting
-//     one into another, converting between formats, and — for the many
-//     games that render the way a VGA card did — an 8-bit surface of
+//   - as an image the application draws on: filling rectangles, blitting
+//     one into another, converting between formats, and - for the many
+//     games that render the way a VGA card did - an 8-bit surface of
 //     palette indices with the palette changed per frame.
 //
 // Every format described in pixels.cpp can be a surface. Indexed surfaces
@@ -46,15 +46,15 @@ static SDL_Surface *surface_alloc(int width, int height, SDL_PixelFormat *format
         SDL_SetError("out of memory allocating surface state");
         return nullptr;
     }
-    // A SURFACE THAT HAS AN ALPHA CHANNEL STARTS OUT BLENDING. SDL2 does
-    // this at creation, and applications rely on it without ever calling
+    // A surface with an alpha channel starts out blending. SDL2 does this
+    // at creation, and applications rely on it without ever calling
     // SDL_SetSurfaceBlendMode: they build an ARGB surface, write per-pixel
     // alpha into it, and blit it with the plain SDL_BlitSurface, expecting
     // the alpha to decide what lands. Started at NONE instead, that same
-    // blit copies every pixel including the transparent ones, so the shape
-    // in the alpha channel is lost and what appears is a solid rectangle of
-    // the colour underneath it. Text is where this shows first, because a
-    // glyph is exactly that: a rectangle whose alpha channel IS the letter.
+    // blit would copy every pixel including the transparent ones, losing
+    // the shape in the alpha channel and leaving a solid rectangle of the
+    // colour underneath it - most visibly with text, where a glyph is
+    // exactly that: a rectangle whose alpha channel is the letter.
     state->blend    = (format != nullptr && format->Amask != 0)
                           ? SDL_BLENDMODE_BLEND
                           : SDL_BLENDMODE_NONE;
@@ -130,7 +130,7 @@ extern "C" SDL_Surface *SDL_CreateRGBSurfaceWithFormat(Uint32 flags, int width,
             SDL_FreeSurface(surface);
             return nullptr;
         }
-        // SDL2 starts an 8-bit palette black rather than white — a freshly
+        // SDL2 starts an 8-bit palette black rather than white - a freshly
         // created indexed surface is all index 0, and a white index 0 would
         // make an untouched surface a white rectangle.
         memset(palette->colors, 0, (size_t)palette->ncolors * sizeof(SDL_Color));
@@ -390,7 +390,7 @@ extern "C" int SDL_GetSurfaceColorMod(SDL_Surface *surface, Uint8 *r, Uint8 *g, 
 
 // RLE is an internal encoding SDL2 may apply to a colour-keyed surface. This
 // library never encodes, so the request is accepted and the surface stays
-// plain — which is a valid SDL2 state, since SDL_RLEACCEL is only ever a
+// plain - which is a valid SDL2 state, since SDL_RLEACCEL is only ever a
 // hint about how the same pixels are stored.
 extern "C" int SDL_SetSurfaceRLE(SDL_Surface *surface, int flag)
 {
@@ -420,8 +420,8 @@ extern "C" SDL_bool SDL_SetClipRect(SDL_Surface *surface, const SDL_Rect *rect)
         surface->clip_rect = full;
         return SDL_TRUE;
     }
-    // SDL2 answers FALSE when the requested rectangle lies wholly outside
-    // the surface — the clip is still set (to the empty intersection), and
+    // SDL2 answers false when the requested rectangle lies wholly outside
+    // the surface - the clip is still set (to the empty intersection), and
     // the answer is what tells the caller that nothing will draw.
     return SDL_IntersectRect(rect, &full, &surface->clip_rect);
 }
@@ -534,7 +534,7 @@ extern "C" SDL_Surface *SDL_ConvertSurface(SDL_Surface *src,
     if (dst == nullptr)
         return nullptr;
 
-    // Converting TO an indexed format needs the destination's palette, and
+    // Converting to an indexed format needs the destination's palette, and
     // the only palette that can be meant is the one the caller put on the
     // format they handed in.
     if (fmt->palette != nullptr)
@@ -542,9 +542,8 @@ extern "C" SDL_Surface *SDL_ConvertSurface(SDL_Surface *src,
 
     // The conversion is a blit with blending off: SDL2 defines
     // SDL_ConvertSurface as copying pixels, not compositing them, so a
-    // source with per-pixel alpha keeps its alpha rather than being flattened
-    // against the new surface's blank background. Games that convert a
-    // sprite sheet once at load time and blend it later depend on that.
+    // source with per-pixel alpha keeps its alpha rather than being
+    // flattened against the new surface's blank background.
     SDL_BlendMode saved;
     SDL_GetSurfaceBlendMode(src, &saved);
     SDL_SetSurfaceBlendMode(src, SDL_BLENDMODE_NONE);
@@ -557,7 +556,7 @@ extern "C" SDL_Surface *SDL_ConvertSurface(SDL_Surface *src,
         return nullptr;
     }
 
-    // The colour key travels, remapped into the new format — a key is a
+    // The colour key travels, remapped into the new format - a key is a
     // colour, not a bit pattern, and carrying the raw value across a format
     // change is the classic way transparency turns into a coloured rectangle.
     Uint32 key = 0;

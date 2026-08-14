@@ -1,5 +1,5 @@
 //
-// pixels.h — the pixel-format machinery, shared inside this library
+// pixels.h - the pixel-format machinery, shared inside this library
 //
 // Not installed. The public surface of all this is SDL2's own
 // SDL_pixels.h and SDL_surface.h; these are the pieces the surface, blit,

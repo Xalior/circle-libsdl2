@@ -1,41 +1,36 @@
 //
-// gl.cpp — the accelerated-graphics APIs, answering that there are none.
+// gl.cpp - the accelerated-graphics APIs, answering that there are none.
 //
-// THERE IS NO OPENGL HERE, no Vulkan and no Metal, and there is no plan for
+// There is no OpenGL here, no Vulkan and no Metal, and there is no plan for
 // one: the Pi has no bare-metal GPU driver, so software rendering is the
 // design rather than a stage on the way to something else. Nothing in this
 // file draws anything.
 //
-// WHY IT EXISTS AT ALL. A great many SDL2 games are built with an optional
+// This exists because a great many SDL2 games are built with an optional
 // accelerated renderer and a software fallback, and their shutdown path is
 // written to cope with the fallback having been taken:
 //
 //     if (gl_context)
 //         SDL_GL_DeleteContext(gl_context);
 //
-// That branch is dead — the context is null, because the game never made one
-// — but the CALL still has to resolve for the program to link. Without a
-// definition here, every such game stops at the linker naming one symbol,
-// and the obvious repair is a one-line empty function in the game's own
-// sources. Which is how a library ends up reimplemented a line at a time in
-// its consumers, and is exactly what this whole layer exists to prevent. So
-// the family is answered once, here.
+// That branch is dead - the context is null, because the game never made one
+// - but the call still has to resolve for the program to link. Every such
+// symbol is answered once, here.
 //
-// HOW EACH ONE ANSWERS. The rule is that a game must be able to find out
-// there is no accelerated renderer, and must never be led to believe there
-// is one:
+// A game must be able to find out there is no accelerated renderer, and must
+// never be led to believe there is one:
 //
-//   - anything that would CREATE a context or surface fails, and says why.
+//   - anything that would create a context or surface fails, and says why.
 //     A game then takes the path it would take on any machine without
 //     acceleration, which is the path that works here.
-//   - anything that would DESTROY one does nothing, and is right to: there
+//   - anything that would destroy one does nothing, and is right to: there
 //     was never anything to destroy, and a shutdown path must not fail.
-//   - anything that would QUERY one answers "nothing" or fails, so a game
+//   - anything that would query one answers "nothing" or fails, so a game
 //     testing for support gets a straight no.
 //
-// The one thing none of them does is succeed quietly. A game that is told it
-// has a context and then draws through it would produce nothing on screen,
-// with no error anywhere to explain a black display.
+// None of them succeeds quietly: a game told it has a context and drawing
+// through it would produce nothing on screen, with no error anywhere to
+// explain a black display.
 //
 #include <SDL2/SDL.h>
 
@@ -65,9 +60,9 @@ extern "C" SDL_bool SDL_GL_ExtensionSupported(const char *)
 
 extern "C" void SDL_GL_ResetAttributes(void) {}
 
-// Attributes are the settings a context WOULD be made with. Accepting them
+// Attributes are the settings a context would be made with. Accepting them
 // costs nothing and refusing them would make a game fail before it reaches
-// the context call that tells it the real answer — so the refusal happens
+// the context call that tells it the real answer - so the refusal happens
 // once, at SDL_GL_CreateContext, where a game is looking for it.
 extern "C" int SDL_GL_SetAttribute(SDL_GLattr, int) { return 0; }
 

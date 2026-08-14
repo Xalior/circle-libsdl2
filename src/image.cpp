@@ -1,26 +1,18 @@
 //
-// image.cpp — SDL_image, for the formats a bare-metal board can decode.
+// image.cpp - SDL_image, for the formats a bare-metal board can decode.
 //
-// WHY THIS IS IN THE SAME ARCHIVE, and not a companion the way upstream
-// splits SDL2 from SDL2_image. Upstream's split exists so a distribution can
-// package the image decoders separately and so an application can link the
-// codec libraries it wants — libpng, libjpeg, libwebp and the rest, each a
-// shared object with its own version. None of that applies here. There are
-// no shared objects, no packages, and no codec libraries: the decoder below
-// is self-contained, and a second archive would be one more thing for every
-// consumer to name in its link line for no gain. So IMG_* lives beside SDL_*
-// and a consumer links one archive. SDL_image.h is the upstream header, so
-// application source needs no change.
+// IMG_* lives beside SDL_* in one archive rather than a companion library,
+// and SDL_image.h is the unchanged upstream header, so application source
+// needs no change.
 //
-// WHAT IS DECODED: PNG at 8 bits per channel, not interlaced, in any of the
-// five colour types — greyscale, truecolour, palette, greyscale with alpha,
-// truecolour with alpha — honouring a tRNS chunk for palette and a full
+// Decodes PNG at 8 bits per channel, not interlaced, in any of the five
+// colour types - greyscale, truecolour, palette, greyscale with alpha,
+// truecolour with alpha - honouring a tRNS chunk for palette and a full
 // alpha channel where the file carries one. BMP goes to the core SDL loader
 // in bmp.cpp, which is where SDL2 itself keeps it.
 //
-// Anything else is REFUSED WITH A MESSAGE NAMING WHAT IT WAS, rather than
-// decoded approximately. A wrong picture on a screen with no debugger is far
-// more expensive than a clear failure.
+// Anything else is refused with a message naming what it was, rather than
+// decoded approximately.
 //
 // There is no libpng here and no zlib, so both are below: a DEFLATE
 // decompressor (RFC 1951) and a PNG reader on top of it.
@@ -40,7 +32,7 @@ namespace
 //
 // The size is always known here: a PNG's uncompressed data is exactly one
 // filter byte plus one row of samples for every row of the image. So there is
-// no growing buffer and no guessing — the decompressor either fills the
+// no growing buffer and no guessing - the decompressor either fills the
 // buffer it was given or reports that the stream was malformed.
 // ---------------------------------------------------------------------------
 
@@ -475,7 +467,7 @@ extern "C" const SDL_version *IMG_Linked_Version(void)
     return &version;
 }
 
-// SDL_image's contract: the answer is which of the ASKED-FOR formats are now
+// SDL_image's contract: the answer is which of the asked-for formats are now
 // available, and a caller checks the bit it needs. PNG is what there is, so
 // asking for anything else gets an honest zero for that bit rather than a
 // success that fails at the first load.

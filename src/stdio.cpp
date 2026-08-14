@@ -1,61 +1,59 @@
 //
-// stdio.cpp — the C library's standard descriptors, on this board's one
+// stdio.cpp - the C library's standard descriptors, on this board's one
 // console: a screen and a keyboard, the way a console is on any machine.
 //
-// WHY THIS EXISTS. Where output goes is a property of the machine: the
-// logging destination, whatever it is at the time (src/log.cpp,
-// src/console.cpp) — the serial port always, and the screen as well until an
-// application takes the display. Ordinary C output had nothing to do with it
-// — a printf in a program built on this library reached a descriptor nobody
-// had bound, so newlib's _write answered EBADF and the bytes were gone.
-// Standard input had nothing to give at all: nothing fed it, so a program
-// that read it waited forever. Binding all three descriptors here, to a real
-// console, puts every program's ordinary output AND input under the same
-// rules as everything else on the board, whatever language it is written in.
+// Where output goes is a property of the machine: the logging destination,
+// whatever it is at the time (src/log.cpp, src/console.cpp) - the serial
+// port always, and the screen as well until an application takes the
+// display. Ordinary C output had nothing to do with it: a printf in a
+// program built on this library reached a descriptor nobody had bound, so
+// newlib's _write answered EBADF and the bytes were gone. Standard input had
+// nothing to give at all: nothing fed it, so a program that read it waited
+// forever. Binding all three descriptors here, to a real console, puts every
+// program's ordinary output and input under the same rules as everything
+// else on the board, whatever language it is written in.
 //
-// OUTPUT ARRIVES ON THE WIRE AS THE PROGRAM WROTE IT. The bytes go through
+// Output arrives on the wire as the program wrote it: the bytes go through
 // SDL2Circle_WriteBytes, which is the same destination the log uses and adds
 // no source, no severity, no timestamp and no line discipline of its own. A
 // program printing a number gets that number.
 //
-// INPUT IS THE USB KEYBOARD, COOKED. CConsole's plug-and-play constructor
+// Input is the USB keyboard, cooked. CConsole's plug-and-play constructor
 // finds it by name ("ukbd1") the moment src/input.cpp's pump has enumerated
 // one, and turns its key-press strings into the characters a console read
 // expects. Until a keyboard is found, a read reports no data yet, which is
 // CConsole's own contract (lib/input/console.cpp, CConsole::Read) and never
 // an error.
 //
-// EVERY READ IS RAW, ONE CHARACTER AT A TIME, DELIVERED THE MOMENT IT IS
-// TYPED — never held back for a line to end. CConsole's other mode, its
+// Every read is raw, one character at a time, delivered the moment it is
+// typed, never held back for a line to end. CConsole's other mode, its
 // default, is canonical: it hands nothing back to a read until Enter, and
 // then the whole line at once. A Pascal Read of a single character went
 // through that same read, so it wore the whole line's wait for one
-// keystroke. Raw mode below (SetOptions with neither option bit set — see
-// console.h) turns that off: what circle-libsdl2's console.cpp calls raw is
-// what a read on this target always is. There is no line assembled here and
-// none is asked for; a caller wanting an edited line builds it itself, one
-// raw character at a time, the way any caller wanting a single character
-// already does (fpc/rtl/circlesdl2/sysfile.inc, Do_Read).
+// keystroke. Raw mode below (SetOptions with neither option bit set - see
+// console.h) turns that off. There is no line assembled here and none is
+// asked for; a caller wanting an edited line builds it itself, one raw
+// character at a time, the way any caller wanting a single character already
+// does (fpc/rtl/circlesdl2/sysfile.inc, Do_Read).
 //
-// ECHO IS NEITHER SET NOR LEFT TO CONSOLE.CPP'S LINE DISCIPLINE — it is
-// off here, on purpose, so that every caller of SDL2Circle_ReadStdin decides
-// for itself what a character it just read draws on screen. A caller with
-// no line of its own to edit needs only to draw the byte it read, backspace
-// included. A caller building an edited line needs something different for
-// that same byte: a space drawn over the character behind it and the cursor
-// backed up again, never the backspace byte itself. Leaving Circle's own
-// echo on would already have drawn the byte, the wrong one for the second
-// caller, before either caller ever saw it — and there is no undrawing it.
-// So every reader of standard input on this target echoes its own bytes,
-// and this file does not.
+// Echo is off here, on purpose, so that every caller of SDL2Circle_ReadStdin
+// decides for itself what a character it just read draws on screen. A caller
+// with no line of its own to edit needs only to draw the byte it read,
+// backspace included. A caller building an edited line needs something
+// different for that same byte: a space drawn over the character behind it
+// and the cursor backed up again, never the backspace byte itself. Leaving
+// Circle's own echo on would already have drawn the byte, the wrong one for
+// the second caller, before either caller ever saw it, with no way to undraw
+// it. So every reader of standard input on this target echoes its own
+// bytes, and this file does not.
 //
-// NOTHING VENDORED IS TOUCHED. circle-newlib binds its three standard
+// Nothing vendored is touched: circle-newlib binds its three standard
 // descriptors through CGlueStdioInit, which takes a CConsole and asks it to
-// read and write; nothing here is a change to that glue, only to which
+// read and write, and nothing here is a change to that glue, only to which
 // CConsole it is given. This library's own CConsole registers under the
 // device name "tty1" the way a screen device normally would, so CConsole's
-// own plug-and-play machinery — built and tested for exactly this — finds it
-// without this library reimplementing any of it.
+// own plug-and-play machinery finds it without this library reimplementing
+// any of it.
 //
 #include <SDL2/SDL.h>
 #include "sdl2circle.h"
@@ -91,10 +89,10 @@ public:
 
 CRawOutputDevice s_raw;
 
-// THE CONSOLE. Placement-new'd rather than a plain static object: building it
-// registers "tty1" and "console" with CDeviceNameService, which needs the
-// heap and the rest of the board up first, and a static object at this scope
-// would construct before any of that exists.
+// Placement-new'd rather than a plain static object: building it registers
+// "tty1" and "console" with CDeviceNameService, which needs the heap and the
+// rest of the board up first, and a static object at this scope would
+// construct before any of that exists.
 alignas(CConsole) u8 s_ConsoleStore[sizeof(CConsole)];
 CConsole *s_pConsole = nullptr;
 
@@ -108,23 +106,23 @@ void SDL2Circle_StdioInit(void)
         return;
     s_done = true;
 
-    // THE OUTPUT HALF, UNDER THE NAME CConsole'S OWN PLUG-AND-PLAY LOOKS FOR.
-    // CConsole(nullptr, TRUE) below resolves its screen half by asking
-    // CDeviceNameService for "tty1" — the name Circle's own screen device
+    // The output half, under the name CConsole's own plug-and-play looks
+    // for. CConsole(nullptr, TRUE) below resolves its screen half by asking
+    // CDeviceNameService for "tty1" - the name Circle's own screen device
     // would register under, which this board has none of. Registering the
     // raw router under that name is the one substitution this library makes;
     // everything downstream of it is CConsole's own, unmodified.
     CDeviceNameService::Get()->AddDevice("tty1", &s_raw, FALSE);
 
-    // THE CONSOLE ITSELF. No alternate device: a console with nothing to
-    // fall back to and no keyboard found yet answers every read with no data,
-    // which is CConsole::Read's own contract, and needs no fallback device to
-    // do it. Plug-and-play so it finds "ukbd1" the moment src/input.cpp's
-    // pump has enumerated one, exactly as a bare Circle kernel would.
+    // No alternate device: a console with nothing to fall back to and no
+    // keyboard found yet answers every read with no data, which is
+    // CConsole::Read's own contract, and needs no fallback device to do it.
+    // Plug-and-play so it finds "ukbd1" the moment src/input.cpp's pump has
+    // enumerated one, exactly as a bare Circle kernel would.
     s_pConsole = new (s_ConsoleStore) CConsole(nullptr, TRUE);
     s_pConsole->Initialize();
 
-    // RAW, AND SILENT — see the file header for why a held-back line breaks
+    // Raw, and silent - see the file header for why a held-back line breaks
     // a single-character Read, and why echo belongs to the caller rather
     // than to this console. Neither ICANON nor ECHO is in this mask. Set
     // once, on the console rather than the line discipline UpdatePlugAndPlay
@@ -142,7 +140,7 @@ void SDL2Circle_StdioInit(void)
 }
 
 // Called every input pump, which already walks the device name service for
-// "ukbd1" itself (src/input.cpp) — so this is one more idempotent lookup on
+// "ukbd1" itself (src/input.cpp) - so this is one more idempotent lookup on
 // a pass that already makes the expensive one, and a no-op on every pass
 // after the console has found its keyboard.
 void SDL2Circle_ConsolePumpPlugAndPlay(void)

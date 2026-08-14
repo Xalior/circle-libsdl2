@@ -1,9 +1,9 @@
 //
-// rect.cpp — SDL2's rectangle arithmetic
+// rect.cpp - SDL2's rectangle arithmetic
 //
 // Small, exact, and used by everything: clipping a blit, clipping a fill,
 // working out what part of a window a game actually touched. SDL2 treats a
-// rectangle with a width or height of zero or less as EMPTY, and every
+// rectangle with a width or height of zero or less as empty, and every
 // function here follows that rule rather than the more obvious one, because
 // an application's clipping logic is written against it.
 //
@@ -68,7 +68,7 @@ extern "C" void SDL_UnionRect(const SDL_Rect *A, const SDL_Rect *B, SDL_Rect *re
     if (result == nullptr)
         return;
     // SDL2 treats an empty operand as contributing nothing, so the union of
-    // an empty rectangle and a real one is the real one — not a rectangle
+    // an empty rectangle and a real one is the real one - not a rectangle
     // stretched back to the origin.
     if (rect_empty(A))
     {

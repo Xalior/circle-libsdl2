@@ -1,13 +1,12 @@
 //
-// gamecontroller.cpp — SDL's game-controller layer over the shim's joysticks.
+// gamecontroller.cpp - SDL's game-controller layer over the shim's joysticks.
 //
-// A game controller is not a device. It is a JOYSTICK PLUS A MAPPING: a line
+// A game controller is not a device. It is a joystick plus a mapping: a line
 // of text, looked up by the joystick's GUID, that says which raw axis, button
 // or hat direction plays the part of each named control on a standard pad.
-// A pad with no line in the database is not a game controller — it is still a
+// A pad with no line in the database is not a game controller - it is still a
 // perfectly good joystick, and an application that reads raw axes and buttons
-// works with it. That is the honest answer for anything unusual, a steering
-// wheel included, and this file gives it rather than inventing a layout.
+// works with it, a steering wheel included.
 //
 // The mapping text format and its lookup rules are SDL2's, reproduced closely
 // enough that an unmodified gamecontrollerdb.txt works: a comma-separated
@@ -15,19 +14,18 @@
 // bN (button), aN (axis), or hN.M (hat N, direction bitmask M), with the
 // prefixes and the trailing tilde that select half an axis or invert it.
 //
-// PLATFORM TAGS. A database line only loads if its `platform:` field names
-// the platform doing the loading. Nothing in any published database says
-// Circle, so lines tagged Linux are accepted as well — and they are the right
-// ones: the GUIDs this shim builds for USB pads have exactly the shape
-// Linux's evdev backend builds (USB bus, no driver signature), so the Linux
-// table is the one that matches byte for byte.
+// A database line only loads if its `platform:` field names the platform
+// doing the loading. Nothing in any published database says Circle, so lines
+// tagged Linux are accepted as well: the GUIDs this shim builds for USB pads
+// have exactly the shape Linux's evdev backend builds (USB bus, no driver
+// signature), so the Linux table matches byte for byte.
 //
-// WHICH CORE DOES WHAT. Mappings are added, and controllers opened, by the
-// application. The events, though, are derived where the joystick events are
-// made: on core 0, straight after each raw event, so a controller event
-// arrives in the same order and in the same pump as the joystick event it
-// came from. Opening a controller publishes its bindings with a release
-// store, which is what makes them safe for core 0 to read.
+// Mappings are added, and controllers opened, by the application. The
+// events, though, are derived where the joystick events are made: on core 0,
+// straight after each raw event, so a controller event arrives in the same
+// order and in the same pump as the joystick event it came from. Opening a
+// controller publishes its bindings with a release store, which is what
+// makes them safe for core 0 to read.
 //
 #include <SDL2/SDL.h>
 #include "sdl2circle.h"
@@ -74,7 +72,7 @@ struct ExtBind
 // one goes on the front of the list. That is what lets core 0 walk the list
 // while the application is still loading a database: a reader either sees a
 // node completely or does not see it at all. Re-adding a GUID supersedes the
-// old entry rather than editing it — the old node stays linked, marked dead,
+// old entry rather than editing it - the old node stays linked, marked dead,
 // and lookups skip it.
 // ---------------------------------------------------------------------------
 
@@ -118,7 +116,7 @@ void GuidSetVersion(SDL_JoystickGUID *g, Uint16 version)
 }
 
 // ---------------------------------------------------------------------------
-// Named controls. The position in each table IS the enum value, so these are
+// Named controls. The position in each table is the enum value, so these are
 // both the parser's vocabulary and SDL_GameControllerGetStringFor*'s answer.
 // ---------------------------------------------------------------------------
 

@@ -1,12 +1,12 @@
 //
-// pixels.cpp — SDL2 pixel formats, palettes and colour packing
+// pixels.cpp - SDL2 pixel formats, palettes and colour packing
 //
 // A pixel format in SDL2 is two things at once: a name (the
 // SDL_PIXELFORMAT_* enum) and a description (bits per pixel, one mask and
 // one shift per channel, optionally a palette). Everything that reads or
 // writes a pixel anywhere in this library goes through the description, so
 // adding a format here is what makes surfaces, blits, conversions and
-// texture uploads understand it — there is no second place to teach.
+// texture uploads understand it - there is no second place to teach.
 //
 // Every packed RGB format SDL2 names is described here, from 8-bit indexed
 // and RGB332 through the 16-bit 4444/1555/565 families and 24-bit RGB/BGR
@@ -16,19 +16,17 @@
 // in this library produces or consumes them, and describing them here would
 // be describing something no code path can act on.
 //
-// Format records for the PACKED formats are shared and reference-counted,
+// Format records for the packed formats are shared and reference-counted,
 // exactly as SDL2 does it: SDL_AllocFormat returns the one record for a
 // given format enum with its count raised, and SDL_FreeFormat lowers it.
 // Surfaces therefore cost no format storage of their own, and an
 // application that allocates the same format in a loop is not allocating
 // anything.
 //
-// AN INDEXED FORMAT IS NEVER SHARED, because the palette lives in the format
-// record and a palette belongs to ONE picture. Two 8-bit surfaces sharing a
-// record share a palette, so making the second one — which installs a fresh
-// palette of its own — silently repaints the first in whatever colours the
-// new palette holds. Nothing warns and nothing fails; the picture simply
-// comes out in the wrong colours, or in none at all.
+// An indexed format is never shared: the palette lives in the format record,
+// and a palette belongs to one picture. Two 8-bit surfaces sharing a record
+// would share a palette, so installing a fresh palette for the second
+// surface would silently repaint the first, with no error reported.
 //
 #include "pixels.h"
 #include "sdl2circle.h"
@@ -41,15 +39,15 @@
 //
 // One row per format this library can describe. It is the single source for
 // both directions of the enum/masks translation, so the two can never drift
-// apart — which they do when each is written as its own switch.
+// apart - which they do when each is written as its own switch.
 // ---------------------------------------------------------------------------
 namespace
 {
 // A row holds only what the format enum cannot say for itself: the channel
-// masks and the name. WIDTH IS NEVER WRITTEN HERE. Both widths a format has —
-// its significant bits and the bytes one pixel occupies — are encoded in the
-// enum value and are read back out of it below, so a row cannot disagree with
-// the format it names.
+// masks and the name. Width is never written here: both widths a format has
+// - its significant bits and the bytes one pixel occupies - are encoded in
+// the enum value and are read back out of it below, so a row cannot
+// disagree with the format it names.
 struct FormatDesc
 {
     Uint32 format;
@@ -57,7 +55,7 @@ struct FormatDesc
     const char *name;
 };
 
-// Masks are written for a LITTLE-ENDIAN machine, which every AArch64 Pi is.
+// Masks are written for a little-endian machine, which every AArch64 Pi is.
 // The 24-bit rows are the ones this actually matters for: RGB24 means "red
 // byte first", which reads back as mask 0x0000FF, while the 32-bit rows name
 // a whole word and are endianness-independent as written.
@@ -109,13 +107,13 @@ const FormatDesc *find_desc(Uint32 format)
     return nullptr;
 }
 
-// THE BITS A FORMAT REPORTS, which is not always the bits it stores.
+// The bits a format reports are not always the bits it stores.
 //
 // SDL2's rule, from its own SDL_PixelFormatEnumToMasks: a format one or two
-// bytes wide reports its significant bits; anything wider reports its BYTES
+// bytes wide reports its significant bits; anything wider reports its bytes
 // times eight. The X-channel four-byte formats are where that matters.
 // SDL_PIXELFORMAT_RGB888 and its three siblings hold twenty-four significant
-// bits — the fourth byte carries nothing, so SDL_BITSPERPIXEL says 24 — but
+// bits - the fourth byte carries nothing, so SDL_BITSPERPIXEL says 24 - but
 // a pixel still occupies four bytes, so SDL2 calls them 32-bit formats and
 // every buffer, pitch and offset for them is four bytes to the pixel.
 //
@@ -128,16 +126,16 @@ int format_bits(Uint32 format)
     return bytes > 2 ? bytes * 8 : (int)SDL_BITSPERPIXEL(format);
 }
 
-// A mask lookup matches on the depth the caller named, with ONE pairing that
+// A mask lookup matches on the depth the caller named, with one pairing that
 // is not equality: 15 and 16 answer for each other. XRGB1555 reports fifteen
-// bits, and an application asking for a 555 surface names sixteen — real SDL2
+// bits, and an application asking for a 555 surface names sixteen - real SDL2
 // hands back SDL_PIXELFORMAT_RGB555 either way, and refusing it would fail a
 // surface every port expects to get.
 //
-// The twelve-bit formats are deliberately NOT in that pairing, because real
+// The twelve-bit formats are deliberately not in that pairing, because real
 // SDL2 does not put them there: 4444 masks at a depth of sixteen are an
-// unknown format to it, and answering with a surface that then reports twelve
-// bits is exactly the kind of surprise an application asserts on.
+// unknown format to it, and answering with a surface that then reports
+// twelve bits is exactly the kind of surprise an application asserts on.
 bool depth_matches(int want, int have)
 {
     if (want == have)
@@ -148,7 +146,7 @@ bool depth_matches(int want, int have)
 // Derive shift and loss from a channel mask, the way SDL2's own
 // SDL_InitFormat does: the shift is the count of low zero bits, the loss is
 // eight minus the width of the mask. An absent channel (mask 0) is loss 8,
-// shift 0 — which is what makes MapRGBA fold a missing alpha away instead
+// shift 0 - which is what makes MapRGBA fold a missing alpha away instead
 // of writing a stray bit.
 void mask_to_shift_loss(Uint32 mask, Uint8 *shift, Uint8 *loss)
 {
@@ -170,16 +168,17 @@ void mask_to_shift_loss(Uint32 mask, Uint8 *shift, Uint8 *loss)
 }
 } // namespace
 
-// The STRIDE of one pixel: what a pointer walking a row steps by, and what
-// every buffer this library allocates is sized from. It comes straight out of
-// the format enum, which is the only place that knows it — deriving it from
-// the significant bits gets the X-channel formats wrong by a whole byte.
+// The stride of one pixel: what a pointer walking a row steps by, and what
+// every buffer this library allocates is sized from. It comes straight out
+// of the format enum, which is the only place that knows it - deriving it
+// from the significant bits gets the X-channel formats wrong by a whole
+// byte.
 //
 // Zero for a sub-byte indexed format, because there is no whole byte to step
 // by, and zero for a format this library cannot describe. Callers test for
-// zero and refuse the surface or the texture. Note that the FORMAT RECORD's
-// BytesPerPixel is a different number for those same formats — it rounds up
-// to one, as SDL2's does — because it answers a different question.
+// zero and refuse the surface or the texture. Note that the format record's
+// BytesPerPixel is a different number for those same formats - it rounds up
+// to one, as SDL2's does - because it answers a different question.
 int SDL2Circle_BytesPerPixel(Uint32 pixel_format)
 {
     if (find_desc(pixel_format) == nullptr)
@@ -317,11 +316,10 @@ extern "C" Uint32 SDL_MasksToPixelFormatEnum(int bpp, Uint32 Rmask, Uint32 Gmask
         case 16: return SDL_PIXELFORMAT_RGB565;
         case 24: return SDL_PIXELFORMAT_RGB24;
 
-        // ARGB8888 AND NOT RGB888, and this one is a DELIBERATE DIFFERENCE
-        // from real SDL2, which answers RGB888 here. Both are four bytes wide
-        // and both report 32 bits, so either satisfies the depth the caller
-        // named; ARGB8888 is the one that carries an alpha channel, and it is
-        // the format the display already works in, so a surface made this way
+        // ARGB8888, not RGB888 as real SDL2 answers here. Both are four
+        // bytes wide and both report 32 bits, so either satisfies the depth
+        // the caller named; ARGB8888 carries an alpha channel and is the
+        // format the display already works in, so a surface made this way
         // reaches the glass without a conversion.
         case 32: return SDL_PIXELFORMAT_ARGB8888;
 
@@ -349,7 +347,7 @@ extern "C" const char *SDL_GetPixelFormatName(Uint32 format)
 }
 
 // ---------------------------------------------------------------------------
-// Format records — one shared, reference-counted record per format enum
+// Format records - one shared, reference-counted record per format enum
 // ---------------------------------------------------------------------------
 
 static SDL_PixelFormat *s_format_list = nullptr;
@@ -360,9 +358,7 @@ extern "C" SDL_PixelFormat *SDL_AllocFormat(Uint32 pixel_format)
     // picture. Handing two surfaces the same record would hand them the same
     // palette: creating the second surface installs a new palette in the
     // record they share, and the first surface's colours are gone. So an
-    // indexed caller gets a private record, and it never joins the list —
-    // which is what SDL2 does too, as any program holding two paletted
-    // surfaces at once demonstrates.
+    // indexed caller gets a private record, which never joins the list.
     if (!SDL_ISPIXELFORMAT_INDEXED(pixel_format))
     {
         for (SDL_PixelFormat *f = s_format_list; f != nullptr; f = f->next)
@@ -630,7 +626,7 @@ extern "C" void SDL_CalculateGammaRamp(float gamma, Uint16 *ramp)
 // Bulk conversion
 //
 // SDL_ConvertPixels is the one entry point every other conversion in this
-// library goes through — surface conversion, texture upload in a format the
+// library goes through - surface conversion, texture upload in a format the
 // present path does not store, and the BMP loader's normalisation all land
 // here. So the fast paths belong here and nowhere else.
 // ---------------------------------------------------------------------------
@@ -671,7 +667,7 @@ extern "C" int SDL_ConvertPixels(int width, int height,
         return 0;
     }
 
-    // An indexed source has no palette here — SDL_ConvertPixels takes format
+    // An indexed source has no palette here - SDL_ConvertPixels takes format
     // enums, not formats, so there is nowhere for one to come from. Surface
     // conversion handles indexed sources itself, through the surface's own
     // palette; this entry point says so rather than inventing grey.

@@ -1,21 +1,21 @@
 //
-// events.cpp — the event queue, and SDL_PumpEvents, the shim's per-frame
+// events.cpp - the event queue, and SDL_PumpEvents, the shim's per-frame
 // heartbeat.
 //
-// ONE QUEUE, ON THE CORE THAT READS IT. The application's queue is an array
+// One queue, on the core that reads it. The application's queue is an array
 // held wherever the application runs. Under the core split the producers are
-// on the hardware core — the USB input pump, window events from marshalled
-// calls — and they publish into the cross-core ring instead; the application
+// on the hardware core - the USB input pump, window events from marshalled
+// calls - and they publish into the cross-core ring instead; the application
 // core's pump drains that ring into this queue. So the queue itself is only
 // ever touched by the side that reads it, and the spin lock around it is
 // there for the single-core case, where a Circle task may push while the
 // application is looking.
 //
-// FILTERS AND WATCHERS RUN WHERE THE APPLICATION IS. They are application
+// Filters and watchers run where the application is. They are application
 // code, so they are called at the point an event enters the application's own
 // queue: in SDL_PushEvent when the pushing side is the application's, and in
 // the ring drain when the event came from the hardware core. That is the same
-// promise SDL makes — the filter sees every event before the program does —
+// promise SDL makes - the filter sees every event before the program does -
 // without ever running the application's code on the wrong core.
 //
 #include <SDL2/SDL.h>
@@ -131,7 +131,7 @@ extern "C" int SDL_PushEvent(SDL_Event *event)
     // Core split: producers on core 0 (USB input pump, window events from
     // proxied calls) publish through the cross-core ring; the application core's
     // pump drains it into this local queue, and runs the filter and the
-    // watchers there — they are the application's own code and belong on its
+    // watchers there - they are the application's own code and belong on its
     // core.
     if (SDL2Circle_SplitActive() && SDL2Circle_ThisCore() == 0)
         return SDL2Circle_EventRingPush(event)
@@ -173,7 +173,7 @@ extern "C" void SDL_PumpEvents(void)
         // The same liveness beacon the single-core pump prints below. It
         // used to be unreachable here, because printing meant touching the
         // console and this is not the core that owns it; the log ring
-        // removes that objection. The deadman itself stays on core 0 — the
+        // removes that objection. The deadman itself stays on core 0 - the
         // watchdog task is the split's version of it, and it can see a
         // wedged application core that an in-band timer cannot.
         {
@@ -192,8 +192,8 @@ extern "C" void SDL_PumpEvents(void)
     // Everything below this line is core 0's: the scheduler, the kernel
     // timer, the USB host controller, the serial port, the sound device and
     // the CPU throttle's firmware mailbox. There is exactly one other way to
-    // arrive here off core 0 — a pinned thread on a core a host kernel lent
-    // (SDL2Circle_ThreadCoreOffer) with the split never activated — and it
+    // arrive here off core 0 - a pinned thread on a core a host kernel lent
+    // (SDL2Circle_ThreadCoreOffer) with the split never activated - and it
     // has to stop here rather than reach any of them. Such a caller has no
     // pumping to do anyway: the timers above are serviced, and the devices
     // belong to the core that owns them.
@@ -212,7 +212,7 @@ extern "C" void SDL_PumpEvents(void)
     // Liveness beacon + deadman: a debug line every 10 s proves the app's
     // main loop is still pumping. A kernel timer re-armed on every beat
     // fires from IRQ context if the pump goes silent for 30 s and dumps
-    // the scheduler's task list — the wedged system's own post-mortem.
+    // the scheduler's task list - the wedged system's own post-mortem.
     {
         static u64 lastBeat = 0;
         static TKernelTimerHandle deadman = 0;
@@ -239,7 +239,7 @@ extern "C" void SDL_PumpEvents(void)
     // The CPU clock and the case fan. This library owns them; this is the
     // heartbeat that drives them when the application runs on core 0. Under
     // the core split it is the servo instead, because this tail never runs
-    // there — the application core's pump returns above.
+    // there - the application core's pump returns above.
     SDL2Circle_HardwareTick();
 
     {
@@ -268,7 +268,7 @@ extern "C" int SDL_PeepEvents(SDL_Event *events, int numevents,
         if (events == nullptr)
             return SDL_SetError("Passed a NULL event array");
 
-        // The type range does not filter an add — SDL ignores it here — and
+        // The type range does not filter an add - SDL ignores it here - and
         // the events go on the back of the queue exactly as SDL_PushEvent
         // would put them there, by the same route, so the split's producers
         // still publish through the ring.
@@ -300,7 +300,7 @@ extern "C" int SDL_PeepEvents(SDL_Event *events, int numevents,
         return SDL_SetError("Unknown event action");
 
     // A null array asks how many events match rather than for the events
-    // themselves, and takes nothing off the queue — which is what
+    // themselves, and takes nothing off the queue - which is what
     // SDL_HasEvents is.
     int used = 0;
 

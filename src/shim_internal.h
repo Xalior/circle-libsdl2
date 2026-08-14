@@ -1,19 +1,19 @@
 //
-// shim_internal.h — cross-file plumbing inside circle-libsdl2 (not installed)
+// shim_internal.h - cross-file plumbing inside circle-libsdl2 (not installed)
 //
 #ifndef _sdl2_circle_shim_internal_h
 #define _sdl2_circle_shim_internal_h
 
 #include <SDL2/SDL_joystick.h>
 
-// keyboard.cpp — USB HID keyboard producer
+// keyboard.cpp - USB HID keyboard producer
 void SDLCircle_InitKeyboard(void);
 void SDLCircle_PumpKeyboard(void);
 
 // ---- joystick.cpp ----------------------------------------------------------
 
-// Attach, detach and report translation for every Circle gamepad. CORE 0
-// ONLY: called from SDL2Circle_InputPump, and given whatever
+// Attach, detach and report translation for every Circle gamepad. Core 0
+// only: called from SDL2Circle_InputPump, and given whatever
 // CUSBHCIDevice::UpdatePlugAndPlay just reported, since that is the only
 // signal Circle gives that a device may have appeared.
 void SDL2Circle_JoystickPump(bool bPlugAndPlayChanged);
@@ -47,8 +47,8 @@ SDL_Joystick *SDL2Circle_JoyOpenSlot(int slot);
 
 // ---- mouse.cpp -------------------------------------------------------------
 
-// Attach, detach and report translation for Circle's USB mouse. CORE 0 ONLY,
-// on the same terms as the joystick pump above, and given the same
+// Attach, detach and report translation for Circle's USB mouse. Core 0
+// only, on the same terms as the joystick pump above, and given the same
 // plug-and-play signal.
 void SDL2Circle_MousePump(bool bPlugAndPlayChanged);
 

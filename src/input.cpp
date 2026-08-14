@@ -1,17 +1,17 @@
 //
-// input.cpp — USB HID keyboard -> SDL event queue.
+// input.cpp - USB HID keyboard -> SDL event queue.
 //
-// SDL scancodes ARE USB HID usage-page-7 codes, so the translation is the
+// SDL scancodes are USB HID usage-page-7 codes, so the translation is the
 // identity; only SDL keycodes (syms) need a small mapping. The raw report
 // handler can run in IRQ context: it only snapshots the report. Diffing and
 // event synthesis happen in SDL2Circle_InputPump() on the main loop.
 //
-// A KEY EVENT IS PHYSICAL, TYPED TEXT IS NOT. SDL keeps those two apart and
-// so does this file. A scancode names a POSITION on the keyboard and never
+// A key event is physical; typed text is not, and SDL keeps those two apart,
+// as does this file. A scancode names a position on the keyboard and never
 // changes with the layout, so a game that binds the key left of Z gets the
-// same key on every board; SDL_TEXTINPUT carries what the key PRINTS, which
-// is exactly what the layout decides. So the scancode path below is raw HID
-// throughout, and only the text path consults the layout — Circle's own
+// same key on every board; SDL_TEXTINPUT carries what the key prints, which
+// is exactly what the layout decides. The scancode path below is raw HID
+// throughout, and only the text path consults the layout - Circle's own
 // CKeyMap, chosen by the cmdline.txt "keymap=" option.
 //
 #include <SDL2/SDL.h>
@@ -36,7 +36,7 @@
 namespace
 {
 
-// The host controller this library PUMPS but does not own — see
+// The host controller this library pumps but does not own - see
 // SDL2Circle_InputInit. Held as the generic controller interface because
 // pumping plug-and-play is the only thing done with it, and that is the one
 // method every board's controller has in common.
@@ -103,23 +103,22 @@ void KeyboardRemovedHandler(CDevice *, void *)
     AtomicIncrement((volatile int *)&s_reportSeq);
 }
 
-// The SDL keycode (sym) a key reports. DELIBERATELY NOT LAYOUT-DEPENDENT,
-// though desktop SDL's is, and the reasons are worth stating because the
-// question comes up every time somebody reads the keymap code below.
+// The SDL keycode (sym) a key reports here does not depend on the keyboard
+// layout, unlike desktop SDL's.
 //
-// A sym is what applications BIND ACTIONS TO. Games here read their controls
+// A sym is what applications bind actions to. Games here read their controls
 // out of configuration files and out of defaults compiled in years ago, all
 // of them written against a US keyboard; a sym that moved with "keymap="
 // would silently rebind those controls on any board not set to "us", and a
 // key configuration saved on one board would mean something else on the
-// next. The scancode is what stays fixed across layouts, and this keeps the
-// sym fixed alongside it.
+// next. The scancode stays fixed across layouts, and this keeps the sym
+// fixed alongside it.
 //
-// There is also no side-effect-free way to ask Circle the question.
-// CKeyMap::Translate is a state machine, not a lookup: it TOGGLES caps, num
+// There is also no side-effect-free way to ask Circle the question:
+// CKeyMap::Translate is a state machine, not a lookup, and toggles caps, num
 // and scroll lock as it goes. SDL_GetKeyFromScancode is a pure query an
-// application may call at any time and in any number — SDL_GetScancodeFromKey
-// below answers by calling it once per scancode — so routing it through
+// application may call at any time and in any number - SDL_GetScancodeFromKey
+// below answers by calling it once per scancode - so routing it through
 // Translate would flip the lock state hundreds of times per lookup.
 SDL_Keycode KeycodeFor(SDL_Scancode sc)
 {
@@ -159,16 +158,16 @@ const SDL_Scancode ModScancode[8] = {
     SDL_SCANCODE_LCTRL, SDL_SCANCODE_LSHIFT, SDL_SCANCODE_LALT, SDL_SCANCODE_LGUI,
     SDL_SCANCODE_RCTRL, SDL_SCANCODE_RSHIFT, SDL_SCANCODE_RALT, SDL_SCANCODE_RGUI};
 
-// Whether an application is collecting typed text. SDL starts with it ON,
+// Whether an application is collecting typed text. SDL starts with it on,
 // and an application that never calls SDL_StartTextInput still receives
-// SDL_TEXTINPUT — which is what makes a program with a text field work
+// SDL_TEXTINPUT - which is what makes a program with a text field work
 // without having asked for anything.
 bool s_textInputActive = true;
 
 // The keyboard layout, and the only place in this file that has one.
 //
 // It is Circle's, chosen at boot by the cmdline.txt "keymap=" option that
-// CKernelOptions reads — us, uk, de, es, fr, it or dv — so a board says what
+// CKernelOptions reads - us, uk, de, es, fr, it or dv - so a board says what
 // is printed on its keys in the same place it says everything else about
 // itself, and this library does not carry a second copy of seven layouts.
 //
@@ -187,8 +186,8 @@ CKeyMap *KeyMap(void)
 }
 
 // SDL's modifier word in the form Circle's keymap expects. Circle separates
-// the two Alt keys by meaning rather than by side: the LEFT one is Alt, the
-// RIGHT one is AltGr, the level shift that European layouts put their extra
+// the two Alt keys by meaning rather than by side: the left one is Alt, the
+// right one is AltGr, the level shift that European layouts put their extra
 // characters behind.
 u8 CircleModifiers(Uint16 mod)
 {
@@ -203,7 +202,7 @@ u8 CircleModifiers(Uint16 mod)
 }
 
 // SDL_TEXTINPUT carries UTF-8 and Circle's keymaps hold Latin-1, in which
-// every value IS its own Unicode code point — so the pound sign the UK
+// every value is its own Unicode code point - so the pound sign the UK
 // layout puts on shift-3, 0xA3, is code point U+00A3 and goes out as the two
 // bytes UTF-8 spells it with. Written as one byte it would be an invalid
 // sequence, and an application that draws its text would show a replacement
@@ -228,7 +227,7 @@ bool TypedText(SDL_Scancode sc, Uint16 mod, char *out)
     // A key held with control, the left alt or a GUI key is a command, not
     // text, and SDL sends no SDL_TEXTINPUT for one.
     //
-    // AltGr — the right alt — is the exception, and it is why the two alts
+    // AltGr - the right alt - is the exception, and it is why the two alts
     // are told apart here at all. On the European layouts it is a third
     // level rather than a command modifier, and the characters behind it are
     // ordinary text: the pipe on a UK keyboard, the braces and the backslash
@@ -239,12 +238,12 @@ bool TypedText(SDL_Scancode sc, Uint16 mod, char *out)
 
     const bool altgr = (mod & KMOD_RALT) != 0;
 
-    // THE KEYPAD IS NOT ROUTED THROUGH THE LAYOUT, on purpose. Its printable
-    // keys carry the same characters in every layout Circle ships, so there
-    // is nothing for a layout to say about them; and Circle gates the digits
-    // on num lock, which starts off and which nothing here ever turns on, so
-    // asking the layout would stop the keypad typing digits at all. A keypad
-    // being navigated instead sends its own scancodes.
+    // The keypad is not routed through the layout. Its printable keys carry
+    // the same characters in every layout Circle ships, so there is nothing
+    // for a layout to say about them; and Circle gates the digits on num
+    // lock, which starts off and which nothing here ever turns on, so asking
+    // the layout would stop the keypad typing digits at all. A keypad being
+    // navigated instead sends its own scancodes.
     if (!altgr)
     {
         switch (sc)
@@ -266,16 +265,16 @@ bool TypedText(SDL_Scancode sc, Uint16 mod, char *out)
         }
     }
 
-    // A scancode IS a USB HID usage code and so is Circle's physical code,
-    // which makes this the identity — within the table's range. The bounds
+    // A scancode is a USB HID usage code and so is Circle's physical code,
+    // which makes this the identity - within the table's range. The bounds
     // test is not decoration: SDL has scancodes above 255 for keys no HID
     // keyboard reports, and the u8 the keymap takes would fold one of those
     // onto a letter.
     if (sc <= SDL_SCANCODE_UNKNOWN || sc > PHY_MAX_CODE)
         return false;
 
-    // Translate is a state machine as much as a lookup — it is what advances
-    // caps, num and scroll lock — so it is asked once per key press and its
+    // Translate is a state machine as much as a lookup - it is what advances
+    // caps, num and scroll lock - so it is asked once per key press and its
     // answer used for everything.
     const u16 nCode = KeyMap()->Translate((u8)sc, CircleModifiers(mod));
 
@@ -293,7 +292,7 @@ bool TypedText(SDL_Scancode sc, Uint16 mod, char *out)
 
     // Modifiers are passed as none because the one thing GetString does with
     // them is fold control-held letters into control characters, and control
-    // never reaches here. What it does do is apply caps lock — which inverts
+    // never reaches here. What it does do is apply caps lock - which inverts
     // the case, as shift already did by selecting the shifted table, so the
     // two together cancel and give lower case back.
     char Buffer[2];
@@ -346,7 +345,7 @@ void PushKeyEvent(SDL_Scancode sc, bool down)
     SDL_PushEvent(&ev);
 
     // SDL sends the key event first and the text second, and applications
-    // rely on that order — one that reads text usually checks the key event
+    // rely on that order - one that reads text usually checks the key event
     // for editing keys in the same pass.
     if (down)
         PushTextInputEvent(sc, s_modState);
@@ -366,40 +365,40 @@ bool InReport(const RawReport &r, unsigned char key)
 // drives the emulated keyboard so the bench can dismiss a +3 Loader, type a
 // C64 LOAD"...", or unlock MAME's UI (Scroll Lock) and open its menu (Tab).
 //
-// The wire format is a LINE-ORIENTED macro language (one command per '\n'):
+// The wire format is a line-oriented macro language (one command per '\n'):
 //
 //   <domain> <command...>
 //
 // The first token routes to a subsystem, so this is the shim's general
-// robot-hands channel over SDL's input surface, not a keyboard hack —
+// robot-hands channel over SDL's input surface, not a keyboard hack -
 // gamepad/joystick and whatever input device comes next each register a new
 // domain (s_injectDomains, below) without touching the transport. Today there
 // are two:
 //
-//   key down <key>     press and HOLD <key> (stays down; combine for chords)
+//   key down <key>     press and hold <key> (stays down; combine for chords)
 //   key up   <key>     release <key>
 //   key tap  <key>     self-timed press+release of one <key>
 //   key type <text>    self-timed taps for each character of <text>
 //   mouse move <dx> <dy>   move the pointer by a displacement
-//   mouse to   <x> <y>     move the pointer TO a screen coordinate
-//   mouse down <button>    press and HOLD <button> (left right middle x1 x2)
+//   mouse to   <x> <y>     move the pointer to a screen coordinate
+//   mouse down <button>    press and hold <button> (left right middle x1 x2)
 //   mouse up   <button>    release <button>
 //   mouse tap  <button>    self-timed press+release of one <button>
 //   mouse wheel <n>        turn the wheel; positive is away from the user
 //   # ...              comment; blank lines ignored
 //
-// Explicit down/up exist because real machines need CHORDS — keys held down
-// together — that a stream of self-releasing taps can never express (there is
+// Explicit down/up exist because real machines need chords - keys held down
+// together - that a stream of self-releasing taps can never express (there is
 // no single byte for "both shifts at once", the Sinclair reset):
 //   key down lshift / key down rshift / key up rshift / key up lshift
 //
 // <key> is a single printable character (US-layout, shift auto-applied for
 // tap/type) or a name: lshift rshift lctrl rctrl lalt ralt lgui rgui
 // scrolllock capslock tab esc enter space bs del ins up down left right
-// home end pgup pgdn f1..f12. down/up use the PHYSICAL key only (no auto
-// shift) — a chord names its own modifiers. tap/type feed a self-timed hold
+// home end pgup pgdn f1..f12. down/up use the physical key only (no auto
+// shift) - a chord names its own modifiers. tap/type feed a self-timed hold
 // queue (below) because MAME scans the keyboard per emulated frame; down/up
-// post immediately and the SCRIPT owns the timing between them.
+// post immediately and the script owns the timing between them.
 //
 // <button> is left, right, middle, x1 or x2. The mouse verbs mirror the
 // keyboard's for the same reason: a click that a per-frame scan can miss is
@@ -412,7 +411,7 @@ bool InReport(const RawReport &r, unsigned char key)
 CSerialDevice *s_injectSerial = nullptr;
 
 // One self-timed press-and-release, of either kind. Keys and mouse buttons
-// share the hold state machine below because they need the identical timing —
+// share the hold state machine below because they need the identical timing -
 // what differs is only which device the press is posted to.
 struct InjTap
 {
@@ -440,7 +439,7 @@ u64 s_injUntil = 0;           // wall-clock (us) the current phase ends at
 // real mouse.
 unsigned s_injMouseButtons = 0;
 
-// Timing is WALL-CLOCK, not pump calls: SDL_PumpEvents runs many times per
+// Timing is wall-clock, not pump calls: SDL_PumpEvents runs many times per
 // emulated frame (MAME drains the event queue in a loop), so a frame counter
 // would expire in a fraction of one real frame and MAME's per-frame keyboard
 // scan would miss the key. 80 ms down / 50 ms up survives that scan reliably.
@@ -449,7 +448,7 @@ const u64 INJ_GAP_US = 50000;
 
 // ASCII byte -> US-layout scancode + shift. false => ignore the byte.
 //
-// This names a KEY POSITION, not a character. What the application receives
+// This names a key position, not a character. What the application receives
 // as typed text is that position read through the board's own layout, so on
 // a board set to a non-US keymap `key type` presses the US positions and the
 // characters that come out are that layout's.
@@ -599,7 +598,7 @@ void InjectEnqueueButton(unsigned mask)
 // One displacement, delivered as however many reports it takes: a real mouse
 // carries at most 127 per axis in a report, so a long move arrives as a burst
 // of full-scale reports exactly as a fast hand's would. A zero displacement
-// still sends one report — that is how a button-only change is delivered.
+// still sends one report - that is how a button-only change is delivered.
 const int INJ_MOUSE_STEP_MAX = 127;
 
 void InjectMouseSend(int dx, int dy)
@@ -623,7 +622,7 @@ void InjectMouseSend(int dx, int dy)
 }
 
 // Press or release one button in the robot's own hand and report it. A button
-// already in the requested state changes nothing and sends nothing — a real
+// already in the requested state changes nothing and sends nothing - a real
 // mouse does not report what did not happen.
 void InjectButton(unsigned mask, bool down)
 {
@@ -688,7 +687,7 @@ char *InjectNextToken(char **s)
     return tok;
 }
 
-// Domain: keyboard. `args` is everything after "key" — "<verb> <operand...>".
+// Domain: keyboard. `args` is everything after "key" - "<verb> <operand...>".
 void InjectKeyCmd(char *args)
 {
     char *verb = InjectNextToken(&args);   // args now points at the operand
@@ -727,9 +726,9 @@ void InjectMouseCmd(char *args)
         return;
     }
 
-    // "mouse to X Y" — an absolute position out of a device that only speaks
+    // "mouse to X Y" - an absolute position out of a device that only speaks
     // displacements. A mouse reports how far it moved, never where it is, so
-    // there is no coordinate to send; but the pointer is CLAMPED to the
+    // there is no coordinate to send; but the pointer is clamped to the
     // surface, so a displacement at least as large as the surface parks it in
     // the top-left corner no matter where it started. From a known corner a
     // relative move is an absolute one.
@@ -789,36 +788,33 @@ void InjectDispatch(char *line)
 
 } // namespace
 
-// BUILD THE USB HOST CONTROLLER, UNLESS THE HOST KERNEL ALREADY DID.
+// Builds the USB host controller unless the host kernel already did.
 //
-// A USB host controller is a device, and Circle allows exactly one — it
+// A USB host controller is a device, and Circle allows exactly one - it
 // halts inside the constructor of a second. So this checks the controller's
 // own static accessor first: a host kernel that declares a CUSBHCIDevice
-// member and initialises it in its own CKernel::Initialize, which is still
-// where a long, blocking, interrupt-driven bring-up belongs if the kernel
-// has other devices to sequence around it, is left alone — found and adopted
-// exactly as one this library made would be. THIS CHECK IS NOT OPTIONAL: it
-// is the only thing standing between a host's own member and the halt.
+// member and initialises it in its own CKernel::Initialize is left alone -
+// found and adopted exactly as one this library made would be. This check
+// is required: it is the only thing standing between a host's own member and
+// the halt.
 //
 // Where nothing has claimed the controller yet, this library owns it, on the
 // same terms it already owns CCPUThrottle (SDL2Circle_HardwareInit,
 // hardware.cpp): Circle offers nothing else that will call it, a host kernel
 // with no per-frame loop of its own has no natural place to, and this
 // library already runs one. Plug-and-play is on, so a keyboard or pad
-// connected after boot is still found — the same setting every consumer
+// connected after boot is still found - the same setting every consumer
 // that declares its own member passes.
 //
-// CALLED FROM SDL2Circle_ArmCoreRuntime, ON CORE 0, NOT FROM SDL_Init. Two
-// reasons, and both are load-bearing:
+// Called from SDL2Circle_ArmCoreRuntime, on core 0, not from SDL_Init:
 //
-//  - SDL_Init's device work is marshalled to core 0's servo, and this
-//    library used to construct the controller there. The servo is the only
-//    thing that makes core 0 answer anybody — the console, the scheduler,
-//    the log drain, the watchdog and USB itself are all downstream of it —
-//    so a bring-up that took a long time took the whole machine with it,
-//    silently, with nothing left running to report it. ArmCoreRuntime runs
-//    before the servo exists at all, which is where that invariant (nothing
-//    on the servo's path may block) is safe to keep.
+//  - SDL_Init's device work is marshalled to core 0's servo. The servo is
+//    the only thing that makes core 0 answer anybody - the console, the
+//    scheduler, the log drain, the watchdog and USB itself are all
+//    downstream of it - so nothing on the servo's path may block; a long
+//    bring-up there would take the whole machine with it, silently, with
+//    nothing left running to report it. ArmCoreRuntime runs before the
+//    servo exists, which is where that invariant is safe to keep.
 //  - ArmCoreRuntime runs whether or not the application ever calls SDL_Init.
 //    A plain Pascal or C command-line program built against this library
 //    reads its standard input from the keyboard through Circle's own
@@ -826,11 +822,11 @@ void InjectDispatch(char *line)
 //    only inside SDL_Init would leave such a program with a standard input
 //    that could never produce a character.
 //
-// CInterruptSystem::Get() and CTimer::Get() rather than a parameter to
-// either this or ArmCoreRuntime: both assert if asked before their object
-// exists, and docs/CORE-SPLIT.md step 1 already has the host kernel bring
-// both up before ArmCoreRuntime is ever called, on any core — earlier even
-// than the host contract's "before SDL_Init" requires.
+// Uses CInterruptSystem::Get() and CTimer::Get() rather than taking either as
+// a parameter: both assert if asked before their object exists, and
+// docs/CORE-SPLIT.md step 1 already has the host kernel bring both up before
+// ArmCoreRuntime is ever called, on any core - earlier even than the host
+// contract's "before SDL_Init" requires.
 void SDL2Circle_UsbCtrlInit(void)
 {
     if (CUSBHCIDevice::IsActive())
@@ -842,14 +838,14 @@ void SDL2Circle_UsbCtrlInit(void)
     s_bUsbInitOK = pController->Initialize() != FALSE;
 }
 
-// ADOPT THE CONTROLLER SDL2Circle_UsbCtrlInit LEFT WAITING; NEVER BUILD ONE
-// HERE.
+// Adopts the controller SDL2Circle_UsbCtrlInit left waiting; never builds
+// one here.
 //
 // By the time this runs, SDL2Circle_UsbCtrlInit has already made sure a
 // controller exists (its own, or an adopted host member) or tried and
 // failed. This function's whole job is to look: through the controller's
 // own static accessor rather than the device name service, because a host
-// controller registers no name (its enumerated devices do — "ukbd1",
+// controller registers no name (its enumerated devices do - "ukbd1",
 // "upad1", "umouse1", which is how the pumps below reach them), but every
 // board's controller class answers IsActive()/Get(). CUSBHCIDevice is
 // Circle's alias for whichever class that is on this board, so one spelling
@@ -876,8 +872,8 @@ void SDL2Circle_InputInit(void)
     //  - IsActive() is true but this library's own build failed its
     //    Initialize(): the object exists, so IsActive() reports it, but no
     //    device it manages will ever appear. This is the one case left that
-    //    is a genuine hardware absence — the board's USB block itself never
-    //    came up — rather than something to fix in a kernel.
+    //    is a genuine hardware absence - the board's USB block itself never
+    //    came up - rather than something to fix in a kernel.
     //
     // Either way, it is almost never intended, and the reason is not
     // guessable from a game that simply never responds to a key, so it is
@@ -890,15 +886,14 @@ void SDL2Circle_InputInit(void)
                    "yet (SDL2Circle_ArmCoreRuntime, before SDL_Init) or the "
                    "board's USB hardware failed to come up.");
 
-    // WITH INJECTION ARMED IT IS FATAL, and the reason is that this exact
-    // pair hides itself.
+    // Fatal when injection is armed, because this exact pair hides itself.
     //
     // Injection does not go through USB. It reads a serial device and puts
     // events straight into the queue, so it works perfectly on a board where
     // no input device was ever enumerated. Every automated check therefore
     // passes: keys arrive, menus move, screenshots come out right. The board
     // is declared working and shipped, and the first person to plug a real
-    // keyboard into it finds nothing happens — with the one line that
+    // keyboard into it finds nothing happens - with the one line that
     // explained why scrolled off the console hours earlier.
     //
     // So a build that asks for robot hands and has no controller is refused
@@ -917,19 +912,18 @@ bool SDL2Circle_NoInputFatal(void)
 
 // The refusal. Says what is wrong, keeps saying it, and never returns.
 //
-// SAYS IT FIRST AND REPEATS IT. A board that stops silently has traded a
-// correct diagnosis for nothing at all, and one line at boot is very nearly
-// as bad: whoever attaches a console afterwards finds a quiet board and no
-// explanation. So the message goes out before anything stops, and goes out
-// again for as long as the board is powered.
+// The message goes out before anything stops, and again for as long as the
+// board is powered: a board that stops silently gives no diagnosis, and one
+// line at boot is nearly as bad, since whoever attaches a console afterwards
+// finds a quiet board and no explanation.
 //
-// KEEPS THE MACHINE ALIVE WHILE IT DOES. This is a halt, not a hang. On any
-// core but 0 the wait is a plain spin on the free-running counter, and core 0
-// carries on serving everything as usual. Called on core 0 — a payload with
-// no split, or one that reached here before the split armed — it yields to
-// the scheduler on every pass instead, so the console, the log drain and the
-// watchdog all keep running. A stop that stops core 0 would print the second
-// copy of its own message nowhere.
+// This is a halt, not a hang, and it keeps the machine alive while it runs.
+// On any core but 0 the wait is a plain spin on the free-running counter,
+// and core 0 carries on serving everything as usual. Called on core 0 - a
+// payload with no split, or one that reached here before the split armed -
+// it yields to the scheduler on every pass instead, so the console, the log
+// drain and the watchdog all keep running. A stop that stops core 0 would
+// print the second copy of its own message nowhere.
 void SDL2Circle_NoInputHalt(void)
 {
     for (unsigned nSaid = 0;; nSaid++)
@@ -991,14 +985,14 @@ void SDL2Circle_InputPump(void)
         {
             s_keyboard = (CUSBKeyboardDevice *)pDevice;
 
-            // MIXED MODE, NOT RAW ALONE. The raw handler below is what drives
+            // Mixed mode, not raw alone: the raw handler below is what drives
             // this file's own scancode -> SDL event path, and it must keep
             // seeing every report untouched for the game to work. TRUE is
             // what keeps Circle's cooked path running alongside it: without
             // it, the vendored ReportHandler returns the instant the raw
             // handler has run (circle-stdlib usbkeyboard.cpp), and
-            // CKeyboardBehaviour::KeyPressed — the call that turns a report
-            // into a character for a console read — never happens. Standard
+            // CKeyboardBehaviour::KeyPressed - the call that turns a report
+            // into a character for a console read - never happens. Standard
             // input has no other way to a keypress than this flag.
             s_keyboard->RegisterKeyStatusHandlerRaw(RawKeyHandler, TRUE);
             s_keyboard->RegisterRemovedHandler(KeyboardRemovedHandler);
@@ -1045,15 +1039,15 @@ void SDL2Circle_InputPump(void)
     s_prev = now;
 }
 
-// An OVERRIDE, for a kernel that wants injection to read from a device other
+// An override, for a kernel that wants injection to read from a device other
 // than the one the library arms itself with (SDL2Circle_InjectArmFromConsole,
-// below). This always sets s_injectSerial, so it wins whenever it is called —
+// below). This always sets s_injectSerial, so it wins whenever it is called -
 // before SDL2Circle_ArmCoreRuntime's own arming or after it, the last write
 // stands.
 //
-// A kernel that says nothing gets the console's own device, so the old
-// failure — declaring this function, meaning to call it, and never calling
-// it — no longer costs anything: the switch on its own is now enough.
+// A kernel that says nothing gets the console's own device, so declaring
+// this function without calling it costs nothing: the switch on its own is
+// enough.
 void SDL2Circle_SetInjectSerial(CSerialDevice *pSerial)
 {
     s_injectSerial = pSerial;
@@ -1063,23 +1057,22 @@ void SDL2Circle_SetInjectSerial(CSerialDevice *pSerial)
                        "stamp --rapi-debug-uart to arm it");
 }
 
-// ARM FROM THE CONSOLE'S OWN DEVICE — the one SDL2Circle_ConsoleInit already
-// found and holds (src/console.cpp), not a device looked up again by name and
-// hoped to be the same object.
+// Arms from the console's own device - the one SDL2Circle_ConsoleInit
+// already found and holds (src/console.cpp), not a device looked up again by
+// name and hoped to be the same object.
 //
 // Called once, from SDL2Circle_ArmCoreRuntime on core 0, right after
 // SDL2Circle_ConsoleInit and well before SDL2Circle_SplitInit ever creates
 // the servo task that runs SDL2Circle_InjectPump. So the first pump always
 // either has a device to read or already knows, from the log, exactly why it
-// does not — there is no window between arming and the first pump for a
+// does not - there is no window between arming and the first pump for a
 // kernel's own SDL2Circle_SetInjectSerial to have run first, which is why
 // this only fills the device in when nothing has lent one yet.
 //
 // Runs whether or not --rapi-debug-uart is stamped: finding the device costs
-// nothing when the switch is off. Doing the finding HERE, rather than lazily
-// at the first pump the way this library used to, is what makes an armed
-// switch with no device impossible to ship silently — this is the one place
-// that still has something to say about why, and it says it once.
+// nothing when the switch is off. Doing the finding here is what makes an
+// armed switch with no device impossible to ship silently - this is the one
+// place that still has something to say about why, and it says it once.
 void SDL2Circle_InjectArmFromConsole(void)
 {
     if (!s_injectSerial)

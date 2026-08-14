@@ -1,11 +1,11 @@
 //
-// blit.h — the per-surface blit state, shared between surface.cpp and blit.cpp
+// blit.h - the per-surface blit state, shared between surface.cpp and blit.cpp
 //
 // SDL2's SDL_Surface declares `struct SDL_BlitMap *map` and never defines
 // the struct in a public header: it is the surface's private drawing state.
-// This is that definition. It holds what governs how a surface is READ when
-// it is a blit source — the colour key, the blend mode, the alpha and colour
-// modulation — none of which has anywhere else to live, since the public
+// This is that definition. It holds what governs how a surface is read when
+// it is a blit source (the colour key, the blend mode, the alpha and colour
+// modulation), none of which has anywhere else to live, since the public
 // struct has no field for any of it.
 //
 #ifndef _sdl2_circle_blit_h
@@ -24,9 +24,9 @@ struct SDL_BlitMap
 
 // How a surface reads as a blit source, for a surface that may not have one.
 //
-// `map` is private to SDL2 and to this library, which means code OUTSIDE the
+// `map` is private to SDL2 and to this library, so code outside the
 // library cannot populate it even when it is holding a perfectly good
-// SDL_Surface — a port that allocates one itself, to wrap a buffer or to
+// SDL_Surface: a port that allocates one itself, to wrap a buffer or to
 // stand in for an upstream symbol, has no way to build the struct because
 // the definition is here. Such a surface arrives with `map` null.
 //

@@ -1,5 +1,5 @@
 //
-// error.cpp — SDL_GetError / SDL_SetError / SDL_ClearError
+// error.cpp - SDL_GetError / SDL_SetError / SDL_ClearError
 //
 #include <SDL2/SDL.h>
 #include <cstdarg>
@@ -34,7 +34,7 @@ extern "C" char *SDL_GetErrorMsg(char *errstr, int maxlen)
 
 // SDL's internal error reporter, and the one every SDL_OutOfMemory() and
 // SDL_Unsupported() in the headers expands into. Those are macros, so a call
-// site can be anywhere — including inside another library's headers — and
+// site can be anywhere - including inside another library's headers - and
 // this has to exist for the archive to be self-contained.
 //
 // It unconditionally returns -1, which is what lets a caller write

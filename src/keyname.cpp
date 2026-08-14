@@ -1,5 +1,5 @@
 //
-// keyname.cpp — the names SDL gives keys, and the keys it gives names back.
+// keyname.cpp - the names SDL gives keys, and the keys it gives names back.
 //
 // Applications use these to show a key binding to a person and to read one
 // back out of a configuration file, so the names have to be SDL's own: a
@@ -7,7 +7,7 @@
 // here readable there.
 //
 // The scancode names are therefore the canonical SDL2 strings, and the two
-// keycode functions are built on them exactly as SDL2 builds them — a key
+// keycode functions are built on them exactly as SDL2 builds them - a key
 // carrying the scancode mask is named by its scancode, and anything else is
 // a Unicode code point named by its own character in upper case.
 //

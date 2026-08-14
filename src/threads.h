@@ -1,5 +1,5 @@
 //
-// threads.h — the few things the threading, timer and event files share.
+// threads.h - the few things the threading, timer and event files share.
 // Not installed; consumers see only <SDL2/*.h>.
 //
 #ifndef _sdl2_circle_threads_h

@@ -1,30 +1,30 @@
 //
-// clipboard.cpp — SDL_SetClipboardText, SDL_GetClipboardText,
+// clipboard.cpp - SDL_SetClipboardText, SDL_GetClipboardText,
 // SDL_HasClipboardText, and the primary selection alongside them.
 //
 // A clipboard is normally the window system's: one shared buffer that every
 // running program can read and write, which is how text moves between them.
 // There is no window system here and no other program to move text to, so
-// the clipboard is the library's own — one buffer, held in memory, for as
+// the clipboard is the library's own - one buffer, held in memory, for as
 // long as the application runs.
 //
-// THAT IS A REAL CLIPBOARD, not a stub, and from inside the application it is
-// indistinguishable from a desktop one: text put in comes back out, copy and
-// paste inside a game work, and SDL_HasClipboardText answers truthfully about
-// what is there. What it cannot do is carry text to another program, and
-// there is no other program.
+// This is a real clipboard, not a stub: from inside the application it is
+// indistinguishable from a desktop one, text put in comes back out, copy and
+// paste inside a game work, and SDL_HasClipboardText answers truthfully
+// about what is there. What it cannot do is carry text to another program,
+// and there is no other program.
 //
-// SDL's own fallback — what SDL uses on a platform whose video backend
-// provides no clipboard hooks — is exactly this, so the behaviour here is
+// SDL's own fallback - what SDL uses on a platform whose video backend
+// provides no clipboard hooks - is exactly this, so the behaviour here is
 // SDL's documented behaviour rather than an approximation of it, down to the
 // SDL_CLIPBOARDUPDATE event that a change posts.
 //
-// TWO OWNERSHIP RULES, and applications rely on both. What SDL_GetClipboardText
-// returns belongs to the CALLER and is released with SDL_free; it is a copy,
-// so the application may keep it or edit it. And an EMPTY clipboard answers
-// with an empty allocated string, never a null pointer — an application that
-// pastes from an empty clipboard passes the result straight to a string
-// function, and null would be a crash where "" is a no-op.
+// Two ownership rules that applications rely on: what SDL_GetClipboardText
+// returns belongs to the caller and is released with SDL_free, and is a copy
+// so the application may keep it or edit it; and an empty clipboard answers
+// with an empty allocated string, never a null pointer, since an application
+// pastes the result straight into a string function and null would be a
+// crash where "" is a no-op.
 //
 #include <SDL2/SDL.h>
 
@@ -107,7 +107,7 @@ extern "C" SDL_bool SDL_HasClipboardText(void)
     return Has(&s_clipboard);
 }
 
-// The primary selection is X11's second clipboard — the one that middle-click
+// The primary selection is X11's second clipboard - the one that middle-click
 // pastes from. It has its own buffer here for the same reason the main one
 // does, and applications that use both keep getting two independent answers.
 

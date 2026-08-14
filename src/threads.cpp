@@ -1,7 +1,7 @@
 //
-// threads.cpp — SDL's atomics, locks and threads on Circle
+// threads.cpp - SDL's atomics, locks and threads on Circle
 //
-// WHAT BACKS WHAT, AND WHERE. Circle gives each core one line of execution,
+// What backs what, and where: Circle gives each core one line of execution,
 // plus a cooperative scheduler that exists on the hardware core alone. That
 // single fact decides everything in this file.
 //
@@ -21,13 +21,13 @@
 //
 //   Threads                  Circle scheduler tasks. A task is a cooperative
 //                            thread and that is exactly what an application's
-//                            helper thread wants — but a task registers itself
+//                            helper thread wants - but a task registers itself
 //                            with the scheduler while it is being built, so
-//                            the BUILDING has to happen on the hardware core.
+//                            the building has to happen on the hardware core.
 //                            A request from anywhere else is handed to the
 //                            core-0 creator task and waited for.
 //
-// WHAT AN APPLICATION CAN RELY ON.
+// What an application can rely on:
 //
 //   Every lock in this file excludes, from any core. None of them is a stub
 //   that returns success and does nothing, so a lock taken around shared state
@@ -38,28 +38,28 @@
 //   core. Waits are for handing work between parties that are really running,
 //   not for idling.
 //
-//   A WAIT KEEPS THE AUDIO DEVICE FED. On the application core the audio
+//   A wait keeps the audio device fed. On the application core the audio
 //   callback is run by whatever calls SDL_PumpEvents, which is the application
 //   itself, so a wait that only spun would stop the sound for as long as it
-//   lasted — and would deadlock outright an application whose callback is what
+//   lasted, and would deadlock outright an application whose callback is what
 //   ends the wait. The spin loop runs the audio pump, which is as close to a
 //   desktop's separate audio thread as this gets; SDL_LockAudioDevice is still
 //   how an application keeps its callback out of a section.
 //
-//   SDL_CreateThread WORKS FROM ANY CORE, and so do SDL_WaitThread,
+//   SDL_CreateThread works from any core, and so do SDL_WaitThread,
 //   SDL_DetachThread and SDL_GetThreadID on what it returns. That matters
-//   because an application that creates its main game thread through SDL — and
-//   several do — runs on the application core by the time it gets there, which
+//   because an application that creates its main game thread through SDL - and
+//   several do - runs on the application core by the time it gets there, which
 //   is never core 0 under the split. What it needs is a CScheduler somewhere in
 //   the system; without one there is nothing anywhere for a thread to run on
 //   and the call fails, sets the error and says so on the log.
 //
-//   A thread that does start is cooperative AND IT RUNS ON CORE 0, whichever
+//   A thread that does start is cooperative and runs on core 0, whichever
 //   core asked for it. It runs when something gives up that core, which the
 //   servo's every lap, every wait in this file and SDL_Delay all do. A thread
 //   that computes without ever calling into SDL or sleeping keeps the hardware
 //   core to itself, and the hardware core is also where the device servicing
-//   lives — so a long-running worker created this way is a decision about core
+//   lives, so a long-running worker created this way is a decision about core
 //   0's time, not free parallelism.
 //
 //   Thread priorities do not exist. Circle's scheduler is round-robin without
@@ -186,12 +186,10 @@ extern "C" void *SDL_AtomicGetPtr(void **a)
 
 void SDL2Circle_ThreadWaitSpin(void)
 {
-    // Core 0 pumps too, and it must. Without the split there is no servo to
-    // feed the device silence, so the ONLY thing that ever feeds it is
-    // SDL_PumpEvents — and a wait on core 0 is a wait with the application's
-    // own loop stopped. The pump decides who may produce and returns at once
-    // on a core that may not, so this costs a comparison where it does not
-    // apply and prevents a deadlock where it does.
+    // Core 0 pumps too: without the split there is no servo to feed the
+    // device, so SDL_PumpEvents is the only thing that ever does. The pump
+    // itself decides which core may produce and returns at once on a core
+    // that may not, so this call is a no-op where it does not apply.
     SDL2Circle_AudioPump();
 
     if (SDL2Circle_ThisCore() == 0 && CScheduler::IsActive())
@@ -201,26 +199,21 @@ void SDL2Circle_ThreadWaitSpin(void)
         return;
     }
 
-    // A WAIT MUST NOT STOP THE SOUND. The audio callback here is run by
-    // whichever context calls SDL_PumpEvents, which on the application core is
-    // the application's own loop — so a wait that only spins is a wait with the
-    // device unfed. On a desktop that never happens: SDL gives the callback a
-    // thread of its own and it keeps going while the application waits.
+    // A wait must not stop the sound. The audio callback here runs inside
+    // whichever context calls SDL_PumpEvents, which on the application core
+    // is the application's own loop, so a wait that only spins leaves the
+    // device unfed. A game whose audio callback drives its music clock - an
+    // emulated sound chip, say - can wait at start-up for that clock to
+    // reach a mark, and such a wait only ends if the callback runs; spinning
+    // alone, it would be waiting for something it is itself preventing.
     //
-    // Applications depend on that, and not only for the sound. A game whose
-    // audio callback drives its music clock — an emulated sound chip, say —
-    // waits at start-up for that clock to reach a mark, and it can only reach
-    // it if the callback runs. Spinning alone, such a wait is a wait for
-    // something the waiter is itself preventing, and it never ends.
+    // Only the core that owns audio production produces: this call runs on
+    // every core, but the pump itself enforces the single writer for each
+    // destination, so a wait never turns the waiting core into a second
+    // producer. On any other core this call costs a comparison and returns.
     //
-    // ONLY THE CORE THAT OWNS AUDIO PRODUCTION ACTUALLY PRODUCES. This runs on
-    // every core, and both places produced audio goes have exactly one writer,
-    // so a wait must never make the waiting core a second producer — that does
-    // not sound late, it sounds torn and out of order. The rule lives in the
-    // pump itself; on any other core this call costs a comparison and returns.
-    //
-    // An application that must keep the callback out of a section already has
-    // SDL's own answer for it, SDL_LockAudioDevice, which the pump obeys.
+    // SDL_LockAudioDevice is how an application keeps its callback out of a
+    // section; the pump obeys it.
     SDL2Circle_AudioPump();
 
     asm volatile("yield" ::: "memory");
@@ -248,7 +241,7 @@ bool WaitExpired(u64 start, Uint32 ms)
 // An identity has to be unique among everything that can hold a lock at the
 // same time, and there are two kinds of those. On the hardware core, one per
 // scheduler task, so the task object's own address answers. On any other core
-// there is exactly one line of execution, so the core number answers — offset
+// there is exactly one line of execution, so the core number answers - offset
 // by one so that no identity is zero, which is what a free mutex holds.
 //
 // The two cannot collide: Circle's heap starts far above the highest core
@@ -273,7 +266,7 @@ extern "C" SDL_threadID SDL_ThreadID(void)
 // SDL's mutex is recursive: the same thread may lock it repeatedly and must
 // unlock it as many times. Circle's own CMutex is recursive too, but it is
 // built on the scheduler's blocking primitives and so exists on the hardware
-// core alone. This one is the same shape without that restriction — the owner
+// core alone. This one is the same shape without that restriction - the owner
 // and the recursion count guarded by a spin lock, and a wait loop that yields
 // where there is a scheduler to yield to.
 
@@ -377,8 +370,8 @@ extern "C" int SDL_UnlockMutex(SDL_mutex *mutex)
 //
 // Counted wakeups rather than a wait list: a signal hands out one token, a
 // broadcast hands out one per waiter, and a waiter returns when it has taken
-// a token. That is what keeps a signal from being lost — the token is issued
-// whether or not the waiter has reached its loop yet — and what keeps a
+// a token. That is what keeps a signal from being lost - the token is issued
+// whether or not the waiter has reached its loop yet - and what keeps a
 // signal from waking more waiters than it should, which a plain flag would.
 //
 // The mutex is released before the wait and re-acquired after it, which is
@@ -710,14 +703,14 @@ extern "C" void SDL_TLSCleanup(void)
 // Threads
 // ---------------------------------------------------------------------------
 
-// THE HANDLE, AND WHO FREES IT. The thread runs on core 0 and whoever waits
+// The handle, and who frees it: the thread runs on core 0 and whoever waits
 // for it or detaches it may be on another core, so the two sides are really
 // concurrent and the handle needs an owner at every instant.
 //
-// One word decides it. Each side sets its own bit — the thread when it ends,
-// the application when it detaches — and reads back what the other side had
+// One word decides it. Each side sets its own bit - the thread when it ends,
+// the application when it detaches - and reads back what the other side had
 // already set. Whichever side finds the other's bit already there is the last
-// one out and frees the handle. A side that does NOT find it has just handed
+// one out and frees the handle. A side that does not find it has just handed
 // ownership over and must not touch the handle again, not even to unlock
 // something: on a second core the other side can be inside free() by the next
 // instruction.
@@ -759,13 +752,13 @@ public:
     {
         SDL_Thread *pThread = m_pThread;
 
-        // EVERY CIRCLE TASK STARTS WITH NO THREAD POINTER. CTask's constructor
+        // Every Circle task starts with no thread pointer: CTask's constructor
         // memsets the saved register block and the task switch restores
         // TPIDR_EL0 from it, so a task's first instruction runs with that
         // register at zero. Unarmed, the first `throw` in this thread reads
         // the exception globals through a null pointer, and every
         // thread_local it touches aliases low memory shared with every other
-        // unarmed task — which is mapped on this hardware, so it appears to
+        // unarmed task - which is mapped on this hardware, so it appears to
         // work and corrupts instead of faulting.
         //
         // std::thread has always been armed here (RunThreadBody in
@@ -775,7 +768,7 @@ public:
         void *pBlock = SDL2Circle_AllocTLSBlock();
         SDL2Circle_SetThreadPointer(pBlock);
 
-        // A THREAD THAT THROWS STILL HAS TO FINISH. Nothing but this task can
+        // A thread that throws still has to finish: nothing but this task can
         // publish THREAD_FINISHED, so an exception escaping here would leave
         // SDL_WaitThread spinning for the life of the board, and the board
         // would look hung with no fault reported anywhere. Whoever waits gets
@@ -837,7 +830,7 @@ void spawn_on0(void *p)
 
     // The task's identity is its object address, which is what SDL_ThreadID
     // will report from inside it. Setting it before the task is released is
-    // what makes SDL_GetThreadID answer correctly from the very first call —
+    // what makes SDL_GetThreadID answer correctly from the very first call -
     // and setting it here, before the creator publishes the answer, is what
     // makes that true for a caller on another core too.
     req->thread->id = (SDL_threadID)(uintptr_t)task;
@@ -860,7 +853,7 @@ extern "C" SDL_Thread *SDL_CreateThreadWithStackSize(SDL_ThreadFunction fn,
 
     const char *label = name != nullptr ? name : "SDLThread";
 
-    // A thread is a Circle scheduler task, so the system needs a scheduler —
+    // A thread is a Circle scheduler task, so the system needs a scheduler -
     // wherever the asking is done from. This is the one refusal left: without
     // one there is nothing anywhere for the thread to run on, and saying so is
     // better than a thread that silently never ran.
@@ -887,17 +880,15 @@ extern "C" SDL_Thread *SDL_CreateThreadWithStackSize(SDL_ThreadFunction fn,
     thread->data = data;
     strncpy(thread->name, label, sizeof(thread->name) - 1);
 
-    // HOW BIG A THREAD NOBODY SIZED IS. SDL_CreateThread carries no stack
-    // size, so what an application gets for one is entirely this
-    // implementation's choice, and on every platform SDL normally runs on that
-    // choice is megabytes. Circle's TASK_STACK_SIZE is 32 KB, which is the
-    // right size for a Circle helper task and nowhere near the right size for
-    // application code: the thread an application creates through SDL is
-    // frequently its MAIN thread — the whole game, all its locals and every
-    // library it calls — and a game's own core stack in this project had to be
-    // measured in megabytes for exactly that reason. A megabyte is cheap on
-    // these boards and an application that knows better says so through
-    // SDL_CreateThreadWithStackSize, which is what that entry point is for.
+    // SDL_CreateThread carries no stack size, so the size an application gets
+    // is entirely this implementation's choice; on every platform SDL
+    // normally runs on, that choice is megabytes. Circle's TASK_STACK_SIZE is
+    // 32 KB, which suits a Circle helper task but not application code: the
+    // thread an application creates through SDL is frequently its main
+    // thread - the whole game, all its locals and every library it calls -
+    // and needs a stack sized accordingly. A megabyte is cheap on these
+    // boards; an application that knows better uses
+    // SDL_CreateThreadWithStackSize.
     const size_t DefaultStack = 0x100000;
 
     size_t stack = stacksize != 0 ? stacksize : DefaultStack;
@@ -949,14 +940,11 @@ extern "C" void SDL_WaitThread(SDL_Thread *thread, int *status)
     // core 0 this wait yields to it and elsewhere it spins while core 0 gets
     // on with it.
     //
-    // AND IT SAYS SO WHEN IT DOES NOT END. This wait can only be ended by the
-    // thread task publishing THREAD_FINISHED, and nothing else in the system
-    // can do it — so if that thread never finishes, this spins for the life of
-    // the board in perfect silence. Every other cross-core wait in this
-    // library names what it is waiting for after a few seconds; this one used
-    // to be the exception, and an unexplained board is exactly the cost of
-    // that. Once, not repeatedly: the point is to name the wait, not to fill
-    // the console with it.
+    // It also says so when it does not end. This wait can only be ended by
+    // the thread task publishing THREAD_FINISHED, and nothing else in the
+    // system can do it, so if that thread never finishes, this spins for the
+    // life of the board in silence unless it reports. It reports once, after
+    // a few seconds, rather than filling the console with it.
     const u64 started = CTimer::GetClockTicks64();
     bool reported = false;
     while (!(__atomic_load_n(&thread->state, __ATOMIC_ACQUIRE) & THREAD_FINISHED))

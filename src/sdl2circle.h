@@ -1,5 +1,5 @@
 //
-// sdl2circle.h — internal glue between the SDL surface and Circle backends.
+// sdl2circle.h - internal glue between the SDL surface and Circle backends.
 // Not installed; consumers see only <SDL2/*.h>.
 //
 // Contract with the host kernel: CInterruptSystem and CTimer are initialized
@@ -13,21 +13,22 @@
 #include <SDL2/SDL_circle.h>   // the public split/I-O surface backing this glue
 
 // The --rapi-vdisplay=WxH switch (src/bootargs.cpp), handed to video.cpp
-// as soon as the boot argument block has been read — well before SDL_Init,
+// as soon as the boot argument block has been read - well before SDL_Init,
 // let alone a window. It is the top of the precedence order the virtual
 // framebuffer's size is settled from; see src/video.cpp.
 void SDL2Circle_SetVDisplaySwitch(int width, int height);
 
 // ---- the one display grant (src/video.cpp) ---------------------------------
 //
-// THE framebuffer, and the numbers the firmware granted for it.
+// The framebuffer, and the numbers the firmware granted for it.
 //
 // One grant is made on this board and everything that draws shares it: an
 // application's window adopts it, and so does the screen log destination
 // (src/console.cpp), which comes up during the host kernel's initialisation
 // long before an application has declared a canvas or asked for a window.
-// Asking for the grant is what SETS the display mode, so both go through this
-// one routine — two askers with two different requests would be two modes.
+// Asking for the grant is what sets the display mode, so both go through
+// this one routine: two askers with two different requests would be two
+// modes.
 //
 // The pitch, the byte count and the base address are the firmware's reply to
 // the allocation. The width and height are the firmware's report of the
@@ -50,28 +51,28 @@ bool SDL2Circle_ScanoutAcquire(SDL2CircleScanout *out);
 
 // ---- the one output device (src/console.cpp) --------------------------------
 //
-// Build the tee — the serial device the host kernel gave the logger, the
-// screen, and the flag saying the screen is still ours — and point Circle's
+// Build the tee - the serial device the host kernel gave the logger, the
+// screen, and the flag saying the screen is still ours - and point Circle's
 // logger at it. The logger is never pointed anywhere else again.
 //
 // Called from SDL2Circle_ArmCoreRuntime on core 0, so every board gets both
 // destinations without a host kernel asking. Idempotent, because a kernel that
 // wants the screen during its own earlier bring-up can bring this moment
-// forward with SDL2Circle_LogAttachScreen (SDL_circle.h) — the same build, at
+// forward with SDL2Circle_LogAttachScreen (SDL_circle.h) - the same build, at
 // whichever of the two comes first. Returns -1 with SDL_GetError only when the
 // logger has no destination yet; a board with no display is a working machine
 // with one destination and returns 0.
 int SDL2Circle_ConsoleInit(void);
 
-// The device the tee wraps — whatever the host kernel gave Circle's logger,
+// The device the tee wraps - whatever the host kernel gave Circle's logger,
 // before this library ever touched it. Exposed so that debug UART key
-// injection (src/input.cpp) can read the SAME device the console and stdio
+// injection (src/input.cpp) can read the same device the console and stdio
 // write to, rather than looking one up again by name and hoping to find the
 // same object. Null until SDL2Circle_ConsoleInit has built the tee.
 class CDevice;
 CDevice *SDL2Circle_ConsoleDevice(void);
 
-// The display hand-off, made when an application creates its window — the
+// The display hand-off, made when an application creates its window - the
 // moment it actually takes the framebuffer, not merely SDL_Init. Clears the
 // flag and nothing else: no device is built, moved or taken away, and the
 // logger's target is the tee before and after.
@@ -80,7 +81,7 @@ void SDL2Circle_ConsoleReleaseScreen(void);
 // The reverse hand-off, made when an application destroys its window. Sets
 // the flag back on a board that had a screen to give in the first place; a
 // no-op everywhere else (no display, or the screen already showing the
-// console). The same tee, the same drawing code — nothing is rebuilt.
+// console). The same tee, the same drawing code - nothing is rebuilt.
 void SDL2Circle_ConsoleGrantScreen(void);
 
 // ---- the C library's standard descriptors (src/stdio.cpp) ------------------
@@ -88,7 +89,7 @@ void SDL2Circle_ConsoleGrantScreen(void);
 // Bind standard input, standard output and standard error to this board's one
 // console: input from the USB keyboard, output through the raw channel, so an
 // ordinary printf goes where everything else on this board goes and arrives
-// exactly as it was written. Core 0 only, once, early — before anything opens
+// exactly as it was written. Core 0 only, once, early - before anything opens
 // a file, because the C library binds all three standard descriptors together
 // and takes the lowest free slots.
 void SDL2Circle_StdioInit(void);
@@ -97,16 +98,16 @@ void SDL2Circle_StdioInit(void);
 // SDL2Circle_InputPump (src/input.cpp), which already finds the keyboard by
 // name every pass, so the console's search costs nothing extra once a
 // keyboard is attached and nothing at all before SDL2Circle_StdioInit has
-// run. Idempotent — the console keeps the device once it finds one.
+// run. Idempotent - the console keeps the device once it finds one.
 void SDL2Circle_ConsolePumpPlugAndPlay(void);
 
 // Build the USB host controller, unless the host kernel already built one
-// (src/input.cpp). Called once, on core 0, from SDL2Circle_ArmCoreRuntime —
+// (src/input.cpp). Called once, on core 0, from SDL2Circle_ArmCoreRuntime -
 // well before any SDL_Init, which is what lets a program that never calls
 // SDL_Init still get a working keyboard. Idempotent, and it never makes a
 // second controller: Circle allows exactly one CUSBHCIDevice and halts
 // inside the constructor of a second, so a host kernel's own member,
-// initialised before this runs, is left alone and adopted instead — the
+// initialised before this runs, is left alone and adopted instead - the
 // same rule SDL2Circle_HardwareInit already follows for CCPUThrottle.
 void SDL2Circle_UsbCtrlInit(void);
 void SDL2Circle_InputInit(void);   // adopt the (host's or this library's) USB controller (idempotent)
@@ -121,13 +122,13 @@ bool SDL2Circle_NoInputFatal(void);
 void SDL2Circle_NoInputHalt(void);  // says why, keeps saying it, never returns
 // Producing audio: run the application's callback and queue what it makes.
 // Both places the result goes have exactly one writer, so production belongs to
-// one core — settled when the device is opened — and this does nothing at all
+// one core - settled when the device is opened - and this does nothing at all
 // on any other core. Safe to call from anywhere for that reason, and it is
 // called both from the event pump and from inside a blocking wait, so that a
 // core waiting on something its own callback delivers can still make progress.
 void SDL2Circle_AudioPump(void);
 
-// Board hardware — the CPU clock and the case fan (src/hardware.cpp).
+// Board hardware - the CPU clock and the case fan (src/hardware.cpp).
 // SDL2Circle_HardwareInit (SDL_circle.h) creates the one CCPUThrottle this
 // library owns; this drives it. Call it from the per-frame heartbeat that is
 // live: the hardware core's servo under the core split, SDL_PumpEvents
@@ -139,44 +140,42 @@ void SDL2Circle_HardwareTick(void);
 // Debug UART key injection: the pump reads serial-RX bytes and types them
 // into the machine as SDL key events.
 //
-// THE LIBRARY ARMS ITSELF, from the same device the console and stdio already
-// write to (SDL2Circle_ConsoleDevice, above) — found once, on core 0, from
-// SDL2Circle_ArmCoreRuntime, right after the console exists and before
-// anything runs that could pump. Whether it then injects through that device
-// is decided by --rapi-debug-uart, which it reads out of the boot argument
-// block (src/bootargs.cpp). Every half of this is the library's, so a kernel
-// that has never heard of any of this gets injection working by doing
-// nothing at all — the whole point, because the half a kernel used to own
-// was the half that could be forgotten, silently, with everything still
-// looking healthy.
+// The library arms itself, from the same device the console and stdio
+// already write to (SDL2Circle_ConsoleDevice, above): found once, on core
+// 0, from SDL2Circle_ArmCoreRuntime, right after the console exists and
+// before anything runs that could pump. Whether it then injects through
+// that device is decided by --rapi-debug-uart, which it reads out of the
+// boot argument block (src/bootargs.cpp). Every half of this is the
+// library's, so a kernel that has never heard of any of this gets
+// injection working by doing nothing at all.
 //
-// SDL2Circle_SetInjectSerial is the OVERRIDE, for a kernel that wants to lend
-// a DIFFERENT device from the console UART the library would arm itself
-// with. It wins whenever it is called, before or after the library's own
-// arming: it must lend a device it already owns and never construct one to
-// hand over, since a second device on the same slot halts the board in its
-// constructor.
+// SDL2Circle_SetInjectSerial is the override, for a kernel that wants to
+// lend a different device from the console UART the library would arm
+// itself with. It wins whenever it is called, before or after the
+// library's own arming: it must lend a device it already owns and never
+// construct one to hand over, since a second device on the same slot
+// halts the board in its constructor.
 class CSerialDevice;
 void SDL2Circle_SetInjectSerial(CSerialDevice *pSerial);
 
 // Arms injection from SDL2Circle_ConsoleDevice, unless a kernel has already
 // lent a device through SDL2Circle_SetInjectSerial. Called once, from
 // SDL2Circle_ArmCoreRuntime on core 0, immediately after SDL2Circle_ConsoleInit
-// — before SDL2Circle_SplitInit ever creates the servo that pumps injection,
+// - before SDL2Circle_SplitInit ever creates the servo that pumps injection,
 // so the first pump always has a device or an explicit reason it does not.
 void SDL2Circle_InjectArmFromConsole(void);
 void SDL2Circle_InjectPump(void);
 
 // ---- the kernel's calendar clock (src/init.cpp) -----------------------------
 //
-// The wall-clock time the host kernel's CTimer holds, read ON CORE 0 and
+// The wall-clock time the host kernel's CTimer holds, read on core 0 and
 // handed back to the caller.
 //
 // CTimer is a device: its calendar time is advanced by the timer interrupt
 // and read under a lock the interrupt also takes, so the object belongs to
 // the core that owns the interrupt. Every caller here is on another core by
-// construction — the application core asks for it through time() and through
-// C++'s system_clock — so the read is marshalled through the call mailbox
+// construction - the application core asks for it through time() and through
+// C++'s system_clock - so the read is marshalled through the call mailbox
 // like every other device access.
 //
 // False when the kernel has no clock to give (before SDL_Init, or a clock the
@@ -204,7 +203,7 @@ bool SDL2Circle_DebugUartArmed(void);
 // Each core gets one (SDL2Circle_ArmCoreRuntime) and each std::thread gets
 // one of its own (src/libcxxthreading.cpp), which is what makes a
 // thread_local per-thread rather than per-image. The bounds come from the
-// linker script — sdl-app.ld and every script derived from it — so there is
+// linker script - sdl-app.ld and every script derived from it - so there is
 // exactly one place in this library that knows the layout, and this is it.
 void *SDL2Circle_AllocTLSBlock(void);
 void  SDL2Circle_FreeTLSBlock(void *pBlock);
@@ -218,29 +217,30 @@ void *SDL2Circle_GetThreadPointer(void);
 // one where there is none.
 void SDL2Circle_ThreadRuntimeInit(void);
 
-// Run fn(arg) on core 0 and wait for it, on the CREATOR TASK rather than on
-// the split's servo (src/libcxxthreading.cpp). Both threading surfaces —
-// std::thread and SDL_CreateThread — start a thread through it, because
+// Run fn(arg) on core 0 and wait for it, on the creator task rather than on
+// the split's servo (src/libcxxthreading.cpp). Both threading surfaces
+// (std::thread and SDL_CreateThread) start a thread through it, because
 // starting one means constructing a CTask and a CTask registers itself with
 // the scheduler, which belongs to core 0.
 //
-// WHY NOT SDL2Circle_CallOn0, which also runs work on core 0. That mailbox is
-// served by the servo, and the servo is the loop that drains every other
-// core's log ring, pumps USB, feeds the sound device and ticks the hardware.
-// Work handed to it is work core 0 does INSTEAD of all of that, so nothing on
-// its path may block — and the first thing an application does with a new
-// thread is wait for it. The creator is an ordinary scheduler task with one
-// job, so a request that takes its time, or a caller that waits for one, costs
-// the machine nothing.
+// This does not use SDL2Circle_CallOn0, which also runs work on core 0,
+// because that mailbox is served by the servo, and the servo is the loop
+// that drains every other core's log ring, pumps USB, feeds the sound
+// device and ticks the hardware. Work handed to it is work core 0 does
+// instead of all of that, so nothing on its path may block, and the first
+// thing an application does with a new thread is wait for it. The creator
+// is an ordinary scheduler task with one job, so a request that takes its
+// time, or a caller that waits for one, costs the machine nothing.
 //
-// Returns false when there is no creator task — a system with no scheduler,
-// or a host kernel that never armed core 0 — in which case fn has not run. On
-// core 0 it simply calls fn, so one call site serves every core. One request
-// is served at a time; callers queue on a lock of their own.
+// Returns false when there is no creator task (a system with no
+// scheduler, or a host kernel that never armed core 0), in which case fn
+// has not run. On core 0 it simply calls fn, so one call site serves
+// every core. One request is served at a time; callers queue on a lock of
+// their own.
 bool SDL2Circle_ThreadCreateOn0(void (*fn)(void *), void *arg);
 
-// Cores this library has spoken for, as a bitmask (src/split.cpp): core 0 —
-// the Circle world — always, plus the presentation core and the application
+// Cores this library has spoken for, as a bitmask (src/split.cpp): core 0 -
+// the Circle world - always, plus the presentation core and the application
 // core once each has identified itself. It is what stops the C++ threading
 // runtime pinning a thread onto a core the split is already using.
 void     SDL2Circle_ClaimCore(unsigned nCore);
@@ -252,7 +252,7 @@ unsigned SDL2Circle_ClaimedCores(void);
 // Everything is inert until SDL2Circle_SplitInit (SDL_circle.h) runs; the
 // single-core build keeps today's direct paths.
 
-// SDL2Circle_CallOn0 — run fn(arg) on core 0 and wait for completion —
+// SDL2Circle_CallOn0 - run fn(arg) on core 0 and wait for completion -
 // is part of the public split surface (SDL2/SDL_circle.h, included above),
 // because a host kernel needs the same mailbox for its own devices.
 
@@ -292,21 +292,21 @@ void SDL2Circle_HeartbeatBump(void);
 // Presentation: SDL_RenderPresent posts a frame (command list + target
 // framebuffer half); the presentation worker executes it and flips.
 //
-// TWO NUMBERS, one a fixed capacity and one the knob.
+// RECORD_MAX_CMDS is a fixed capacity; PRESENT_MAX_CMDS is the knob.
 //
 //   RECORD_MAX_CMDS   how many commands the frame mailbox holds. It is the
 //                     size of a fixed array in coherent memory that both
 //                     cores read, so it is a build constant and the hard
 //                     ceiling on the knob below.
 //
-//   PRESENT_MAX_CMDS  how many commands may CROSS to the presentation core
+//   PRESENT_MAX_CMDS  how many commands may cross to the presentation core
 //                     as a list. This is the knob. A frame whose draw list
 //                     fits within it crosses as a list and is composed on
 //                     the far side; a frame that does not fit is composed
 //                     into the virtual framebuffer instead, and that
 //                     framebuffer is what crosses.
 //
-// ZERO IS THE DEFAULT: every frame is composed here and crosses as a
+// Zero is the default: every frame is composed here and crosses as a
 // picture. Raising the knob moves composition across to the presentation
 // core, frame by frame, up to the mailbox's capacity.
 //
@@ -314,7 +314,7 @@ void SDL2Circle_HeartbeatBump(void);
 // is not part of any installed header, so a consumer's own translation units
 // neither see it nor need to match it.
 // A macro and not an enum: the bounds check below is a preprocessor
-// comparison, and the preprocessor cannot see an enumerator — it reads the
+// comparison, and the preprocessor cannot see an enumerator - it reads the
 // name as an undefined identifier worth zero, which quietly turns the check
 // into "any count above zero is out of range".
 #define SDL2CIRCLE_RECORD_MAX_CMDS 16
@@ -331,7 +331,7 @@ void SDL2Circle_HeartbeatBump(void);
 struct SDL2CirclePresentCmd
 {
     enum { FILL, COPY } op;
-    int dx, dy, w, h;             // destination rectangle, CANVAS coordinates.
+    int dx, dy, w, h;             // destination rectangle, canvas coordinates.
                                   // The panel does not appear here at all: the
                                   // executor maps the canvas onto it, and it is
                                   // the only thing that knows the two differ.
@@ -339,25 +339,25 @@ struct SDL2CirclePresentCmd
     const u8 *src;                // COPY: pixel buffer (frozen for the frame)
     int srcpitch;
     int sw, sh;                   // COPY: source extent, in source pixels.
-                                  // Equal to the destination extent AFTER the
+                                  // Equal to the destination extent after the
                                   // executor has mapped it means an unscaled
                                   // blit; otherwise the executor resamples
                                   // sw x sh onto the mapped extent, which
                                   // composes both geometry hops (application
                                   // frame into the canvas, canvas onto the
-                                  // scanout) into ONE pass.
+                                  // scanout) into one pass.
     u8 blend;                     // COPY: straight-alpha blend requested
     u8 alphamod;
 };
 
-// Post a frame; blocks (WFE) until the worker has accepted the PREVIOUS
+// Post a frame; blocks (WFE) until the worker has accepted the previous
 // frame, keeping exactly one frame in flight (two texture buffers suffice).
 void SDL2Circle_PresentPost(const SDL2CirclePresentCmd *cmds, unsigned ncmds,
                             unsigned half);
 
 // Block until the presentation worker holds nothing of the poster's: every
 // posted frame consumed AND flipped. Teardown that frees something the
-// worker may still be reading — a texture's pixels, the window — calls this
+// worker may still be reading - a texture's pixels, the window - calls this
 // first. A no-op without the split, where presentation is in-band anyway.
 void SDL2Circle_PresentQuiesce(void);
 
@@ -385,10 +385,8 @@ enum
     SDL2CIRCLE_PERF_WAIT,         // blocking on another core: the frame
                                   // mailbox in both directions. Kept apart
                                   // from the two above because it is a wait
-                                  // on software, not on the display.
-                                  // Historically: blocking inside present,
-                                  // outstanding-DMA wait. Split out because
-                                  // at a locked frame rate these absorb all
+                                  // on software, not on the display, and at
+                                  // a locked frame rate these absorb all
                                   // slack and would otherwise make render
                                   // impersonate saturation.
     SDL2CIRCLE_PERF_AUDIO,        // audio callback pump, and the feed to
@@ -407,20 +405,20 @@ void SDL2Circle_PerfTick(void);
 
 // Nested-section bookkeeping for the calling core. A scope hands its own
 // elapsed cycles up when it ends and takes back what its children spent, so
-// an inner section's time belongs to the inner category ALONE. Without
+// an inner section's time belongs to the inner category alone: without
 // this, a wait inside a render would be counted in both and the categories
 // would sum past the core's real cycles.
 u64  SDL2Circle_PerfChildTake(void);            // reset and return the tally
 void SDL2Circle_PerfChildAdd(u64 cycles);       // add to the enclosing tally
 
-// Dev instrumentation switch (off by default; internal — the shipped SDL
+// Dev instrumentation switch (off by default; internal - the shipped SDL
 // surface carries no host-side knobs): nSeconds > 0 enables the PMU cycle
 // counter and periodic split reports from the pump heartbeat.
 extern "C" void SDL2Circle_SetPerfInterval(unsigned nSeconds);
 
 // Scoped section timer: no-op (one branch) while perf is disabled.
 //
-// Scopes nest — a wait sits inside the present that is waiting — and each
+// Scopes nest - a wait sits inside the present that is waiting - and each
 // one keeps only the cycles its own body spent: it starts its children's
 // tally fresh, subtracts whatever they report, and hands its whole span up
 // to its own parent. So the categories partition a core's cycles instead of

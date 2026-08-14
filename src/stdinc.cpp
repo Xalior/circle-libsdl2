@@ -1,5 +1,5 @@
 //
-// stdinc.cpp — SDL_stdinc.h: SDL's own names for the C library.
+// stdinc.cpp - SDL_stdinc.h: SDL's own names for the C library.
 //
 // SDL offers its own name for most of the C standard library so that an
 // application can be built against a C runtime SDL was not built against, and
@@ -8,12 +8,12 @@
 // here: the platform has a full C runtime (newlib), so wrapping it is both
 // the smallest implementation and the most correct one.
 //
-// The handful that are NOT in the C library — the bounded string copies, the
+// The handful that are not in the C library - the bounded string copies, the
 // integer-to-string family, the UTF-8 length helpers, the CRCs, the character
-// set converter — are written out, following SDL2's own definitions so that
+// set converter - are written out, following SDL2's own definitions so that
 // results match what an application would get on a desktop.
 //
-// SDL_malloc, SDL_calloc, SDL_realloc and SDL_free are NOT here. They live
+// SDL_malloc, SDL_calloc, SDL_realloc and SDL_free are not here. They live
 // beside the stream code in rwops.cpp, because they are the same contract:
 // what SDL allocates and hands back is released with SDL_free.
 //
@@ -33,12 +33,11 @@
 // The heap
 // ---------------------------------------------------------------------------
 //
-// The allocator is FIXED: SDL_malloc and its three companions call the C
-// runtime and nothing else can be put in their place. So SDL_SetMemoryFunctions
-// refuses rather than accepting a replacement it would then ignore — an
+// The allocator is fixed: SDL_malloc and its three companions call the C
+// runtime and nothing else can be put in their place. SDL_SetMemoryFunctions
+// refuses rather than accepting a replacement it would then ignore, since an
 // application that hands SDL its own allocator and is quietly given the C
-// one's memory back has a corruption it cannot see coming, and a refusal it
-// can check for is the far cheaper answer.
+// one's memory back would have a corruption it cannot see coming.
 
 extern "C" void SDL_GetMemoryFunctions(SDL_malloc_func *malloc_func,
                                        SDL_calloc_func *calloc_func,
@@ -293,7 +292,7 @@ extern "C" char *SDL_strcasestr(const char *haystack, const char *needle)
     return nullptr;
 }
 
-// The bounded copies are BSD's. Both return the length the result WOULD have
+// The bounded copies are BSD's. Both return the length the result would have
 // had, which is how the caller detects truncation.
 extern "C" size_t SDL_strlcpy(char *dst, const char *src, size_t maxlen)
 {
@@ -520,7 +519,7 @@ extern "C" int SDL_vsnprintf(char *text, size_t maxlen, const char *fmt, va_list
 }
 
 // The buffer comes off SDL's heap, so the caller releases it with SDL_free
-// and not with the C library's free — which is why this measures and formats
+// and not with the C library's free - which is why this measures and formats
 // rather than handing the job to the C library's asprintf.
 extern "C" int SDL_vasprintf(char **strp, const char *fmt, va_list ap)
 {
@@ -623,17 +622,14 @@ extern "C" float  SDL_tanf(float x)    { return tanf(x); }
 //   forms, UTF-32 / UTF-32LE / UTF-32BE, UCS-4 and its explicit-endian
 //   forms, and WCHAR_T (a 32-bit wide character here).
 //
-// Every one of those can be converted to and from any other WITHOUT a
+// Every one of those can be converted to and from any other without a
 // mapping table, because each is a direct encoding of a Unicode code point.
-// A legacy code page — Shift-JIS, KOI8-R, a Windows code page — cannot: it
-// needs a table this library does not carry, so SDL_iconv_open REFUSES a
-// name it does not know rather than passing bytes through unconverted and
-// leaving the caller to discover the mojibake later.
+// A legacy code page - Shift-JIS, KOI8-R, a Windows code page - cannot: it
+// needs a table this library does not carry, so SDL_iconv_open refuses a
+// name it does not know rather than passing bytes through unconverted.
 //
 // Every conversion goes through a code point: decode one character from the
-// source encoding, encode it into the destination. That is one pass over the
-// text, as SDL's own converter is, and it makes the endian and width cases
-// fall out of two small functions instead of a matrix of pairs.
+// source encoding, encode it into the destination.
 
 namespace
 {
@@ -802,8 +798,8 @@ size_t DecodeOne(Encoding enc, const unsigned char **src, size_t *left, Uint32 *
 
 // Encode one character. E2BIG when it does not fit, so the caller can grow
 // the buffer and ask again; nothing is written and nothing is advanced in
-// that case. A character the destination cannot represent becomes '?' — the
-// same substitution SDL makes — and is counted as a non-reversible
+// that case. A character the destination cannot represent becomes '?' - the
+// same substitution SDL makes - and is counted as a non-reversible
 // conversion through *lossy.
 size_t EncodeOne(Encoding enc, Uint32 ch, unsigned char **dst, size_t *left,
                  size_t *lossy)

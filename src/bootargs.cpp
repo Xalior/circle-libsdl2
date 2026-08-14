@@ -1,35 +1,29 @@
 //
-// bootargs.cpp — the library's own switches, read from the boot argument
+// bootargs.cpp - the library's own switches, read from the boot argument
 // block, without the application being involved.
 //
-// THE BLOCK. A boot-time argument block sits at a fixed offset inside the
-// kernel image. A loader writes a plain argument string into it before
-// pushing the image, so a setting can ride a boot without anything being
-// rebuilt. The layout below is an INTERFACE agreed with whatever wrote it,
-// verified by a magic value before a byte is believed; it is reproduced here
-// byte-compatibly and must not be changed on one side alone.
+// A boot-time argument block sits at a fixed offset inside the kernel image.
+// A loader writes a plain argument string into it before pushing the image,
+// so a setting can ride a boot without anything being rebuilt. The layout
+// below is an interface agreed with whatever wrote it, verified by a magic
+// value before a byte is believed; it is reproduced here byte-compatibly and
+// must not be changed on one side alone.
 //
-// The application carries the block — it has to, because placing it at a
+// The application carries the block - it has to, because placing it at a
 // fixed image offset is a matter for the linker script of the program being
-// built — and the application splits the string into its own arguments. None
+// built - and the application splits the string into its own arguments. None
 // of that is this library's business.
 //
-// WHAT IS THIS LIBRARY'S BUSINESS is any switch describing what the LIBRARY
-// does: input, video, audio, timing, performance reporting. Those were being
-// interpreted by each application in turn, which meant an application that
-// had never heard of a switch silently lost the capability — the switch was
-// stamped, the loader confirmed it, and nothing happened, with no error to
-// explain it.
+// This library's business is any switch describing what the library does:
+// input, video, audio, timing, performance reporting. The library finds the
+// block itself, at the same fixed offset, and acts on its own switches, so
+// an application that knows nothing about any of this still gets every one
+// of them without forwarding anything.
 //
-// So the library finds the block ITSELF, at the same fixed offset, and acts
-// on its own switches. An application that knows nothing about any of this
-// still gets every one of them. The application is never asked, never has to
-// forward anything, and cannot fail to.
-//
-// READING IT TWICE IS THE POINT. The application reads the same block for
-// its own arguments and strips every `--rapi-` switch before the program
-// sees them; that stays the application's job, because they are its
-// arguments. Reading is harmless — nothing here writes to the block.
+// The application reads the same block for its own arguments and strips
+// every `--rapi-` switch before the program sees them; that stays the
+// application's job, because they are its arguments. Reading here is
+// harmless - nothing in this file writes to the block.
 //
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_circle.h>
@@ -59,21 +53,16 @@ const char From[] = "bootargs";
 } // namespace
 
 // ---------------------------------------------------------------------------
-// CARRYING THE BLOCK. Placing a block at a fixed image offset is a linker's
-// job, not this function's, and it used to be asked of every application in
-// turn: a linker script of its own, a trampoline over the reserved space, a
-// copy of the struct above to instantiate. Every one of those was the same
-// eleven bytes of magic and capacity, written out again per consumer, and an
-// application that forgot the linker script silently got no block at all —
-// which is exactly the failure this replaces. The library places its own
-// copy instead, in a section sdl-app.ld reserves at image offset 0x800
-// unconditionally, so every application linked against this library carries
-// a valid block whether or not it has ever heard of one.
+// Placing a block at a fixed image offset is a linker's job, not this
+// function's. The library places its own copy in a section sdl-app.ld
+// reserves at image offset 0x800 unconditionally, so every application
+// linked against this library carries a valid block whether or not it has
+// ever heard of one.
 //
-// THE TRAMPOLINE. The image's first instruction must not be the block, or
-// the processor would start executing magic bytes. `b _start` steps over the
-// reserved region to Circle's own startup, which sdl-app.ld places right
-// after the block. sdl-app.ld makes this symbol the image's entry point.
+// The image's first instruction must not be the block, or the processor
+// would start executing magic bytes. `b _start` steps over the reserved
+// region to Circle's own startup, which sdl-app.ld places right after the
+// block. sdl-app.ld makes this symbol the image's entry point.
 // ---------------------------------------------------------------------------
 extern "C"
 {
@@ -159,7 +148,7 @@ bool ParseSize(const char *pValue, unsigned &nWidth, unsigned &nHeight)
 }
 
 // One switch. Returns true when it was one of this library's, so that a
-// switch belonging to the application is passed over in silence — the
+// switch belonging to the application is passed over in silence - the
 // application reports on its own, and two complaints about one token would
 // be worse than none.
 bool Dispatch(const char *pSwitch)
@@ -187,7 +176,7 @@ bool Dispatch(const char *pSwitch)
     }
 
     // The virtual framebuffer size. It wins over a window's own size, over
-    // SDL2Circle_DeclareVirtualDevice and over the physical panel fallback —
+    // SDL2Circle_DeclareVirtualDevice and over the physical panel fallback -
     // see src/video.cpp, which holds the value and the precedence between
     // the four.
     if (strncmp(pSwitch, "--rapi-vdisplay=", 16) == 0)
@@ -224,7 +213,7 @@ void SDL2Circle_ReadBootArgs(void)
         return;                 // no block in this image; nothing to read
 
     // Bounded by the block's own capacity, never past this build's buffer,
-    // and terminated whatever the writer claimed — Length is the writer's
+    // and terminated whatever the writer claimed - Length is the writer's
     // convenience, not something to trust.
     char Text[BUFFER_BYTES];
     unsigned nBound = pBlock->Capacity;

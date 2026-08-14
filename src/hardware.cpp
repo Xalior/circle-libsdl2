@@ -1,8 +1,8 @@
 //
-// hardware.cpp — the board hardware this library manages for its host.
+// hardware.cpp - the board hardware this library manages for its host.
 //
 // Circle's CCPUThrottle is two things in one class: the CPU clock rate, and
-// — when cmdline.txt names a fan pin with `gpiofanpin=` — a case fan. Circle
+// - when cmdline.txt names a fan pin with `gpiofanpin=` - a case fan. Circle
 // creates neither for itself. It requires that a system holds exactly one
 // such object, and that something calls Update() on it regularly, or none of
 // the management it offers ever happens.
@@ -65,7 +65,7 @@ void SDL2Circle_HardwareTick(void)
 
     // No interval of this library's own. Update() already does its work at
     // most once every four seconds and costs a clock read the rest of the
-    // time — Circle's cputhrottle.h describes it as the form that "can be
+    // time - Circle's cputhrottle.h describes it as the form that "can be
     // called as often as you want without checking the calling interval".
     // A second gate here would only beat against that one.
     s_pThrottle->Update();
@@ -75,14 +75,14 @@ void SDL2Circle_HardwareTick(void)
 // are public: a game calls them from the application core by construction.
 //
 // The mailbox is guarded by one spin lock shared by every core, and the wait
-// inside it has no timeout — so a core that enters it and is not answered
+// inside it has no timeout - so a core that enters it and is not answered
 // spins for ever holding that lock, and the next core to ask is stuck behind
 // it. Two frozen cores, no fault, and no watchdog, because the watchdog is a
 // task on the core that stopped.
 //
 // Contention is only possible if more than one core ever takes the lock.
 // Which cores take it is entirely this library's business, so these are
-// marshalled to core 0 like every other firmware call — the answer comes
+// marshalled to core 0 like every other firmware call - the answer comes
 // back the same, and one fewer core is in the running to collide.
 static void read_temperature_on0(void *p)
 {

@@ -1,5 +1,5 @@
 //
-// bmp.cpp — SDL_LoadBMP_RW and SDL_SaveBMP_RW
+// bmp.cpp - SDL_LoadBMP_RW and SDL_SaveBMP_RW
 //
 // BMP is the one image format that is part of core SDL2 rather than of
 // SDL_image, and it is the format a great many games keep their fonts,

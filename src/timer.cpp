@@ -1,25 +1,23 @@
 //
-// timer.cpp — ticks, delays and callback timers over Circle's system timer
+// timer.cpp - ticks, delays and callback timers over Circle's system timer
 // (µs, 64-bit)
 //
-// WHERE A CALLBACK TIMER RUNS. On a desktop SDL serves SDL_AddTimer from a
-// thread of its own, so a callback interrupts whatever the program was doing.
-// This platform has no such thread to give it: the application core has one
-// line of execution, and the hardware core's is spoken for by the servo that
-// keeps the devices running. A kernel timer would fire, but it fires in
-// interrupt context, and application callbacks that allocate, log or push
-// events must never run there.
+// A callback timer here does not run on a thread of its own, unlike desktop
+// SDL's SDL_AddTimer. The application core has one line of execution, and
+// the hardware core's is spoken for by the servo that keeps the devices
+// running; a kernel timer would fire, but in interrupt context, where
+// application callbacks that allocate, log or push events must never run.
 //
 // So the callbacks run in the application's own line of execution, at the two
 // points it is certain to reach and safe to be called at: the per-frame pump
 // (SDL_PumpEvents, which SDL_PollEvent calls) and SDL_Delay, which is where a
 // program spends the time it is not drawing.
 //
-// WHAT THAT COSTS. A callback runs late whenever the application is inside a
-// single long stretch of work with neither a delay nor an event poll in it —
-// loading a level, decompressing a sound. It is never dropped, only deferred,
-// and the next deadline is measured from when the callback actually ran, so a
-// late tick does not make the following one early. An application that needs a
+// A callback runs late whenever the application is inside a single long
+// stretch of work with neither a delay nor an event poll in it - loading a
+// level, decompressing a sound. It is never dropped, only deferred, and the
+// next deadline is measured from when the callback actually ran, so a late
+// tick does not make the following one early. An application that needs a
 // timer to interrupt its own computation will not get that here.
 //
 // Re-entry is refused: a callback may call SDL_Delay or poll for events
@@ -48,26 +46,24 @@ extern "C" Uint64 SDL_GetPerformanceCounter(void)
 
 extern "C" Uint64 SDL_GetPerformanceFrequency(void)
 {
-    return 1000000ULL;   // CLOCKHZ — the system timer counts microseconds
+    return 1000000ULL;   // CLOCKHZ - the system timer counts microseconds
 }
 
-// A DELAY IS A WAIT, AND A WAIT MUST NOT STOP THE SOUND.
+// SDL_Delay must keep feeding the audio callback, because the callback has
+// no thread of its own: it only runs when something calls into this
+// library, and SDL_Delay is where an application spends the time it is not
+// drawing. A delay that merely counts leaves the sound device unfed while
+// applications wait on the callback having run.
 //
-// The audio callback has no thread of its own here: it is run by whichever
-// context calls into this library, and SDL_Delay is where an application
-// spends the time it is not drawing. A delay that merely counts is a delay
-// with the sound device unfed — and worse than quiet, because applications
-// wait on the callback having run.
+// The case that wedges is ordinary: a game produces a frame of audio into a
+// buffer of its own, finds the buffer full, and waits in millisecond steps
+// for the callback to take some out. The callback can only run from inside
+// that wait, so a wait that does not run it waits for something it is
+// itself preventing - it never ends, and nothing in the application looks
+// wrong, because its core is running and its loop is simply one call deep
+// and never returns.
 //
-// The case that wedges is ordinary and common: a game produces a frame of
-// audio into a buffer of its own, finds the buffer full, and waits in
-// millisecond steps for the callback to take some out. The callback can only
-// run from inside that wait, so a wait that does not run it is a wait for
-// something the waiter is itself preventing. It never ends, and nothing in
-// the application looks wrong — its core is running, its loop is simply one
-// call deep and never returns.
-//
-// So every branch below waits through SDL2Circle_ThreadWaitSpin, which is
+// Every branch below waits through SDL2Circle_ThreadWaitSpin, which is
 // where the one rule about who may produce lives (src/threads.cpp). Off the
 // hardware core that is a pump and a processor yield; on it, a pump and a
 // scheduler yield, and the sleep is taken in slices between them so the

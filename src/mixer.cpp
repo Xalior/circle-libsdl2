@@ -1,43 +1,35 @@
 //
-// mixer.cpp — SDL_mixer: several sounds at once, over the one audio device.
+// mixer.cpp - SDL_mixer: several sounds at once, over the one audio device.
 //
-// The device plays one stream. An application wants to start a sound effect
-// without stopping the one already playing, and wants music underneath both.
-// That is the whole of what a mixer is, and it is why it sits above SDL's own
-// audio API rather than beside it: SDL_mixer opens the device, installs its
-// own callback, and every Mix_ call below adds to or takes away from what
-// that callback is summing.
+// The device plays one stream. SDL_mixer opens it and installs its own
+// callback; every Mix_ call below adds to or takes away from what that
+// callback sums.
 //
-// IN THE SAME ARCHIVE, for the reasons given in image.cpp: no packages, no
-// shared objects, nothing for a separate archive to decouple. SDL_mixer.h is
-// the upstream header.
+// In the same archive as the rest of this library, for the reasons given in
+// image.cpp: no packages, no shared objects. SDL_mixer.h is the upstream
+// header.
 //
-// EVERYTHING IS STORED IN THE DEVICE'S FORMAT. A chunk is converted once,
-// when it is loaded, into exactly what the device plays; the callback then
-// only has to add samples together. Converting during the callback would put
-// a resampler in the path of every buffer the device asks for, and a late
-// buffer is heard immediately.
+// A chunk is converted once, when it is loaded, into the device's own
+// format; the callback then only has to add samples together, with no
+// resampling in its path.
 //
-// WHAT PLAYS: WAV, through SDL_LoadWAV_RW, in any of the formats that reads.
-// A compressed or synthesised format is REFUSED BY NAME — see the note on
-// music below. Silence that says why is recoverable; noise, or a game that
-// hangs waiting for a track to finish, is not.
+// What plays: WAV, through SDL_LoadWAV_RW, in any of the formats that reads.
+// A compressed or synthesised format is refused by name - see the note on
+// music below.
 //
-// WHAT IS NOT HERE: a MIDI synthesiser. A MIDI file is a score, not a
-// recording — playing one means synthesising every instrument in it, which
-// is a sound engine in its own right and far larger than this file.
-// Mix_SetSoundFonts and Mix_SetTimidityCfg are accepted and remembered so an
-// application's configuration still works, but nothing reads them yet, and
-// Mix_LoadMUS on a MIDI file fails and says exactly this.
+// There is no MIDI synthesiser. A MIDI file is a score, not a recording, and
+// playing one means synthesising every instrument in it. Mix_SetSoundFonts
+// and Mix_SetTimidityCfg are accepted and remembered so an application's
+// configuration still works, but nothing reads them, and Mix_LoadMUS on a
+// MIDI file fails and says so.
 //
-// EFFECTS ARE HOW AN APPLICATION BRINGS ITS OWN SOUND ENGINE. An effect
-// registered on MIX_CHANNEL_POST is handed the finished mix, in the device's
-// format, and may rewrite it — which is the door through which an
-// application that HAS a synthesiser of its own puts its output into the
-// stream without needing one here. Chocolate Doom is the case that matters:
-// it emulates an OPL2 chip itself and adds the chip's samples to the mix
-// from a post effect, so its music plays even though nothing above can read
-// a MIDI file. Mix_SetPostMix is the same door one stage further down.
+// An effect registered on MIX_CHANNEL_POST is handed the finished mix, in
+// the device's format, and may rewrite it - which is how an application with
+// a sound engine of its own puts that engine's output into the stream.
+// Chocolate Doom does this: it emulates an OPL2 chip and adds the chip's
+// samples to the mix from a post effect, so its music plays even though
+// nothing above can read a MIDI file. Mix_SetPostMix is the same mechanism
+// one stage further down.
 //
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_mixer.h>
@@ -106,7 +98,7 @@ char *s_timidity_cfg = nullptr;
 // The limit is a fixed array rather than a linked list because registration
 // happens while the device is playing and the callback walks the list on
 // every buffer: a fixed array needs no allocation on either side. Eight per
-// channel is far past what any application registers — Chocolate Doom, the
+// channel is far past what any application registers - Chocolate Doom, the
 // heaviest user here, registers one.
 // ---------------------------------------------------------------------------
 
@@ -139,8 +131,8 @@ void RunEffects(const EffectChain &chain, int chan, void *stream, int len)
 }
 
 // SDL_mixer tells an effect when its channel stops, which is how an effect
-// holding state per sound knows to drop it. The post chain never stops — the
-// mix is always playing — so this is only ever reached for a real channel.
+// holding state per sound knows to drop it. The post chain never stops - the
+// mix is always playing - so this is only ever reached for a real channel.
 void RunEffectsDone(const EffectChain &chain, int chan)
 {
     for (int i = 0; i < chain.count; i++)
@@ -152,7 +144,7 @@ void RunEffectsDone(const EffectChain &chain, int chan)
 // the order they were registered, then the post-mix callback. Reached even
 // when the mix above could not be made, because an application's own sound
 // engine writes from here and keeps its time by counting the samples it is
-// asked for — a buffer it never sees is time it never advances.
+// asked for - a buffer it never sees is time it never advances.
 void RunPost(Uint8 *stream, int len)
 {
     RunEffects(s_post_effect, MIX_CHANNEL_POST, stream, len);
@@ -199,7 +191,7 @@ void MixIntoS16(Sint16 *dst, const Uint8 *src, int frames, float left, float rig
 
 // The callback the device pulls from. Everything playing is summed into a
 // wider accumulator and clamped once at the end, so two loud sounds together
-// distort rather than wrapping to the opposite polarity — a wrap is heard as
+// distort rather than wrapping to the opposite polarity - a wrap is heard as
 // a crack, which sounds like a fault rather than like loudness.
 void SDLCALL MixerCallback(void *, Uint8 *stream, int len)
 {
@@ -460,9 +452,9 @@ extern "C" const SDL_version *Mix_Linked_Version(void)
     return &version;
 }
 
-// As with IMG_Init: the answer is which of the ASKED-FOR decoders are
+// As with IMG_Init: the answer is which of the asked-for decoders are
 // available. WAV needs no flag in SDL_mixer, and every flag names a format
-// this build has no decoder for, so the honest answer is none of them.
+// this build has no decoder for, so the answer is none of them.
 extern "C" int Mix_Init(int) { return 0; }
 
 extern "C" void Mix_Quit(void) {}
@@ -608,7 +600,7 @@ extern "C" Mix_Chunk *Mix_LoadWAV(const char *file)
 }
 
 // Samples already in the device's format, which the caller keeps ownership
-// of — SDL_mixer's contract for this one.
+// of - SDL_mixer's contract for this one.
 extern "C" Mix_Chunk *Mix_QuickLoad_RAW(Uint8 *mem, Uint32 len)
 {
     Mix_Chunk *chunk = (Mix_Chunk *)SDL_malloc(sizeof(Mix_Chunk));
@@ -879,8 +871,8 @@ extern "C" int Mix_SetDistance(int channel, Uint8 distance)
 // alone; registered on MIX_CHANNEL_POST it sees the whole finished mix.
 //
 // The post channel is the one that matters most here, because it is how an
-// application with a sound engine of its own — Chocolate Doom's emulated OPL
-// chip, for one — puts that engine's output into the stream. Nothing above
+// application with a sound engine of its own - Chocolate Doom's emulated OPL
+// chip, for one - puts that engine's output into the stream. Nothing above
 // has to know what it is synthesising.
 // ---------------------------------------------------------------------------
 
@@ -972,8 +964,8 @@ extern "C" int Mix_UnregisterEffect(int channel, Mix_EffectFunc_t f)
 }
 
 // Panning is an effect in SDL_mixer, so clearing a channel's effects clears
-// its panning with them. It is not one here — a gain per side is part of what
-// the mixing loop already does — so the panning is put back by hand.
+// its panning with them. It is not one here - a gain per side is part of what
+// the mixing loop already does - so the panning is put back by hand.
 extern "C" int Mix_UnregisterAllEffects(int channel)
 {
     EffectChain *chain = ChainFor(channel);
@@ -1186,7 +1178,7 @@ extern "C" Mix_Fading Mix_FadingMusic(void) { return MIX_NO_FADING; }
 // SDL_mixer plays music through an external program by handing the track to
 // a command line and letting a separate process do the work. There are no
 // processes here and no shell to start one from, so this refuses rather than
-// accepting a command it will never run — an application that asked for an
+// accepting a command it will never run - an application that asked for an
 // external player and got silence would have nothing to go on.
 extern "C" int Mix_SetMusicCMD(const char *command)
 {

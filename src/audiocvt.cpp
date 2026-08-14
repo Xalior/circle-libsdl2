@@ -1,5 +1,5 @@
 //
-// audiocvt.cpp — SDL2's audio conversion, and the WAV loader that feeds it.
+// audiocvt.cpp - SDL2's audio conversion, and the WAV loader that feeds it.
 //
 // The one sound device speaks 16-bit signed stereo at 48 kHz and nothing
 // else. Almost no application produces exactly that, so something has to
@@ -7,28 +7,26 @@
 // caller describes both ends, is told how much room the result needs, and
 // converts in place in a buffer of its own.
 //
-// HOW IT CONVERTS. Everything goes through 32-bit float samples in the
-// range [-1, 1]: the source is widened into floats, resampled, mapped onto
-// the destination's channel count, and narrowed into the destination format.
-// One path serves every combination, so there is no pairing that happens to
-// be missing, and the intermediate is wide enough that nothing is lost on
-// the way through. It costs more than a purpose-built loop for one pairing
-// would, and it is paid on the application's own core.
+// The conversion goes through 32-bit float samples in the range [-1, 1]: the
+// source is widened into floats, resampled, mapped onto the destination's
+// channel count, and narrowed into the destination format. One path serves
+// every combination, and the intermediate is wide enough that nothing is
+// lost on the way through; it costs more than a purpose-built loop for one
+// pairing would, and it is paid on the application's own core.
 //
-// WHAT IS CONVERTED: U8, S8, U16, S16, S32 and F32 in either byte order, one
+// What is converted: U8, S8, U16, S16, S32 and F32 in either byte order, one
 // or two channels, any rate ratio by linear interpolation. More than two
-// channels is refused rather than approximated — there is nowhere for a
+// channels is refused rather than approximated - there is nowhere for a
 // third channel to go on a stereo device, and silently dropping it would be
 // a mix nobody asked for.
 //
-// WHERE THE CHANNEL COUNTS LIVE. SDL_AudioCVT carries the two formats and
-// the rate ratio in named fields, but not the two channel counts: SDL2 keeps
+// Where the channel counts live: SDL_AudioCVT carries the two formats and
+// the rate ratio in named fields, but not the two channel counts. SDL2 keeps
 // those inside the chain of filter functions it builds, and there is no such
 // chain here. The structure's layout is SDL's ABI and cannot grow a field,
 // so the counts ride in the first two slots of the otherwise unused
-// `filters` array. That array belongs to the caller's own structure, which
-// already has to survive between the two calls, so nothing is allocated and
-// nothing can be left behind.
+// `filters` array, which belongs to the caller's own structure and already
+// has to survive between the two calls.
 //
 #include <SDL2/SDL.h>
 
@@ -123,7 +121,7 @@ float ReadSample(const Uint8 *p, SDL_AudioFormat fmt)
 
 // One float sample into the destination buffer, clamped so that a mix that
 // went past full scale distorts rather than wrapping round to the opposite
-// polarity — which is heard as a click, not as loudness.
+// polarity - which is heard as a click, not as loudness.
 void WriteSample(Uint8 *p, SDL_AudioFormat fmt, float v)
 {
     if (v > 1.0f)  v = 1.0f;
@@ -209,7 +207,7 @@ extern "C" int SDL_BuildAudioCVT(SDL_AudioCVT *cvt,
     cvt->len_ratio = frame_ratio * cvt->rate_incr;
 
     // len_mult is a whole number and the caller sizes the buffer with it, so
-    // it rounds UP — a buffer one byte short is a write past the end of an
+    // it rounds up - a buffer one byte short is a write past the end of an
     // allocation with nothing underneath to catch it.
     int mult = (int)cvt->len_ratio;
     if ((double)mult < cvt->len_ratio)
@@ -355,7 +353,7 @@ extern "C" void SDL_MixAudio(Uint8 *dst, const Uint8 *src, Uint32 len,
 // WAV
 //
 // RIFF/WAVE carrying PCM or IEEE float, which is what every WAV a game ships
-// actually is. A compressed WAV — ADPCM, mu-law — is refused by name rather
+// actually is. A compressed WAV - ADPCM, mu-law - is refused by name rather
 // than played as noise.
 //
 // SDL's contract: the spec, buffer and length are filled in on success, the
@@ -410,7 +408,7 @@ extern "C" SDL_AudioSpec *SDL_LoadWAV_RW(SDL_RWops *src, int freesrc,
         bool have_fmt = false;
 
         // Walk the chunks. `fmt ` describes the samples and `data` holds
-        // them; anything else — LIST, fact, cue — is skipped by its own
+        // them; anything else - LIST, fact, cue - is skipped by its own
         // length, which is why the length is read before the body.
         for (;;)
         {

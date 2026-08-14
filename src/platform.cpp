@@ -1,5 +1,5 @@
 //
-// platform.cpp — what SDL can tell an application about the machine.
+// platform.cpp - what SDL can tell an application about the machine.
 //
 // Everything here has a definite answer on a bare-metal board, and most of
 // them are more definite than on a desktop: there is one kind of processor,
@@ -51,7 +51,7 @@ extern "C" SDL_bool SDL_HasRDTSC(void)    { return SDL_FALSE; }
 extern "C" int SDL_GetCPUCacheLineSize(void) { return 64; }
 
 // Every board this runs on is quad-core, and CORES is what Circle was built
-// against — the same number the core split reasons about.
+// against - the same number the core split reasons about.
 extern "C" int SDL_GetCPUCount(void)
 {
     return (int)CORES;
@@ -75,7 +75,7 @@ extern "C" size_t SDL_SIMDGetAlignment(void)
 // ---------------------------------------------------------------------------
 
 // A board runs from a power supply. SDL has a state for exactly that, and it
-// is not "unknown" — there is no battery, so nothing is charging and nothing
+// is not "unknown" - there is no battery, so nothing is charging and nothing
 // is draining.
 extern "C" SDL_PowerState SDL_GetPowerInfo(int *seconds, int *percent)
 {

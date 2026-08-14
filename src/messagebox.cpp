@@ -1,5 +1,5 @@
 //
-// messagebox.cpp — SDL_ShowSimpleMessageBox and SDL_ShowMessageBox.
+// messagebox.cpp - SDL_ShowSimpleMessageBox and SDL_ShowMessageBox.
 //
 // A message box is how an application says something it believes the user
 // must see before anything else happens, and it is very often the last thing
@@ -7,11 +7,11 @@
 // on the screen and nobody to click it, so the message goes to the serial
 // log instead, at a severity taken from the flags the caller gave it.
 //
-// The alternative — doing nothing — loses exactly the diagnostic an
+// The alternative - doing nothing - loses exactly the diagnostic an
 // application thought was important enough to interrupt for, and a board
 // that stops with no explanation is the hardest kind to work out.
 //
-// A message box that expects an ANSWER is a different matter, and is
+// A message box that expects an answer is a different matter, and is
 // reported below rather than guessed at.
 //
 #include <SDL2/SDL.h>
@@ -53,7 +53,7 @@ extern "C" int SDL_ShowMessageBox(const SDL_MessageBoxData *data, int *buttonid)
 
     // The caller is asking which button was pressed. Nobody pressed one, so
     // the honest answer is the button the application itself nominated as
-    // the one to assume — the default for a return key, or failing that for
+    // the one to assume - the default for a return key, or failing that for
     // the escape key. Each is the application's own statement of what should
     // happen when the user does not choose, which is exactly the situation.
     if (buttonid)

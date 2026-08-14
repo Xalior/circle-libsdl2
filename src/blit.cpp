@@ -1,17 +1,17 @@
 //
-// blit.cpp — copying one surface into another
+// blit.cpp - copying one surface into another
 //
 // SDL2 has two blit entry points and the difference between them is the
 // whole of SDL_UpperBlit's job: SDL_LowerBlit takes rectangles that have
 // already been clipped and validated, SDL_UpperBlit does the clipping and
 // then calls it. Applications call the upper one, almost always through the
 // macro SDL_BlitSurface, and expect the destination rectangle they passed in
-// to be UPDATED with what was actually drawn. Getting that write-back wrong
+// to be updated with what was actually drawn. Getting that write-back wrong
 // is one of the quieter ways a port ends up with sprites in the wrong place.
 //
 // One general blitter serves every format pair, going through the pixel
 // machinery in pixels.cpp. A paletted source is resolved through its own
-// palette, so an 8-bit frame lands correctly in a 32-bit destination — which
+// palette, so an 8-bit frame lands correctly in a 32-bit destination - which
 // is what a VGA-shaped game needs and what it otherwise has to write for
 // itself. Two fast paths sit in front of it: an identical-format opaque copy
 // (a row memcpy) and the 32-bit alpha-blend case, which between them cover
@@ -310,7 +310,7 @@ extern "C" int SDL_UpperBlit(SDL_Surface *src, const SDL_Rect *srcrect,
     sr.h = h;
     const SDL_Rect dr = { dstx, dsty, w, h };
 
-    // SDL2 reports back what was ACTUALLY blitted, position included.
+    // SDL2 reports back what was actually blitted, position included.
     if (dstrect)
         *dstrect = dr;
 

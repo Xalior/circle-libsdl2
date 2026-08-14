@@ -1,16 +1,16 @@
 //
-// rwops.cpp — SDL_RWops streams over files and over memory.
+// rwops.cpp - SDL_RWops streams over files and over memory.
 //
 // SDL_RWops is how SDL hands an application a stream it can read without
 // caring where the bytes are. Two of them exist here: one over a block of
 // memory, and one over a file. The file one goes through the shim's own I/O
-// service rather than stdio, because that service is valid from ANY core —
-// FatFs and the card belong to core 0, and the service marshals — so an
+// service rather than stdio, because that service is valid from any core -
+// FatFs and the card belong to core 0, and the service marshals - so an
 // application running off core 0 can open a file with the same call.
 //
 // This file also carries SDL's heap entry points. They belong beside the
 // stream code because they are the same contract: anything SDL allocates and
-// hands back — a mapping string, an RWops — is released with SDL_free.
+// hands back - a mapping string, an RWops - is released with SDL_free.
 //
 #include <SDL2/SDL.h>
 #include "sdl2circle.h"
@@ -278,7 +278,7 @@ extern "C" SDL_RWops *SDL_RWFromFile(const char *file, const char *mode)
     }
 
     // Only the access the underlying service offers: read, write, and write
-    // with truncation. The 'b' every caller writes is meaningless here — a
+    // with truncation. The 'b' every caller writes is meaningless here - a
     // bare-metal file has no text mode to be distinguished from.
     bool wants_write = strchr(mode, 'w') || strchr(mode, 'a') || strchr(mode, '+');
     unsigned flags = SDL2CIRCLE_IO_READ;
@@ -434,7 +434,7 @@ extern "C" size_t SDL_WriteBE64(SDL_RWops *dst, Uint64 value)
 }
 
 // A whole file in memory, terminated with a zero byte that is not counted in
-// the size — SDL's contract, and what lets the result be used directly as a
+// the size - SDL's contract, and what lets the result be used directly as a
 // string when the file is text. The caller releases it with SDL_free.
 extern "C" void *SDL_LoadFile_RW(SDL_RWops *src, size_t *datasize, int freesrc)
 {

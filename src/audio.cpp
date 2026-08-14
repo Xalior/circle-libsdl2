@@ -1,19 +1,19 @@
 //
-// audio.cpp — SDL callback audio over Circle's HDMI sound device.
+// audio.cpp - SDL callback audio over Circle's HDMI sound device.
 //
 // One output device, S16 stereo. The application's audio callback runs on
 // the main loop out of SDL_PumpEvents (never in IRQ context): each pump
 // tops the buffers back up, invoking the callback once per block of free
 // space.
 //
-// LATENCY IS THE BUDGET HERE, not capacity. Every sample sitting in a buffer
+// Latency is the budget here, not capacity. Every sample sitting in a buffer
 // is time between the game starting a sound and a player hearing it, and the
 // stages add up: what the application core has produced and not yet handed
 // over, what the sound device has been given and not yet played, and what the
-// DMA is holding. A gunshot heard after its muzzle flash has gone is this sum
-// being too large, and it is the reason none of the three is sized "generously".
+// DMA is holding. None of the three below is sized generously, because a
+// gunshot heard after its muzzle flash has gone is this sum being too large.
 //
-// The three, smallest first, and what each one is protecting against:
+// Smallest first, and what each one protects against:
 //
 //   RING_BLOCKS       how much finished audio may wait on the application
 //                     core. It covers the gap between one SDL_PumpEvents and
@@ -21,14 +21,14 @@
 //
 //   QUEUE_MSECS       the sound device's own queue, filled by core 0's servo.
 //                     It covers the gap between servo laps, and a lap is far
-//                     under a millisecond — this is mostly protection against
+//                     under a millisecond - this is mostly protection against
 //                     a lap that goes long, and it must stay comfortably
 //                     larger than one DMA chunk, which leaves it in one go.
 //
 //   DMA_CHUNK_WORDS   what the DMA holds. Two buffers of this size are always
 //                     in flight, so it is charged twice.
 //
-// WHEN THE GAME CORE IS LATE the downstream stages keep playing: the device
+// When the game core is late, the downstream stages keep playing: the device
 // queue and the DMA together are the runway, and only a stall longer than
 // that is heard, as a break rather than as a delay. This library gives the
 // game a core of its own and the servo another, so both gaps are far shorter
@@ -47,23 +47,23 @@ namespace
 
 CHDMISoundBaseDevice *s_device = nullptr;
 
-// TWO SPECS, and the difference between them is the whole of this file's
-// contract with an application.
+// Two specs, and the difference between them is this file's contract with an
+// application.
 //
-// s_spec is what the APPLICATION writes: the format, channel count and rate
+// s_spec is what the application writes: the format, channel count and rate
 // its callback fills a buffer in. It is what SDL_OpenAudioDevice reports in
 // `obtained`, and it is the application's own spec unless the application
 // gave permission for it to be changed.
 //
-// s_dev is what the DEVICE plays. The HDMI sound device speaks 16-bit signed
+// s_dev is what the device plays. The HDMI sound device speaks 16-bit signed
 // stereo and nothing else.
 //
-// Where they differ, the library converts between them — see s_cvt. That is
-// the point: an application that asks for mono and does NOT set
+// Where they differ, the library converts between them - see s_cvt. An
+// application that asks for mono and does not set
 // SDL_AUDIO_ALLOW_CHANNELS_CHANGE has been promised mono, and handing its
-// callback a stereo-sized buffer to fill produces garbled sound with no
-// error anywhere. Either match what was asked, or change it and SAY SO in
-// `obtained`. Ignoring the request is the one answer that is never right.
+// callback a stereo-sized buffer to fill would produce garbled sound with no
+// error anywhere: either match what was asked, or change it and report the
+// change in `obtained`.
 SDL_AudioSpec s_spec;
 SDL_AudioSpec s_dev;
 
@@ -80,9 +80,9 @@ Uint8 *s_chunk = nullptr;
 bool s_convert = false;
 SDL_AudioCVT s_cvt;
 
-// One chunk's worth, measured on the DEVICE's side of the conversion. The
+// One chunk's worth, measured on the device's side of the conversion. The
 // queue is counted in device frames, so these are what the pump and the
-// drain must use — the application's own figures describe a different
+// drain must use - the application's own figures describe a different
 // number of bytes whenever a conversion is in play.
 unsigned s_dev_bytes = 0;
 unsigned s_dev_frames = 0;
@@ -92,7 +92,7 @@ unsigned s_dev_frames = 0;
 // that what is waiting in it is not heard as delay.
 constexpr unsigned QUEUE_MSECS = 30;
 
-// What the DMA carries, in the words Circle counts it in — one word per
+// What the DMA carries, in the words Circle counts it in - one word per
 // stereo channel, so two words to the frame, and a multiple of 384 as the
 // device requires. Circle's own default is 384*10, which at 44.1kHz is 43ms
 // in each of the two buffers: sized for an application that might be slow to
@@ -103,7 +103,7 @@ constexpr unsigned DMA_CHUNK_WORDS = 384 * 4;
 
 // How much finished audio may wait on the application core, counted in the
 // blocks the application's own callback produces. Two would be the least that
-// can play without a gap — one being handed over and one behind it — and this
+// can play without a gap - one being handed over and one behind it - and this
 // is three, so there is a whole spare block of slack for a frame that runs
 // long. A block is over 20ms at the rates games ask for, which is longer than
 // a frame takes to draw on a core with nothing else on it.
@@ -115,36 +115,30 @@ constexpr unsigned DMA_CHUNK_WORDS = 384 * 4;
 constexpr unsigned RING_BLOCKS = 3;
 
 // ---------------------------------------------------------------------------
-// WHO MAY PRODUCE
+// Who may produce
 // ---------------------------------------------------------------------------
 //
 // Producing audio means running the application's callback and putting the
-// result somewhere: into the cross-core ring under the split, or straight into
-// the sound device's queue without it. BOTH destinations have exactly one
-// writer by construction — the ring is single-producer, and the device's queue
-// is filled by core 0's servo and by nobody else — and neither of them says so
-// anywhere. The rule was a convention: production happened in SDL_PumpEvents,
-// and the application core was the only core that called it.
+// result somewhere: into the cross-core ring under the split, or straight
+// into the sound device's queue without it. Both destinations have exactly
+// one writer by construction - the ring is single-producer, and the device's
+// queue is filled by core 0's servo and nobody else - so only one core may
+// ever produce. Two producing at once would not merely interleave: they read
+// the same ring tail, write the same bytes, and both publish a tail that
+// accounts for one of the two blocks, and they share s_chunk, the single
+// buffer the callback fills, so one block could be half of one core's audio
+// and half of another's - chunks in the wrong order and torn across the seam.
 //
-// A convention is not a rule. Two cores producing at once do not merely
-// interleave, they overwrite: they read the same ring tail, write the same
-// bytes, and both publish a tail that accounts for one of the two blocks. They
-// also share s_chunk, the single buffer the callback fills, so one block can
-// be half of one core's audio and half of another's. What comes out is not
-// late, it is WRONG — chunks in the wrong order and torn across the seam.
+// The owner is named when the device opens, not at the first pump. An
+// application may wait for the sound to advance before it has pumped even
+// once - Chocolate Doom does: it sets up its emulated OPL chip immediately
+// after opening the device, and setting it up waits for a chip timer that
+// only the audio callback advances. Naming the owner at open means that wait
+// always finds a claimed core to advance it.
 //
-// So the owner is named, AND IT IS NAMED WHEN THE DEVICE OPENS rather than at
-// the first pump. That timing is not a detail. An application may wait for the
-// sound to advance before it has pumped even once — Chocolate Doom does: it
-// sets up its emulated OPL chip immediately after opening the device, and
-// setting it up waits for a chip timer that only the audio callback advances.
-// With ownership still unclaimed at that moment, the wait asks who may produce,
-// is told nobody, and waits for something only it could have started. The board
-// stops there, having printed that the mixer opened and nothing after it.
-//
-// Ownership is not the same question as re-entrancy and one does not answer the
-// other: s_pumping stops a core being asked to produce from inside its own
-// callback, which is a different accident and needs its own guard.
+// Ownership and re-entrancy are separate questions: s_pumping stops a core
+// being asked to produce from inside its own callback, which needs its own
+// guard.
 int s_owner_core = -1;    // the core production belongs to; -1 until claimed
 bool s_pumping = false;   // a callback is running on the owning core
 
@@ -157,16 +151,16 @@ void claim_production(void)
 
     // The one core that can never own it is core 0 under the split, which
     // drains and never produces. An application that opened its device from
-    // there — from a thread, say, since SDL threads are core-0 tasks — leaves
+    // there - from a thread, say, since SDL threads are core-0 tasks - leaves
     // the question to the first core that legitimately pumps.
     s_owner_core = (SDL2Circle_SplitActive() && core == 0) ? -1 : core;
 }
 
-// Whether the calling core may produce. ONE rule, in one place, for every
-// caller — the event pump and a blocking wait alike. A wait needs the same
+// Whether the calling core may produce. One rule, in one place, for every
+// caller - the event pump and a blocking wait alike. A wait needs the same
 // answer the pump gets: it is asking because the thing it is waiting for may
-// be on the other side of the callback, and a rule that were stricter here
-// than there would be a rule that can deadlock.
+// be on the other side of the callback, and a stricter rule here than there
+// could deadlock.
 bool may_produce(void)
 {
     if (!s_device || s_paused || !s_spec.callback || s_lock > 0 || s_pumping)
@@ -180,11 +174,10 @@ bool may_produce(void)
         return false;
 
     // Normally settled at open. Unclaimed here means the device was opened
-    // from a core that cannot own it, and then the first eligible core to ask
-    // takes it — never TAKES IT FROM anyone, which is what keeps two cores off
-    // the ring. Letting the asker have it is what stops a wait finding nobody
-    // at home, and having nobody at home is the one outcome that never
-    // recovers.
+    // from a core that cannot own it, so the first eligible core to ask
+    // takes it - never takes it from another core, which is what keeps two
+    // cores off the ring. Letting the asker have it stops a wait finding
+    // nobody at home, which is an outcome that never recovers.
     if (s_owner_core < 0)
         s_owner_core = core;
     return s_owner_core == core;
@@ -198,7 +191,7 @@ void complete_spec(SDL_AudioSpec &spec)
               * (SDL_AUDIO_BITSIZE(spec.format) / 8);
 }
 
-// Run the application's callback and leave one chunk in DEVICE format in
+// Run the application's callback and leave one chunk in device format in
 // s_chunk. Returns the number of bytes to hand the device, or 0 if the
 // conversion failed.
 unsigned fill_chunk(void)
@@ -260,11 +253,11 @@ extern "C" SDL_AudioDeviceID SDL_OpenAudioDevice(const char *, int iscapture,
     int freq = desired->freq > 0 ? desired->freq : 48000;
     Uint16 samples = desired->samples > 0 ? desired->samples : 1024;
 
-    // The queue is a latency budget, but WITHOUT THE SPLIT it has a floor it
+    // The queue is a latency budget, but without the split it has a floor it
     // may not go under. There the application's callback writes to the device
-    // directly, and it can only produce a WHOLE block at a time, so a queue
+    // directly, and it can only produce a whole block at a time, so a queue
     // that never has room for one is never written to and the device plays
-    // nothing at all — silence, not delay. An application that asks for a
+    // nothing at all - silence, not delay. An application that asks for a
     // large block therefore gets a larger queue, and the delay that comes with
     // it is its own choice of block rather than this file's.
     //
@@ -303,7 +296,7 @@ extern "C" SDL_AudioDeviceID SDL_OpenAudioDevice(const char *, int iscapture,
     complete_spec(s_dev);
 
     // What the application writes. Each attribute is the one it asked for,
-    // unless it gave permission for that attribute to change — in which case
+    // unless it gave permission for that attribute to change - in which case
     // it becomes the device's, and `obtained` reports the change so the
     // application can adapt. An attribute it did not give permission to
     // change stays as asked and is converted below.
@@ -406,17 +399,17 @@ void SDL2Circle_AudioPump(void)
         ~Guard() { s_pumping = false; }
     } guard;
 
-    // Core split inverts audio from pull to push: the application core runs its
-    // callback into the cross-core sample ring; the hardware-core servo feeds the
-    // device from the ring at its own cadence (SDL2Circle_AudioDrain).
-    // Audio stops being hostage to frame granularity.
+    // Core split inverts audio from pull to push: the application core runs
+    // its callback into the cross-core sample ring, and the hardware-core
+    // servo feeds the device from the ring at its own cadence
+    // (SDL2Circle_AudioDrain), independent of frame granularity.
     if (SDL2Circle_SplitActive())
     {
-        // Stop at the budget, NOT when the ring is full. The ring's storage is
-        // many times this, and filling it would put a third of a second of
-        // finished audio in front of every new sound — the game would be heard
-        // acting long after it was seen doing it. What is not produced now is
-        // produced at the next pump, one frame away.
+        // Stop at the budget, not when the ring is full. The ring's storage
+        // is many times this, and filling it would put a third of a second
+        // of finished audio in front of every new sound - the game would be
+        // heard acting long after it was seen doing it. What is not produced
+        // now is produced at the next pump, one frame away.
         const unsigned budget = s_dev_bytes * RING_BLOCKS;
         while (SDL2Circle_AudioRingUsed() < budget
                && SDL2Circle_AudioRingSpace() >= s_dev_bytes)
@@ -449,7 +442,7 @@ void SDL2Circle_AudioDrain(void)
     if (!s_device || s_paused)
         return;
 
-    // The ring carries DEVICE-format bytes: the conversion happens on the
+    // The ring carries device-format bytes: the conversion happens on the
     // application's own core, before the samples cross.
     static u8 *drainChunk = nullptr;
     static unsigned drainBytes = 0;
@@ -474,7 +467,7 @@ void SDL2Circle_AudioDrain(void)
     {
         // Never more than will certainly fit. Circle's Write takes what it can
         // and reports how much, and the ring has already given up whatever was
-        // read — so a write that came up short would lose those samples with
+        // read - so a write that came up short would lose those samples with
         // nothing to say so. Asking only for the free space means it cannot.
         unsigned want = space * frame_bytes;
         if (want > s_dev_bytes)
@@ -483,19 +476,15 @@ void SDL2Circle_AudioDrain(void)
         unsigned n = SDL2Circle_AudioRingRead(drainChunk, want);
         if (n == 0)
         {
-            // THE DEVICE'S CLOCK MUST NEVER STOP. An application that has
-            // produced nothing gets a gap in its audio; what it must not get
-            // is a device that stands still, because anything measuring time
-            // by the device then stands still with it — and on this machine
-            // that includes the application itself. Doom's OPL emulation
-            // waits for a chip timer that only advances as buffers are
-            // consumed, so a device fed only when the game produces is a
-            // device the game can stop and then wait on for ever.
-            //
-            // Desktop SDL has this for free: its callback runs on a thread of
-            // its own at a fixed rate, and a callback that produces nothing
-            // yields silence rather than a stall. Here the servo is that
-            // thread, so the servo supplies the silence.
+            // The device's clock must never stop. An application that has
+            // produced nothing gets a gap in its audio, but the device
+            // itself must keep advancing, because anything that measures
+            // time by it - including the application - stops with it.
+            // Doom's OPL emulation waits for a chip timer that only advances
+            // as buffers are consumed, so a device fed only when the game
+            // produces is a device the game can stop and then wait on
+            // forever. The servo supplies silence here so the device keeps
+            // running when the application does not.
             //
             // Signed 16-bit device format, so silence is zero (see
             // SetWriteFormat above).
@@ -568,7 +557,7 @@ extern "C" SDL_AudioStatus SDL_GetAudioDeviceStatus(SDL_AudioDeviceID)
 // The device-less spelling SDL2 keeps from SDL 1.2
 //
 // These address the one audio device without naming it. There is exactly one
-// here, so each is its device-taking form applied to that device — the same
+// here, so each is its device-taking form applied to that device - the same
 // relationship SDL_LockAudio already has with SDL_LockAudioDevice above.
 // ---------------------------------------------------------------------------
 
@@ -578,8 +567,8 @@ extern "C" int SDL_OpenAudio(SDL_AudioSpec *desired, SDL_AudioSpec *obtained)
         return SDL_SetError("SDL_OpenAudio: no desired spec");
 
     // SDL's contract differs by whether the caller gave somewhere to report a
-    // change. Given nowhere, it undertakes to deliver EXACTLY the spec that
-    // was asked for and to convert on the application's behalf — so no change
+    // change. Given nowhere, it undertakes to deliver exactly the spec that
+    // was asked for and to convert on the application's behalf - so no change
     // is permitted here, and the conversion happens at the device boundary.
     // Given somewhere, any change is allowed and is reported into it.
     SDL_AudioSpec got;
@@ -612,7 +601,7 @@ extern "C" const char *SDL_GetAudioDeviceName(int index, int iscapture)
 
 // The one device's native format: 48kHz S16 stereo (what the HDMI sound
 // device speaks). Enumerators that report an error here get dropped from
-// callers' device lists — MAME builds its sink list from this answer.
+// callers' device lists - MAME builds its sink list from this answer.
 extern "C" int SDL_GetAudioDeviceSpec(int index, int iscapture,
                                       SDL_AudioSpec *spec)
 {

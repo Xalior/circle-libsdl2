@@ -1,24 +1,24 @@
 //
-// split.cpp — the core split: every ring, lock and wake primitive.
+// split.cpp - the core split: every ring, lock and wake primitive.
 //
 // Roles (multicore builds, activated by SDL2Circle_SplitInit):
 //
 //   core 0    the Circle world: scheduler, IRQs, USB, EMMC/FatFs, sound.
-//             Gains the SERVO task (drains the call mailbox, executes the
+//             Gains the servo task (drains the call mailbox, executes the
 //             I/O service, pumps USB input into the event ring, feeds the
 //             sound device from the audio ring, ticks the CPU throttle), the
-//             WATCHDOG task (dumps state when the app's heartbeat stalls),
-//             and the STDIN task (owns the one call that may block: a read
+//             watchdog task (dumps state when the app's heartbeat stalls),
+//             and the stdin task (owns the one call that may block: a read
 //             on standard input waiting for a keypress).
 //   application core  the application, alone. Calls plain SDL_* functions; the shim
 //             marshals here. Its per-frame pump touches nothing but shared
-//             memory (rings, atomics) — no Circle service is ever called
+//             memory (rings, atomics) - no Circle service is ever called
 //             off core 0 except the documented multicore-safe mailbox.
 //   present   a dedicated worker core: executes posted frame command lists
 //             (blit + fill) into the framebuffer and page-flips.
 //
 // Communication is single-producer/single-consumer rings and 1-deep
-// request/response mailboxes in coherent memory — atomics + WFE/SEV, never
+// request/response mailboxes in coherent memory - atomics + WFE/SEV, never
 // Circle scheduler primitives (which are core-0-only by construction).
 // Rare calls (init, window/audio creation, file service) go through the
 // call mailbox; per-frame traffic (events, audio samples, frames) has a
@@ -75,15 +75,15 @@ unsigned SDL2Circle_ThisCore(void)
 // Which cores are spoken for
 // ---------------------------------------------------------------------------
 //
-// The split hands out roles — core 0 the Circle world, one core the
-// application, one core presentation — and a host kernel parks whatever is
+// The split hands out roles - core 0 the Circle world, one core the
+// application, one core presentation - and a host kernel parks whatever is
 // left. Something else in this library then wants a core to put a pinned
 // thread on (src/libcxxthreading.cpp), and the one thing it must never do is
 // take a core that already has a job. So the roles are recorded as they are
 // taken, and the answer is asked for rather than assumed.
 //
 // Core 0 is in the set from the start and never leaves it: it is the
-// machine. The other two identify themselves — the presentation worker when
+// machine. The other two identify themselves - the presentation worker when
 // it starts, the application core the first time it does either of the two
 // things only the application does, beat the per-frame heartbeat or ask for
 // a thread of its own. Nothing here guesses from a core number: which core
@@ -154,11 +154,11 @@ static CallBox g_call;
 static SpinLock g_call_lock;
 static std::atomic<u64> g_calls_served{0};
 
-// Calls the servo has ENTERED, bumped before the handler runs. Against
+// Calls the servo has entered, bumped before the handler runs. Against
 // g_calls_served it answers the one question a frozen board cannot otherwise
 // be asked: started == served means core 0 finished everything it was given
 // and stopped somewhere else; started == served + 1 means core 0 is still
-// INSIDE a marshalled call and never came out of it. Those are different
+// inside a marshalled call and never came out of it. Those are different
 // faults with different owners, and from outside they look identical.
 static std::atomic<u64> g_calls_started{0};
 
@@ -173,31 +173,25 @@ static std::atomic<u64> g_servo_beats{0};
 // Reporting a cross-core wait that has gone on too long
 //
 // Every wait below is unbounded by design: the far side owns something this
-// side needs, and giving up would not make the answer arrive, it would carry
-// on without it. So none of them is abandoned here.
+// side needs, and giving up would not make the answer arrive.
 //
-// What they stop doing is waiting SILENTLY. A stall between two cores with no
-// output looks exactly like a board that has died, and the two are
-// investigated completely differently. One line naming what is being waited
-// for, and the counters that say whether the other core is still running,
-// turns a silent freeze into a diagnosis.
+// A stall between two cores with no output looks exactly like a board that
+// has died, so each wait reports itself instead of failing silently: one
+// line naming what is being waited for, and the counters that say whether
+// the other core is still running, turns a silent freeze into a diagnosis.
 //
 // The line goes through the ordinary log ring, so it costs the waiting core
-// nothing and touches no device. It has to: the console belongs to core 0
-// because of how the hardware is wired, not because of a policy that could
-// be waived, so there is no arrangement under which another core writes it
-// instead. If core 0 is alive it appears at once.
+// nothing and touches no device. The console belongs to core 0 because of
+// how the hardware is wired, so no other core can write it directly; if
+// core 0 is alive the line appears at once.
 //
-// If core 0 is the side that has stopped, it never appears, and no amount of
-// cleverness elsewhere would change that. CORE 0 IS THE MACHINE: the serial
-// port, USB, video, the system timer, the scheduler and the watchdog are all
-// its. A core 0 that does not return is not a core that has gone quiet, it
-// is a dead board, and there is nothing left running anywhere to notice or
-// to say so.
+// If core 0 is the side that has stopped, the line never appears: core 0
+// owns the serial port, USB, video, the system timer, the scheduler and the
+// watchdog, so a core 0 that does not return is a dead board with nothing
+// left running anywhere to report it.
 //
-// Which is why the answer is not a better report. It is that NOTHING ON THE
-// SERVO'S PATH MAY BLOCK — see the servo loop below, where every handler it
-// runs has to be bounded and has to return.
+// This is why nothing on the servo's path may block - see the servo loop
+// below, where every handler it runs has to be bounded and has to return.
 // ---------------------------------------------------------------------------
 
 static const u64 STALL_REPORT_US = 5000000;   // 5 s
@@ -207,13 +201,13 @@ namespace
 class StallWatch
 {
 public:
-    // gate_on_servo: this wait has no deadline of its own — the far side is
-    // a human, not a peer that owes an answer — so elapsed time alone would
+    // gate_on_servo: this wait has no deadline of its own - the far side is
+    // a human, not a peer that owes an answer - so elapsed time alone would
     // report the wait itself as the fault. Gated, the clock instead tracks
     // g_servo_beats, core 0's own per-lap counter: for as long as it keeps
     // advancing, core 0 is alive and simply has nothing yet to hand back,
-    // which is not a stall. Only the beats themselves going quiet — core 0
-    // stuck somewhere, unable to complete a lap — is.
+    // which is not a stall. Only the beats themselves going quiet - core 0
+    // stuck somewhere, unable to complete a lap - is.
     explicit StallWatch(const char *what, bool gate_on_servo = false)
     : m_what(what), m_start(CTimer::GetClockTicks64()), m_reported(false),
       m_gate(gate_on_servo),
@@ -343,12 +337,12 @@ int SDL2Circle_EventRingPop(SDL_Event *ev)
 // Audio ring: application core (callback output) -> core 0 (sound device feeder).
 // Byte-granular SPSC.
 //
-// THIS SIZE IS NOT THE BUFFER DEPTH, and the difference is the whole reason
-// the ring is this big. How much audio waits here is decided by the producer,
-// which stops well short of full (audio.cpp), because everything waiting is
-// delay before a sound is heard. The storage is generous so that an
+// This size is not the buffer depth: how much audio waits here is decided by
+// the producer, which stops well short of full (audio.cpp), because
+// everything waiting is delay before a sound is heard. The storage is
+// generous so that an
 // application whose callback produces a large block at a time still has room
-// for one — a ring too small to hold a single block would never be written to
+// for one - a ring too small to hold a single block would never be written to
 // at all, and the sound would not be late, it would be absent.
 // ---------------------------------------------------------------------------
 
@@ -425,20 +419,19 @@ void SDL2Circle_PresentPost(const SDL2CirclePresentCmd *cmds, unsigned ncmds,
 {
     u64 seq = g_frame.seq.load(std::memory_order_relaxed);
     {
-        // WAIT FOR THE BOX, NEVER FOR THE PICTURE.
+        // Wait for the box, never for the picture.
         //
         // The only thing the poster can damage by writing here is the
         // command list the worker has not copied out yet, and copying it is
-        // a memcpy of a handful of commands. Everything after that — the
-        // scale, the raster, the transfer — reads the worker's own copy and
+        // a memcpy of a handful of commands. Everything after that - the
+        // scale, the raster, the transfer - reads the worker's own copy and
         // the texture stores, and the stores protect themselves (see
         // busy_seq in video.cpp). None of it is this core's business.
         //
-        // This used to wait on `ack`, which the worker publishes after the
-        // SCALE. That made the application core's frame rate the
-        // presentation core's frame rate: the game could not begin a frame
-        // until the previous picture had been composed, on a machine where
-        // the game has a core to itself and should never wait for anything.
+        // Waiting only for the copy, not for the composed picture, keeps the
+        // application core's frame rate independent of the presentation
+        // core's: the game has a core to itself and must never wait on
+        // anything downstream of handing a frame over.
         SDL2CirclePerfScope wait(SDL2CIRCLE_PERF_WAIT);
         StallWatch watch("the presentation core to copy the previous frame out");
         while (g_frame.taken.load(std::memory_order_acquire) < seq)
@@ -458,7 +451,7 @@ void SDL2Circle_PresentPost(const SDL2CirclePresentCmd *cmds, unsigned ncmds,
 }
 
 // ---------------------------------------------------------------------------
-// Which posted frame the worker has finished READING
+// Which posted frame the worker has finished reading
 //
 // A texture's pixel store is handed to the worker as a raw pointer inside a
 // posted command, so the store cannot be written again until the worker has
@@ -470,9 +463,9 @@ void SDL2Circle_PresentPost(const SDL2CirclePresentCmd *cmds, unsigned ncmds,
 //
 // The worker publishes `ack` immediately after the scale and before any
 // output work, so it means exactly "everything the poster owns has been
-// read" — which is the question a store needs answered, and no more.
+// read" - which is the question a store needs answered, and no more.
 //
-// A store recorded into the frame still being BUILT carries the sequence
+// A store recorded into the frame still being built carries the sequence
 // that frame will get once it is posted, which is greater than `posted`.
 // Nothing is reading that store, and the comparison in texture_write_buffer
 // relies on being able to tell those two states apart.
@@ -506,7 +499,7 @@ void SDL2Circle_PresentQuiesce(void)
     if (!g_split.load(std::memory_order_acquire))
         return;
 
-    // Wait for the worker to be out of the frame entirely — not merely done
+    // Wait for the worker to be out of the frame entirely - not merely done
     // reading what the poster owns (`ack`, which it publishes early so the
     // application core is never held up by output), but past the flip, where
     // it is still using the window and the present buffers. Only the poster
@@ -544,7 +537,7 @@ extern "C" void SDL2Circle_SplitPresentCore(void)
             wfe();
             continue;
         }
-        // TAKE THE BOX AND RELEASE IT IMMEDIATELY.
+        // Take the box and release it immediately.
         //
         // The command list is copied into this core's own memory before
         // anything is drawn, so the box is free from here on and the
@@ -552,9 +545,9 @@ extern "C" void SDL2Circle_SplitPresentCore(void)
         // few hundred bytes; the scale that follows is megabytes and
         // milliseconds, and none of it needs the box.
         //
-        // What the scale still reads is the TEXTURE STORES the commands
+        // What the scale still reads is the texture stores the commands
         // point at, and those are held by busy_seq on the other side rather
-        // than by making the poster wait — a store is spoken for until
+        // than by making the poster wait - a store is spoken for until
         // `ack`, which is published once the scale below has finished with
         // it.
         static SDL2CirclePresentCmd s_local[SDL2CIRCLE_RECORD_MAX_CMDS];
@@ -575,28 +568,26 @@ extern "C" void SDL2Circle_SplitPresentCore(void)
                 SDL2Circle_VideoExecCmd(&s_local[i], half);
         }
 
-        // RELEASE THE TEXTURE STORES HERE, and not one line later.
+        // Release the texture stores here, and not one line later.
         //
         // The scale above is the last thing that reads a store the
         // application core owns, so this is the earliest point at which one
         // may be written again. The application core is not waiting on this
-        // — it was released at `taken`, above — but a store it wants to
+        // - it was released at `taken`, above - but a store it wants to
         // reuse is, and holding this back would stall the writer for no
         // reason.
         //
-        // What follows is the OUTPUT side — waiting for the previous
-        // transfer, waiting for the raster, starting the next transfer —
-        // and it touches only the shadow this core owns and the framebuffer.
-        // None of it is the application's business, so none of it belongs
-        // inside the window the application is waiting on. Holding the
-        // acknowledgement until after it cost the application core a whole
-        // frame's output latency on top of its own work, which is what kept
-        // the split below the frame rate a single core managed.
+        // What follows is the output side - waiting for the previous
+        // transfer, waiting for the raster, starting the next transfer - and
+        // it touches only the shadow this core owns and the framebuffer.
+        // None of it is the application's business: publishing `ack` here
+        // rather than after output keeps the application core off the
+        // presentation core's output latency.
         //
         // The double-buffered texture is what makes the early release safe:
-        // released now, the application core writes the OTHER buffer, never
-        // the one just read. The worker stays sequential — the next frame's
-        // scale cannot start until this flip returns — so the shadow it is
+        // released now, the application core writes the other buffer, never
+        // the one just read. The worker stays sequential - the next frame's
+        // scale cannot start until this flip returns - so the shadow it is
         // about to hand the engine is never written behind it either.
         done = seq;
         g_frame.ack.store(done, std::memory_order_release);
@@ -619,13 +610,13 @@ extern "C" void SDL2Circle_SplitPresentCore(void)
 
 // ---------------------------------------------------------------------------
 // Heartbeat: the application core bumps it once per pump; the watchdog task dumps
-// state when it stalls — the split's replacement for the in-band pump
+// state when it stalls - the split's replacement for the in-band pump
 // deadman, and it can see a wedged application core the in-band version couldn't.
 //
 // One case the application core cannot bump this for itself: parked in
 // SDL2Circle_ReadStdin, asleep in wfe(), waiting on a human. The watchdog
 // task (below) covers that case on the application's behalf, by reading
-// the stdin request/ack pair and core 0's own servo lap counter directly —
+// the stdin request/ack pair and core 0's own servo lap counter directly -
 // see the comment on CSplitWatchdogTask::Run.
 // ---------------------------------------------------------------------------
 
@@ -646,7 +637,7 @@ void SDL2Circle_HeartbeatBump(void)
 // ---------------------------------------------------------------------------
 // I/O service: blocking file/directory API valid from any core. Off core 0
 // each operation travels the call mailbox and executes as plain POSIX on
-// the servo — the only context that touches FatFs/EMMC. Results are values
+// the servo - the only context that touches FatFs/EMMC. Results are values
 // or negated errno; the caller's errno is never used (not core-safe).
 // ---------------------------------------------------------------------------
 
@@ -827,7 +818,7 @@ void io_readdir(void *p)
     a->e->name[sizeof(a->e->name) - 1] = '\0';
 
     // FatFs dirents carry no type; stat is the servo's to make anyway, but
-    // path assembly belongs to the caller — report type by stat only when
+    // path assembly belongs to the caller - report type by stat only when
     // the entry's own metadata is absent.
     a->e->isdir = 0;
     a->e->size = 0;
@@ -912,7 +903,7 @@ extern "C" int SDL2Circle_IORename(const char *oldpath, const char *newpath)
 
 // The working directory is one setting for the whole board, held by the
 // filesystem on core 0 rather than by the caller, so a change made through
-// this call is a change every core sees — including core 0's own C library
+// this call is a change every core sees - including core 0's own C library
 // calls. Two callers that both use relative paths share it and must agree
 // about it; a caller that cannot make that agreement names absolute paths,
 // which nothing here can disturb.
@@ -960,12 +951,12 @@ extern "C" void SDL2Circle_IOCloseDir(intptr_t dir)
 // ---------------------------------------------------------------------------
 // Standard input: read on fd 0, the descriptor circle-libsdl2 binds to its
 // own console (src/stdio.cpp). A read there can wait indefinitely for a
-// keypress, and the call mailbox above is bounded on purpose — the servo
+// keypress, and the call mailbox above is bounded on purpose - the servo
 // drains it inline, on the same path that also has to pump USB and drain
 // every other core's log ring, so nothing put through it may block.
 //
-// So this is not a call the servo serves. It is a REQUEST HANDED TO A TASK
-// OF ITS OWN (CSplitStdinTask, below), which is free to sit inside a
+// So this is not a call the servo serves. It is a request handed to a task
+// of its own (CSplitStdinTask, below), which is free to sit inside a
 // blocking read() because nothing else on core 0 waits on that task. The
 // mailbox shape is the same one-outstanding-request handoff as the call box,
 // just answered by a different task.
@@ -1008,8 +999,8 @@ extern "C" long SDL2Circle_ReadStdin(void *buf, uint32_t len)
     g_stdin.req.store(seq, std::memory_order_release);
     publish();
 
-    // THE HEARTBEAT THE WATCHDOG WATCHES OTHERWISE ONLY BEATS INSIDE
-    // SDL_PumpEvents (src/events.cpp) — no help to a program with no pump,
+    // The heartbeat the watchdog watches otherwise only beats inside
+    // SDL_PumpEvents (src/events.cpp) - no help to a program with no pump,
     // reading standard input as its whole main loop instead. That loop's own
     // truthful proof of life is this call: bumped once per request, so a
     // program reading a character at a time beats once per keystroke.
@@ -1017,14 +1008,14 @@ extern "C" long SDL2Circle_ReadStdin(void *buf, uint32_t len)
     {
         // Waiting for a keypress has no deadline: the far side is a human,
         // who may sit at a prompt for as long as they like, and that is not
-        // a fault. Gated so the report tracks core 0 itself instead — see
-        // StallWatch — which is what a program actually wedged there still
+        // a fault. Gated so the report tracks core 0 itself instead - see
+        // StallWatch - which is what a program actually wedged there still
         // trips.
         //
         // Nothing bumps the heartbeat again in here. wfe() below is a true
         // sleep: the only thing that wakes it is the sev() CSplitStdinTask
         // issues when the real read completes, so a wait that runs long has
-        // no periodic wakeup to run a timer check on — a loop timing itself
+        // no periodic wakeup to run a timer check on - a loop timing itself
         // against CTimer here would sit in wfe() the whole second and never
         // see it. The watchdog task (below, this file) reads g_stdin
         // directly instead, so this core does not have to do anything for
@@ -1050,13 +1041,13 @@ public:
 
     void Run(void) override
     {
-        // ARM THE THREAD POINTER FIRST, BEFORE ANYTHING ELSE.
+        // Arm the thread pointer first, before anything else.
         //
         // Circle starts every task with TPIDR_EL0 at zero: InitializeRegs
         // clears the whole register block and never sets it, and the task
-        // switch loads it back verbatim. So until this line runs, every
-        // thread_local this task can reach — newlib's errno among them, which
-        // is on the path of any log line — resolves through a null pointer.
+        // switch loads it back verbatim. Until this line runs, every
+        // thread_local this task can reach - newlib's errno among them, which
+        // is on the path of any log line - resolves through a null pointer.
         // Reading it does not fault reliably; it aliases low memory shared
         // with every other unarmed task, so it corrupts quietly and stops the
         // board somewhere else entirely.
@@ -1072,7 +1063,7 @@ public:
 
             // Call mailbox (init, window/audio creation, I/O service).
             // Scoped because on the hardware core this is not housekeeping,
-            // it is another core's work being done here — and how much of
+            // it is another core's work being done here - and how much of
             // it there is, is the question a split report exists to answer.
             u64 req = g_call.req.load(std::memory_order_acquire);
             if (req > g_call.ack.load(std::memory_order_relaxed))
@@ -1093,7 +1084,7 @@ public:
             }
 
             // Debug-UART robot hands -> event ring. Like InputPump, this reads
-            // hardware (the serial RX), so it MUST run on core 0: the application core's
+            // hardware (the serial RX), so it must run on core 0: the application core's
             // pump early-returns past it. Its synthesized key events go through
             // SDL_PushEvent, which on core 0 publishes to the same ring the app
             // core drains. (Inert unless --rapi-debug-uart armed it.)
@@ -1167,7 +1158,7 @@ public:
             // wakes it early to run a timer check (see the comment there).
             // What this task can check instead, on the application's
             // behalf, is whether a stdin request is still outstanding
-            // (req != ack) while core 0's own servo is still lapping —
+            // (req != ack) while core 0's own servo is still lapping -
             // the same evidence StallWatch already trusts for its own
             // report on the waiting side. That is proof the program is
             // waiting on a human, not wedged, without needing the program
@@ -1186,7 +1177,7 @@ public:
                 continue;
             }
 
-            // Silence before the first beat is startup, not a stall — the
+            // Silence before the first beat is startup, not a stall - the
             // app may load for a long time before it pumps. Report late
             // starts once, gently.
             u64 quiet = (now - lastChange) / 1000000;   // seconds
@@ -1242,11 +1233,11 @@ public:
                 continue;
             }
 
-            // THE ACTUAL, BLOCKING READ ON THE BOUND DESCRIPTOR. It may sit
+            // The actual, blocking read on the bound descriptor. It may sit
             // here for as long as no key is pressed, yielding internally
             // (circle-newlib's console glue) the whole time. That yield only
-            // cedes to this task's neighbours on core 0 — the servo and the
-            // watchdog keep running — because it is this task that is
+            // cedes to this task's neighbours on core 0 - the servo and the
+            // watchdog keep running - because it is this task that is
             // waiting, not the servo's own path.
             g_stdin.result = read_stdin_now(g_stdin.buf, g_stdin.len);
             done = req;
@@ -1261,19 +1252,19 @@ public:
 // Circle's CTask registers itself with the scheduler while it is being
 // constructed, and it reaches it through CScheduler::Get(), which stops the
 // machine rather than reporting an absence. So the servo and the watchdog
-// below cannot be created without one — and a host that had not declared a
+// below cannot be created without one - and a host that had not declared a
 // CScheduler took that fault here, in a constructor, with nothing said.
 //
 // Unlike CCPUThrottle, which this library owns for much the same reason,
-// this one can be ASKED: CScheduler::IsActive() is a safe question and
+// this one can be asked: CScheduler::IsActive() is a safe question and
 // answers honestly. So the library makes one only where the host has not,
 // and a host that has its own keeps it untouched.
 //
 // It cannot be an ordinary static object. A static is constructed before the
-// kernel exists, and this has to happen after — the same reason the CPU
+// kernel exists, and this has to happen after - the same reason the CPU
 // throttle is placement-new'd into storage of its own.
 //
-// NOTHING EVER DESTROYS IT. The servo and the watchdog are registered with
+// Nothing ever destroys it. The servo and the watchdog are registered with
 // it and run for as long as the machine does, so taking it away would leave
 // them registered with nothing; and an application that shuts its video
 // world down and builds another one has not stopped those tasks. The flag

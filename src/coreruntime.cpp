@@ -1,28 +1,26 @@
 //
-// coreruntime.cpp — the per-core C runtime setup a host owes every core it
+// coreruntime.cpp - the per-core C runtime setup a host owes every core it
 // hands to an application.
 //
 // A core started by a host runs with a processor state nobody prepared. Most
-// of it does not matter; one part does. C++ exception state is THREAD-LOCAL,
+// of it does not matter; one part does. C++ exception state is thread-local,
 // and the first thing a throw does is read the thread pointer and dereference
 // what it finds. Nothing else in a Circle world writes that register: Circle
 // sets it only when switching between its own tasks, and the C library's
 // thread-local setup is not linked into a bare-metal image. So a core running
 // application code holds whatever the firmware left in it at reset.
 //
-// The reason this is not obvious, and the reason it costs a day when it
-// finally bites: a register that reads zero SURVIVES. The dereference lands
-// in low memory, which is mapped, and the throw proceeds over bytes that mean
-// nothing and that nothing checks. Two boards can pass every test while a
-// third — same binary, same library, firmware that left something else in the
-// register — takes a data abort on the first thrown exception. It reads as a
-// board fault. It is not one.
+// A register that reads zero survives silently: the dereference lands in low
+// memory, which is mapped, so the throw proceeds over bytes that mean nothing
+// and that nothing checks. Two boards can pass every test while a third -
+// same binary, same library, firmware that left something else in the
+// register - takes a data abort on the first thrown exception, which reads
+// as a board fault rather than an unarmed core.
 //
-// So the host arms each core it elects, once, on the core itself, before that
-// core runs anything that can throw. This is deliberately a call and not
-// something done behind a host's back: the library never starts a core, and
-// it has no business writing a system register on a core nobody told it
-// about.
+// The host must arm each core it elects, once, on the core itself, before
+// that core runs anything that can throw. This is a call the host kernel
+// makes deliberately: the library never starts a core, so it has no
+// business writing a system register on a core nobody told it about.
 //
 // The thread pointer needs somewhere real to point. AArch64 puts a thread
 // control block at the pointer and the thread-local variables after it, so
@@ -49,7 +47,7 @@ extern "C" u8 __tdata_start, __tdata_end, __tbss_end;
 #define CORERUNTIME_MAX_CORES 4
 
 // One block per core, kept so a second call on a core is a no-op rather than
-// a leak — and so the block outlives the call, which is the whole point.
+// a leak, and so the block outlives the call.
 static u8 *s_block[CORERUNTIME_MAX_CORES];
 
 void *SDL2Circle_AllocTLSBlock(void)
@@ -74,8 +72,8 @@ void SDL2Circle_FreeTLSBlock(void *pBlock)
 
 void SDL2Circle_SetThreadPointer(void *pBlock)
 {
-    // The register is per core, which is why this must execute ON the core
-    // — or, for a scheduler task, inside the task — whose pointer it sets.
+    // The register is per core, so this must execute on the core - or, for
+    // a scheduler task, inside the task - whose pointer it sets.
     asm volatile("msr tpidr_el0, %0" ::"r"(pBlock) : "memory");
 }
 
@@ -101,53 +99,50 @@ extern "C" void SDL2Circle_ArmCoreRuntime(void)
 
     if (core == 0)
     {
-        // Board hardware — the CPU clock and the case fan — before anything
+        // Board hardware - the CPU clock and the case fan - before anything
         // else on core 0, so the rest of bring-up runs at the clock the
-        // application is going to have. SDL2Circle_HardwareInit is
-        // idempotent (see hardware.cpp), so a host kernel that brought this
-        // up earlier still — a CSDL2CircleHardware member, or a direct call
-        // from its own constructor, needed when it drives I2C, SPI or the
-        // mini UART itself — costs nothing extra here.
+        // application will have. SDL2Circle_HardwareInit is idempotent (see
+        // hardware.cpp), so a host kernel that already brought this up - a
+        // CSDL2CircleHardware member, or a direct call from its own
+        // constructor, needed when it drives I2C, SPI or the mini UART
+        // itself - is unaffected by the call here.
         SDL2Circle_HardwareInit();
 
-        // THE OUTPUT DEVICE, before anything on this core prints. It holds the
-        // serial device and the screen, and Circle's logger is pointed at it
-        // here and never pointed anywhere else again. Where output goes is a
-        // property of the machine, so the library builds it rather than
-        // leaving each host kernel to remember — a forgotten destination is
-        // silent, and silence is indistinguishable from a board with no
-        // display. Before the calls below, so that what they say appears
-        // on the glass as well.
+        // The output device, before anything on this core prints. It holds
+        // the serial device and the screen, and Circle's logger is pointed
+        // at it here and never pointed anywhere else again. The library
+        // builds it rather than leaving each host kernel to set it up,
+        // since a missing destination fails silently. Runs before the
+        // calls below so their output also reaches the screen.
         SDL2Circle_ConsoleInit();
 
-        // DEBUG UART KEY INJECTION, armed from the console's own device
-        // (src/input.cpp) right after that device exists and well before
-        // SDL2Circle_SplitInit can ever create the servo task that pumps it —
-        // so the first pump always finds a device already in place, or a log
-        // line already explaining why it does not.
+        // Debug UART key injection, armed from the console's own device
+        // (src/input.cpp) right after that device exists and before
+        // SDL2Circle_SplitInit can create the servo task that pumps it, so
+        // the first pump always finds a device already in place, or a log
+        // line explaining why it does not.
         SDL2Circle_InjectArmFromConsole();
 
-        // THE USB HOST CONTROLLER, if the host kernel has not already built
-        // one — the same ownership CCPUThrottle already has above. Must run
-        // here and not inside SDL_Init: SDL_Init's device work is marshalled
-        // to core 0's servo, and construction is a long, interrupt-driven
-        // bring-up that would block it (see the history above
+        // The USB host controller, if the host kernel has not already built
+        // one. Must run here rather than inside SDL_Init: SDL_Init's device
+        // work is marshalled to core 0's servo, and USB construction is a
+        // long, interrupt-driven bring-up that would block it (see
         // SDL2Circle_InputInit, src/input.cpp). Here, before the servo
-        // exists at all, blocking costs nothing — and it is early enough
-        // that a program which never calls SDL_Init still gets a working
-        // keyboard, which is what Circle's own standard input reads from.
+        // exists, blocking has no cost, and it means a program that never
+        // calls SDL_Init still gets a working keyboard, which is what
+        // Circle's own standard input reads from.
         //
         // Safe to reach CInterruptSystem::Get()/CTimer::Get() here (see
         // SDL2Circle_UsbCtrlInit): docs/CORE-SPLIT.md step 1 has the host
-        // kernel bring both up before this call is ever made, on any core.
+        // kernel bring both up before this call is made, on any core.
         SDL2Circle_UsbCtrlInit();
 
         // The C library's standard output and standard error, bound to this
-        // board's output router before anything can print. Here for the same
-        // reason as the calls below: this is the one point every host kernel
-        // already makes on core 0, early, with its world up — and "early" is
-        // load-bearing, because the C library takes the lowest free
-        // descriptors and a file opened first would take one of them.
+        // board's output router before anything can print. This is the one
+        // point every host kernel already makes on core 0, early, with its
+        // world up; the timing matters because the C library takes the
+        // lowest free descriptors, and a file opened first would take one
+        // of them.
         SDL2Circle_StdioInit();
 
         // The application's own static constructors, held back by
@@ -155,18 +150,15 @@ extern "C" void SDL2Circle_ArmCoreRuntime(void)
         // the runtime above rather than before it: a deferred constructor
         // may use thread_local storage, and that is what was just armed.
         //
-        // Hung off this call deliberately. An application already makes it,
-        // on core 0, at the point in its start-up where everything a
-        // constructor could reach is up — so adopting the deferral costs it
-        // nothing and there is no second call to forget.
+        // Hung off this call: an application already makes it, on core 0,
+        // at the point in its start-up where everything a constructor
+        // could reach is up, so there is no second call to add.
         SDL2Circle_RunDeferredConstructors();
 
-        // The C++ threading runtime's creator task, for the same reason and
-        // on the same terms: this call is the one point every host kernel
-        // already makes on core 0 with its world up, so a port adopts
-        // std::thread by doing nothing. It needs a live scheduler and does
-        // nothing without one; SDL2Circle_SplitInit, which guarantees one,
-        // calls it again.
+        // The C++ threading runtime's creator task. This call is the one
+        // point every host kernel already makes on core 0 with its world
+        // up. It needs a live scheduler and does nothing without one;
+        // SDL2Circle_SplitInit, which guarantees one, calls it again.
         SDL2Circle_ThreadRuntimeInit();
     }
 }

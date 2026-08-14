@@ -1,38 +1,35 @@
 //
-// filesystem.cpp — SDL_GetBasePath and SDL_GetPrefPath.
+// filesystem.cpp - SDL_GetBasePath and SDL_GetPrefPath.
 //
 // SDL gives an application two directories: the one it was installed in, and
 // one it may write its settings and saved games into. On a desktop SDL works
-// both out by itself — the first from where the running program came from,
+// both out by itself - the first from where the running program came from,
 // the second from the user's home directory and the organisation and
 // application names the caller passes in.
 //
 // Neither question has an answer here. The payload was chain-loaded over a
 // wire or started from a card; there is no program image to locate, no user,
 // and no home directory. Where an application's files were put is a decision
-// somebody made when they built the card, and the only party that knows it is
-// the consumer.
+// made when the card was built, and the only party that knows it is the
+// consumer.
 //
-// So the consumer STATES it, with SDL2Circle_DeclareBasePath (SDL_circle.h),
-// before SDL_Init — the same shape as SDL2Circle_DeclareVirtualDevice next
-// door, and for the same reason. THE LIBRARY NEVER LEARNS AN APPLICATION'S
-// NAME. It stores the string it is given, hands it back, and composes below
-// it; it does not read it, does not check it, and carries no default for any
-// particular application.
+// So the consumer states it, with SDL2Circle_DeclareBasePath (SDL_circle.h),
+// before SDL_Init - the same shape as SDL2Circle_DeclareVirtualDevice next
+// door. The library never learns an application's name: it stores the
+// string it is given, hands it back, and composes below it, without reading
+// or checking it and without a default for any particular application.
 //
-// WHAT AN UNDECLARED CONSUMER GETS, and why it is not an error: the root of
-// the card, "/". This is the one place the two declarations differ. There is
-// no sane default display size, so an undeclared virtual device stops
-// SDL_Init. But a board has exactly one filesystem, and "/" is a real
-// directory in it that a game can read and write — a working answer, not an
-// invented one. SDL returns a non-null path on every desktop platform, so
-// applications dereference it without checking, and refusing would turn a
-// missing declaration into a crash inside the application instead of a
-// warning from us. The warning is logged once, the first time an undeclared
+// An undeclared consumer gets the root of the card, "/", rather than an
+// error: SDL returns a non-null path on every desktop platform, so
+// applications dereference it without checking, and a board has exactly one
+// filesystem, of which "/" is a real, readable and writable directory. This
+// differs from SDL2Circle_DeclareVirtualDevice, where there is no sane
+// default display size and an undeclared virtual device stops SDL_Init
+// instead. The warning here is logged once, the first time an undeclared
 // path is handed out.
 //
-// Both functions return a string the CALLER frees with SDL_free, and both end
-// in a separator. That is SDL's contract and applications append to the
+// Both functions return a string the caller frees with SDL_free, and both
+// end in a separator - SDL's contract, which applications append to the
 // result without checking for one.
 //
 #include <SDL2/SDL.h>
@@ -152,7 +149,7 @@ extern "C" char *SDL_GetPrefPath(const char *org, const char *app)
 
     const char *base = SettleBase();
 
-    // <base><org>/<app>/  — or <base><app>/ with no organisation.
+    // <base><org>/<app>/  - or <base><app>/ with no organisation.
     const size_t len = strlen(base) + strlen(org) + strlen(app) + 3;
     char *path = (char *)SDL_malloc(len);
     if (!path)
@@ -165,7 +162,7 @@ extern "C" char *SDL_GetPrefPath(const char *org, const char *app)
     else
         snprintf(path, len, "%s%s/", base, app);
 
-    // SDL guarantees the directory EXISTS when it answers, so each component
+    // SDL guarantees the directory exists when it answers, so each component
     // below the base is created. The base itself is not touched: it is the
     // consumer's declaration, and on a card its first component may be the
     // root, which cannot be created and does not need to be.

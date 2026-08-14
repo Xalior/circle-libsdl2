@@ -1,63 +1,37 @@
 //
-// console.cpp — THE output device, and the screen half of it drawn for the
+// console.cpp - the output device, and the screen half of it drawn for the
 // mode the firmware granted.
 //
-// ONE DEVICE, MADE ONCE, AND NOTHING IS EVER ATTACHED OR DETACHED. The tee
-// below holds the serial device, the screen, and one flag saying whether the
+// One device is made once and nothing is ever attached or detached: the tee
+// below holds the serial device, the screen, and a flag saying whether the
 // screen is still ours. Its write puts the bytes on serial always, and draws
-// them unless an application has taken the display. Circle's logger is pointed
-// at it once and never pointed anywhere else again.
+// them unless an application has taken the display. Circle's logger is
+// pointed at it once and never pointed anywhere else again.
 //
-// That is how a plain Circle kernel already does it: declare a tee over the
-// screen and the serial device, hand it to the logger, and every line reaches
-// both places for the rest of the run. This board adds the one thing such a
-// kernel never faces — the screen going away when an application takes the
-// display — and that one thing is the flag. The display hand-off is not an
-// event that rearranges the plumbing; it is a boolean.
+// The screen half is drawn here rather than through Circle's own screen
+// device because that device's colour depth is a compile-time macro that is
+// never corrected: CBcmFrameBuffer::Initialize reads the granted pitch back
+// out of the mailbox reply and keeps it, but never the granted depth, so
+// GetDepth() goes on echoing its constructor's argument for the object's
+// whole life, and Circle's terminal sizes every row of pixels from that
+// number. Where the firmware hands out a surface at a depth nobody asked for
+// - a Pi 5 grants 32 bits per pixel whatever the request was - a console
+// built on that stale number draws each glyph at the wrong stride.
 //
-// WHY THAT SHAPE AND NOT A DESTINATION THAT COMES AND GOES. There is only ever
-// one destination object, and what it will do is settled before anything runs.
-// So "the console and the game writing the same framebuffer" has no mechanism
-// at all, rather than being prevented by a rule somebody has to keep.
+// Every number here is read back instead: the pitch and the buffer address
+// are the firmware's own reply; the width and height are the firmware's
+// report of the display it is scanning; and the bytes per pixel are the
+// pitch divided by that width. There is no board test anywhere in this file,
+// and there is nothing to configure.
 //
-// THE SCREEN HALF IS THIS LIBRARY'S TO DRAW, because this library owns the
-// display. It allocates the framebuffer, it reads the firmware's answers back,
-// and it is the only place on the board that knows what the picture really is.
-// A console built anywhere else is a second opinion about the same hardware,
-// and on a board whose firmware ignores the depth that was asked for, it is
-// the wrong one.
+// The text is drawn white on a black ground: all bits set is white in every
+// pixel format a Pi grants, and all bits clear is black in every one of
+// them, so this holds without knowing the channel order the firmware chose.
 //
-// WHY CIRCLE'S OWN SCREEN DEVICE CANNOT DO THIS JOB. Its colour depth is a
-// compile-time macro, and nothing ever corrects it: CBcmFrameBuffer::Initialize
-// reads the granted PITCH back out of the mailbox reply and keeps it, but never
-// the granted DEPTH, so GetDepth() goes on echoing its constructor's argument
-// for the object's whole life. Circle's terminal sizes every row of pixels from
-// that number. Where the firmware hands out a surface at a depth nobody asked
-// for — a Pi 5 grants 32 bits per pixel whatever the request was — each glyph
-// is then drawn at the wrong stride into the right buffer, and the console
-// paints a fraction of each scanline in characters squeezed by the same ratio.
-// The fault is structural, not a setting: there is no depth to configure that
-// makes a stale number current.
-//
-// SO EVERY NUMBER HERE IS READ BACK. The pitch and the buffer address are the
-// firmware's own reply; the width and height are the firmware's report of the
-// display it is scanning; and the bytes per pixel are the pitch divided by that
-// width — a granted quantity over a granted quantity, with nothing assumed
-// between them. There is no board test anywhere in this file, and there is
-// nothing to configure.
-//
-// THE TEXT IS WHITE AND THE GROUND IS BLACK, and that is a decision about
-// evidence rather than taste. Any other colour needs the channel order the
-// firmware chose, which is a further question this library does not ask; all
-// bits set is white in every pixel format a Pi grants, and all bits clear is
-// black in every one of them. So the console is right on a board this library
-// has never seen, which is the whole point of it.
-//
-// WHEN THE SCREEN GOES, AND WHEN IT COMES BACK. The flag is cleared when an
-// application creates its window — that is the moment the guest actually
-// takes the framebuffer, not merely SDL_Init — and set again when that window
-// is destroyed. Both are one boolean, flipped in place; no device is built,
-// moved or torn down either time.
+// The screen flag is cleared when an application creates its window - the
+// moment the guest actually takes the framebuffer, not merely SDL_Init - and
+// set again when that window is destroyed. Both are one boolean, flipped in
+// place; no device is built, moved or torn down either time.
 //
 #include <SDL2/SDL.h>
 #include "sdl2circle.h"
@@ -86,17 +60,16 @@ unsigned s_cellw = 0, s_cellh = 0;      // one character cell, in pixels
 unsigned s_col = 0, s_row = 0;          // where the next character goes
 
 // The font, and the character cell it implies. Circle's character generator
-// is the one half of its console that is worth reusing: it turns a character
-// into a bitmap and knows nothing about the screen, the depth or the pitch, so
-// none of what is wrong next door reaches it. Constructing it is arithmetic
-// over a constant table, which is why it can sit here and be ready before the
-// board has brought anything up.
+// turns a character into a bitmap and knows nothing about the screen, the
+// depth or the pitch, so it is unaffected by what the screen device gets
+// wrong next door. Constructing it is arithmetic over a constant table, so
+// it is ready before the board has brought anything up.
 CCharGenerator s_font;
 
-// THE FLAG. True while the screen is a place this library may draw: set once,
-// when the tee is built, if the machine has a display and has not asked to be
-// left off it — and cleared once, when an application takes the display. There
-// is no other transition and no way back.
+// True while the screen is a place this library may draw: set once, when the
+// tee is built, if the machine has a display and has not asked to be left
+// off it; cleared when an application takes the display, and set again when
+// it is given back.
 bool s_screenLive = false;
 
 // The serial device the host kernel gave Circle's logger. The tee holds it and
@@ -104,8 +77,8 @@ bool s_screenLive = false;
 CDevice *s_serial = nullptr;
 
 // Whether the tee has been built. The build is idempotent because it can be
-// asked for at either of two moments — a host kernel wanting the screen during
-// its own bring-up, or the arming call every kernel makes — and whichever
+// asked for at either of two moments - a host kernel wanting the screen during
+// its own bring-up, or the arming call every kernel makes - and whichever
 // comes first is the one that does it.
 bool s_started = false;
 
@@ -178,8 +151,8 @@ void newline(void)
 }
 
 // Where a control sequence has got to. Circle's logger brackets a line in ANSI
-// colour codes — always around a panic, and around every severity where the
-// world is configured for colours — so a console that drew the bytes it was
+// colour codes - always around a panic, and around every severity where the
+// world is configured for colours - so a console that drew the bytes it was
 // given would draw those as text. They are recognised in order to be thrown
 // away: the picture carries no colour, so there is nothing in them to honour.
 enum TEscapeState { EscapeNone, EscapeSeen, EscapeBracket };
@@ -254,12 +227,10 @@ void put_char(char c)
     s_col++;
 }
 
-// THE ONE OUTPUT DEVICE.
-//
-// Circle's logger writes to a single device, so reaching two places is a
-// device that reaches two. The serial port goes first, because it is the
-// destination a bench run is settled by and it must not wait on the drawing;
-// the screen follows, and only while it is still ours.
+// The one output device Circle's logger writes to. It reaches two
+// destinations: the serial port goes first, because it is the destination a
+// bench run is settled by and it must not wait on the drawing; the screen
+// follows, and only while it is still ours.
 class CLogTee : public CDevice
 {
 public:
@@ -290,7 +261,7 @@ CLogTee s_tee;
 int ScreenPrepare(void)
 {
     // The framebuffer, and the numbers the firmware granted for it. This is
-    // the same one an application's window adopts later — there is one grant
+    // the same one an application's window adopts later - there is one grant
     // on this board and everything that draws shares it.
     SDL2CircleScanout fb;
     if (!SDL2Circle_ScanoutAcquire(&fb))
@@ -301,10 +272,11 @@ int ScreenPrepare(void)
                             "(pitch %u, %u bytes, %dx%d)",
                             fb.pitch, fb.bytes, fb.width, fb.height);
 
-    // BYTES PER PIXEL, DERIVED FROM TWO THINGS THE FIRMWARE SAID. The pitch is
-    // the reply to the allocation; the width is the firmware's report of the
-    // display it is scanning. Their ratio is what a row of pixels really costs,
-    // whatever depth was asked for and whatever Circle still believes it got.
+    // Bytes per pixel, derived from two things the firmware said: the pitch
+    // is the reply to the allocation, and the width is the firmware's report
+    // of the display it is scanning. Their ratio is what a row of pixels
+    // really costs, whatever depth was asked for and whatever Circle still
+    // believes it got.
     const unsigned bpp = fb.pitch / (unsigned)fb.width;
     if (bpp != 2 && bpp != 4)
         return SDL_SetError("%u bytes per pixel (pitch %u over %d pixels) is "
@@ -356,12 +328,11 @@ int SDL2Circle_ConsoleInit(void)
     if (s_started)
         return 0;
 
-    // A LOGGER WITH A DESTINATION ALREADY, and the check is on the destination
-    // rather than on the logger. Circle's CLogger::Get() never returns
-    // nothing — it makes a silent stand-in where no logger exists — so the
-    // object is not the question. A logger with no destination has not been
-    // initialised yet, and a tee built over nothing would hold nothing to
-    // write the serial half to.
+    // The check is on the logger's destination rather than on the logger
+    // itself: Circle's CLogger::Get() never returns nothing, it makes a
+    // silent stand-in where no logger exists. A logger with no destination
+    // has not been initialised yet, and a tee built over nothing would have
+    // nothing to write the serial half to.
     CLogger *pLogger = CLogger::Get();
     if (pLogger->GetTarget() == nullptr)
         return SDL_SetError("SDL2Circle_ConsoleInit: the logger has no "
@@ -370,22 +341,22 @@ int SDL2Circle_ConsoleInit(void)
 
     s_started = true;
 
-    // WHAT THE TEE WILL DO IS SETTLED HERE AND NOWHERE ELSE. The serial half
+    // What the tee will do is settled here and nowhere else. The serial half
     // is whatever device the host kernel gave the logger, kept for the whole
-    // run. The screen half is live if this board has a display it can draw on.
+    // run. The screen half is live if this board has a display it can draw
+    // on.
     //
-    // THERE IS NOTHING TO CONFIGURE, and that is the rule rather than a
-    // default. Output goes to the serial port and to the screen until an
-    // application takes the display: a switch turning half of it off would
-    // make a machine that prints to one place indistinguishable from a machine
-    // whose second destination has quietly failed.
+    // There is nothing to configure: output goes to the serial port and the
+    // screen until an application takes the display, so a machine printing
+    // to one place only is a machine with no display, never one whose second
+    // destination has quietly failed.
     s_serial = pLogger->GetTarget();
     if (ScreenPrepare() == 0)
         s_screenLive = true;
 
-    // The one pointing. The logger is never pointed anywhere else again — not
-    // when the application takes the display, not ever — so there is no moment
-    // at which output has no destination and no second object to keep in step.
+    // The logger is never pointed anywhere else again - not when the
+    // application takes the display, not ever - so there is no moment at
+    // which output has no destination and no second object to keep in step.
     pLogger->SetNewTarget(&s_tee);
 
     if (s_screenLive)
@@ -407,11 +378,11 @@ int SDL2Circle_ConsoleInit(void)
     return 0;
 }
 
-// THE DEVICE, FOR WHOEVER ELSE NEEDS THE SAME ONE. Debug UART key injection
-// (src/input.cpp) types serial-RX bytes into the machine, and the device it
-// must read from is this one — the console's own, already found and already
-// held — not a device looked up again by name and hoped to be the same
-// object. Null before SDL2Circle_ConsoleInit has run.
+// For whoever else needs the same device. Debug UART key injection
+// (src/input.cpp) types serial-RX bytes into the machine, and must read from
+// this console's own device - already found and already held - rather than
+// looking one up again by name and hoping it is the same object. Null before
+// SDL2Circle_ConsoleInit has run.
 CDevice *SDL2Circle_ConsoleDevice(void)
 {
     return s_serial;
@@ -419,15 +390,15 @@ CDevice *SDL2Circle_ConsoleDevice(void)
 
 extern "C" int SDL2Circle_LogAttachScreen(void)
 {
-    // NOTHING HAS TO CALL THIS. The library builds the tee itself while the
+    // Nothing has to call this: the library builds the tee itself while the
     // machine comes up, so where output goes is settled for every board
     // whether or not a kernel has heard of this.
     //
-    // What it is still for is HAVING IT SOONER: a host kernel with bring-up of
-    // its own worth watching on the glass — mounting a card, say — makes this
-    // call and gets the same one tee, built at its moment instead of at the
-    // arming call. There is no second mechanism behind it; this and the arming
-    // call are two doors into the same idempotent build.
+    // It exists so a host kernel with bring-up of its own worth watching on
+    // the glass - mounting a card, say - can make this call and get the same
+    // tee, built at its moment instead of at the arming call. There is no
+    // second mechanism behind it; this and the arming call are two doors
+    // into the same idempotent build.
     return SDL2Circle_ConsoleInit();
 }
 

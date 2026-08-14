@@ -14,16 +14,16 @@ followed.
 
 The console no longer echoes a typed character itself. `CConsole::SetOptions`
 is called with neither `CONSOLE_OPTION_ICANON` nor `CONSOLE_OPTION_ECHO` set,
-so a read still hands back a character the instant its key is pressed — that
-has not changed — but nothing draws it. Every reader of standard input draws
+so a read still hands back a character the instant its key is pressed - that
+has not changed - but nothing draws it. Every reader of standard input draws
 its own bytes now.
 
 The reason is backspace. A reader building an edited line needs to draw
 something different for the character behind a backspace than for every
 other character it reads: a space over the old glyph and the cursor stepped
 back, not the backspace byte itself. Circle's own echo cannot make that
-distinction — it draws every byte it sees the same way, backspace included,
-which is why the console never erases in place — so a reader that wants
+distinction - it draws every byte it sees the same way, backspace included,
+which is why the console never erases in place - so a reader that wants
 in-place editing has to own its echo entirely, and a console that echoed
 some of the time and left the rest to the reader would draw the wrong thing
 for the one byte that matters.
@@ -45,11 +45,11 @@ erasing whatever this console printed before the line began.
 
 It is built entirely on the single-character read this library has always
 offered (`SDL2Circle_ReadStdin`) and the raw write this library has always
-offered (`SDL2Circle_WriteBytes`) — nothing new crosses from Pascal into this
+offered (`SDL2Circle_WriteBytes`) - nothing new crosses from Pascal into this
 library for it. Free Pascal cannot tell a single-character Read from a
 ReadLn apart at this level, since both reach `Do_Read` the same way, so
 `Do_Read` does not try: every read from standard input assembles a line and
-returns it whole, and Read(Char) simply takes the first character of it —
+returns it whole, and Read(Char) simply takes the first character of it -
 the same as a single-character read behaves on any other platform's console.
 
 ### A texture can be drawn into
@@ -83,12 +83,12 @@ those answers on the serial console before it starts drawing.
 `SDL_SetWindowHitTest` now exists: the callback and its data are recorded,
 and the call always succeeds. A hit test tells a window manager which part
 of a window drags it or resizes it, standing in for a title bar. There is no
-window manager here — one window, filling the one display — so the
+window manager here - one window, filling the one display - so the
 condition the callback exists to answer never arises, and it is never
 called. A NULL callback still means what it means upstream: hit-testing is
 disabled, which was already true of every window.
 
-There is no `SDL_GetWindowHitTest` to accept alongside it — that entry point
+There is no `SDL_GetWindowHitTest` to accept alongside it - that entry point
 does not exist in upstream SDL2 either.
 
 ### A program's own output is no longer treated as a log line
@@ -98,7 +98,7 @@ Where output goes and what output looks like are now two separate things.
 Where it goes is unchanged and is still the machine's decision: the serial
 port always, and the screen as well until an application takes the display.
 What is new is a second way of writing into those destinations.
-`SDL2Circle_WriteBytes` takes bytes and adds nothing to them — no source, no
+`SDL2Circle_WriteBytes` takes bytes and adds nothing to them - no source, no
 severity, no timestamp, and no waiting for an end of line. A program that
 prints a number gets that number. `SDL2Circle_Log` and `SDL2Circle_LogBytes`
 are unchanged and still label everything they carry.
@@ -109,11 +109,11 @@ error are now bound to that raw channel by the library itself, during
 nobody had bound, so the C library answered "bad file descriptor" and the
 bytes were lost; it now appears on the serial port, and on the screen while
 the screen is still a destination, exactly as it was written. Nothing in
-circle-newlib is changed to do this — the library gives the C library's own
+circle-newlib is changed to do this - the library gives the C library's own
 console glue a device of its own.
 
 **Consumers must act** if the host kernel binds its own console with
-`CGlueStdioInit`: that call must be made BEFORE `SDL2Circle_ArmCoreRuntime`.
+`CGlueStdioInit`: that call must be made before `SDL2Circle_ArmCoreRuntime`.
 The C library binds its three standard descriptors together and stops the
 board inside an assertion if they are bound twice. This library checks first
 and leaves them alone when a kernel has already bound them, so a kernel that
@@ -123,7 +123,7 @@ kernel that binds afterwards is the one order that fails.
 A kernel that binds nothing gains something as well: all three standard
 descriptors are now held for the life of the program. They used to be free,
 and the C library hands out the lowest free descriptor, so the first file such
-a program opened was given descriptor 0 — which a language runtime reads as
+a program opened was given descriptor 0 - which a language runtime reads as
 the console, quietly sending that file's writes to the console instead of to
 the card.
 
@@ -136,8 +136,8 @@ Every board now shows its output on the display as well as on the serial port,
 until an application takes the display. That is the whole rule. Nothing has to
 be called and nothing can be configured.
 
-It is one device, built during `SDL2Circle_ArmCoreRuntime` — the call every
-host kernel already makes on core 0 — holding the serial device the kernel gave
+It is one device, built during `SDL2Circle_ArmCoreRuntime` - the call every
+host kernel already makes on core 0 - holding the serial device the kernel gave
 Circle's logger, the screen, and a flag saying whether the screen is still the
 library's to draw on. Its write puts the bytes on serial always and draws them
 while the flag is set. **Circle's logger is pointed at that device once and
@@ -151,14 +151,14 @@ is untouched. There is only ever one destination object and what it will do was
 settled before anything ran, so the console and the application writing the same
 framebuffer has no mechanism rather than being forbidden by a rule.
 
-A board with no display is not a fault — it is a machine with one destination
+A board with no display is not a fault - it is a machine with one destination
 instead of two, said once at notice.
 
 `SDL2Circle_LogAttachScreen` is no longer something a consumer needs to call at
 all. It remains for one case: a host kernel with bring-up of its own worth
 watching on the glass, such as mounting a card, which happens before the arming
 call. It builds the same one device at that earlier moment, and calling it
-twice — or calling it after the library already has — does nothing and answers
+twice - or calling it after the library already has - does nothing and answers
 0, so a kernel that made this call before is unaffected and can drop it.
 
 Kernels used to reach both places by building Circle's own screen device and
@@ -168,8 +168,8 @@ cannot be made right: its colour depth is a compile-time value, and the
 framebuffer object reads the granted pitch back out of the firmware's reply but
 never the granted depth, so it goes on reporting the depth it was constructed
 with. Circle's terminal sizes every row of pixels from that. Where the
-firmware grants a depth nobody asked for — a Pi 5 grants 32 bits per pixel
-whatever the request was — each character is drawn at the wrong stride and the
+firmware grants a depth nobody asked for - a Pi 5 grants 32 bits per pixel
+whatever the request was - each character is drawn at the wrong stride and the
 console paints a fraction of each scanline in squeezed characters.
 
 This library already reads those numbers back for its own drawing, which is
@@ -181,7 +181,7 @@ that pitch divided by that width. There is no board test in it and nothing to
 configure.
 
 A kernel that keeps its own screen device keeps working, and is the one
-arrangement this replaces — see [LOGGING.md](LOGGING.md).
+arrangement this replaces - see [LOGGING.md](LOGGING.md).
 
 ### The I/O service gained rename, directory removal, and the working directory
 
@@ -204,7 +204,7 @@ Nothing already exported changed, so an existing kernel needs no action.
 It was raised by open, read, write, stat and directory open, and not by
 truncate, close, unlink, directory create, directory read or directory close.
 That number appears in the watchdog's stall report, which therefore
-under-reported how much file work an application was doing — the case where the
+under-reported how much file work an application was doing - the case where the
 number matters most.
 
 ### Two documents corrected
@@ -224,7 +224,7 @@ This library's other documents and its source have always said so.
 ### Every core gets a 2 MB stack
 
 Circle's own default is 128 KB a core. This library configures its worlds at
-2 MB — four cores, 8 MB of the board's memory — and the same for every
+2 MB - four cores, 8 MB of the board's memory - and the same for every
 application that uses it. `make world CIRCLE_KERNEL_STACK_SIZE=<bytes>` still
 sets it, for an application that needs more.
 
@@ -232,16 +232,16 @@ It is standardised rather than left to each application to ask for because a
 stack that is too small does not report itself, and nothing about how it
 fails points at a stack. Circle's four core stacks sit next to each other with
 no guard page, so a core that runs off the bottom of its own writes into the
-next one down — under the split, the application core's neighbour is core 0,
+next one down - under the split, the application core's neighbour is core 0,
 where the host kernel object lives as a local of `main()`. The picture
 corrupts for a frame or two, then a device interrupt handler on core 0
 dereferences a pointer the application overwrote, and the board takes a data
 abort in Circle code that did nothing wrong.
 
 An engine that `alloca`s its per-frame working set is the case to watch, and
-it is a common one. TyrQuake's renderer does it on every frame — about 198 KB
+it is a common one. TyrQuake's renderer does it on every frame - about 198 KB
 at the engine's own minimum limits on a 64-bit target, and its source says it
-expects at least a megabyte — so on 128 KB the first frame of real geometry
+expects at least a megabyte - so on 128 KB the first frame of real geometry
 ran a core off the bottom of its stack. An array sized for 32-bit pointers is
 also around 1.7 times larger when every pointer in it is eight bytes.
 
@@ -251,9 +251,9 @@ reconfiguring and rebuilding that world.
 ### SDL has one framebuffer, and every frame is drawn into it
 
 A frame is no longer sent to the presentation core as a pointer into the
-application's own texture. Every frame is composed into SDL's framebuffer — a
+application's own texture. Every frame is composed into SDL's framebuffer - a
 buffer this library owns, at the size the application was told the display is
-— and that buffer is what crosses between the cores.
+- and that buffer is what crosses between the cores.
 
 Two faults go with it.
 
@@ -265,7 +265,7 @@ halted board depended on timing alone.
 
 `SDL_RenderReadPixels` used to read the display panel rather than SDL's
 framebuffer. Where the picture is fitted and centred on a larger panel, it
-returned the top-left corner of the panel — part black margin, part picture,
+returned the top-left corner of the panel - part black margin, part picture,
 scaled to the panel and not to the size the caller drew in. It now reads
 SDL's framebuffer, in the coordinates the caller drew in, and returns the
 frame as it stands: everything drawn since the frame began. A screenshot
@@ -294,15 +294,15 @@ microseconds apart on the application core, with no second core involved and
 nothing contending, it stopped the board. Two games hit it after everything
 else about them already worked: one through its audio manager, one through a
 logging library that takes such a lock for every line it writes. Behind it were
-quieter faults that reported nothing at all — a contended `std::mutex`, every
+quieter faults that reported nothing at all - a contended `std::mutex`, every
 condition variable wait, and every `thread_local` read from the application
 core, which was answering with another thread's storage.
 
 `std::thread` can now be created from any core. A thread runs on core 0 as a
 cooperative task, which is what a service thread wants: it costs no core, and
 it may call Circle. A host kernel that would rather have a thread on a core of
-its own can lend one — see `SDL2Circle_ThreadCoreOffer` and
-`SDL2Circle_ThreadPinNext` in `SDL2/SDL_circle.h` — and this library will never
+its own can lend one - see `SDL2Circle_ThreadCoreOffer` and
+`SDL2Circle_ThreadPinNext` in `SDL2/SDL_circle.h` - and this library will never
 place a thread on a core it is already using for the application or for
 presentation.
 
@@ -406,7 +406,7 @@ renderer was mapped onto the screen properly.
 
 The window-surface path built its copy in canvas coordinates and then wrote it
 to the screen unmapped, so a canvas smaller than the display appeared at its
-own size in the top-left corner with the rest of the screen black — with the
+own size in the top-left corner with the rest of the screen black - with the
 fitted rectangle correctly calculated and logged, and then ignored. It also
 did that work on whichever core called it, rather than handing the frame to
 the presentation core the way every other frame is handed over.
@@ -426,7 +426,7 @@ software rasteriser and wants nothing but somewhere to put the result.
 already served.
 
 The C library underneath answers `CLOCK_REALTIME` and `CLOCK_MONOTONIC` and
-refuses every other clock — and its refusal returns without writing the
+refuses every other clock - and its refusal returns without writing the
 timespec it was given. Most callers do not check the return, because a
 monotonic clock is not expected to fail, so they read whatever their own
 stack held; asked twice from the same place, the clock gives the same answer
@@ -462,7 +462,7 @@ platform, because a Linux GUID has exactly the shape this builds and no
 published database has heard of Circle. A device with no mapping line is
 reported as not a game controller and remains a fully working joystick.
 
-Rumble is offered where the device supports it — off, weak and strong, which
+Rumble is offered where the device supports it - off, weak and strong, which
 is what Circle exposes. `SDL_Haptic` is deliberately left unimplemented
 rather than turning a force-feedback effect into a rumble.
 
@@ -481,7 +481,7 @@ service, because the mapping database is loaded through one.
 library now creates it.
 
 Circle permits exactly one `CCPUThrottle` in a system and halts if a second
-is created, and it offers no safe way to ask whether one already exists —
+is created, and it offers no safe way to ask whether one already exists -
 `CCPUThrottle::Get()` halts rather than reporting an absence, so a null check
 after it can never run. The library therefore owns the object and drives it
 from whichever per-frame heartbeat is live: the servo when the core split is
@@ -535,9 +535,9 @@ together and unlabelled they read as one measured geometry, which is how a
 Pi 5 came to report a 640x480 framebuffer beside a pitch describing a
 1920-wide surface. The two halves are labelled now.
 
-## vPoC1 — 23a36e5
+## vPoC1 - 23a36e5
 
-The first version carried all the way through on hardware — an application
+The first version carried all the way through on hardware - an application
 built on it running on a Pi 3, a Pi 4 and a Pi 5.
 
 ### The part of SDL2 that works
@@ -547,8 +547,8 @@ A fullscreen window with a software `SDL_Renderer` over Circle's
 only texture format and 32 bits is the only depth: any other request fails
 with an error rather than quietly falling back.
 
-`SDL_RenderCopy` honours its source and destination rectangles — a same-size
-copy is still a byte-for-byte unscaled blit, anything else resamples — with
+`SDL_RenderCopy` honours its source and destination rectangles - a same-size
+copy is still a byte-for-byte unscaled blit, anything else resamples - with
 straight-alpha blending and alpha modulation. Also implemented:
 `SDL_UpdateTexture`, `SDL_QueryTexture`, `SDL_RenderFillRect`,
 `SDL_RenderDrawRect`, axis-aligned `SDL_RenderDrawLine`,
@@ -582,7 +582,7 @@ leaves the remainder black. `canvas=stretch` in `cmdline.txt` fills the
 scanout instead and abandons the aspect ratio.
 
 The scanout is derived from what the framebuffer allocation actually granted,
-never from the size the firmware echoes back — a Pi 5 acknowledges a mode
+never from the size the firmware echoes back - a Pi 5 acknowledges a mode
 request without honouring it, and trusting that echo skews every scaling
 calculation after it.
 
@@ -609,7 +609,7 @@ servo that drains the call mailbox, runs the file I/O service, pumps USB
 input into the event ring and feeds the audio ring to the sound device; and a
 watchdog that reports an application core that has stalled.
 `SDL2Circle_SplitPresentCore()` is what a host runs on the core it elects for
-presentation — it turns a finished frame into a scanout, runs no SDL and
+presentation - it turns a finished frame into a scanout, runs no SDL and
 holds no application state. `SDL2Circle_CallOn0()` runs the host's own
 function on core 0 through the same mailbox, for hardware the library does
 not own.
@@ -626,7 +626,7 @@ instead. This is something the library notices, never something an
 application has to arrange.
 
 The application core is released as soon as the presentation core has read
-everything it needs from a frame, not after the output waits — the DMA
+everything it needs from a frame, not after the output waits - the DMA
 transfer and the vsync wait touch only the presentation core's own buffer.
 Before that, the split ran slower than a single core.
 
@@ -656,7 +656,7 @@ split per core across render, audio, input and waiting, with the remainder
 attributed to the application's own work.
 
 Waiting is separated from working, and blocking on another core is counted
-apart from waiting on DMA or on the raster — at a locked frame rate the
+apart from waiting on DMA or on the raster - at a locked frame rate the
 blocking waits absorb all the spare time, which previously made a fully idle
 core look saturated. Each line leads with how much of the wall clock the core
 was actually awake, measured locally, because a parked core's cycle counter
@@ -665,12 +665,12 @@ to an inert form and says so once when armed.
 
 ### What the host kernel must do
 
-Finish Circle's own world — interrupts, timer, serial, SD card, filesystem —
+Finish Circle's own world - interrupts, timer, serial, SD card, filesystem -
 on core 0 before starting any other core. Start the secondary cores yourself
 with `CMultiCoreSupport`. Call `SDL2Circle_ArmCoreRuntime()` as the first
 statement on every core including core 0: a core that has just started has no
 thread pointer, C++ exception state is reached through it, and without this
-the first throw reads whatever the firmware left there — which passes on one
+the first throw reads whatever the firmware left there - which passes on one
 board and takes a data abort on the next. Call `SDL2Circle_SplitInit()` once
 on core 0 before the application starts. Keep core 0 yielding for as long as
 the application runs, because the servo only runs when something yields. Park
@@ -678,8 +678,8 @@ any core you give no role.
 
 ### Building
 
-A separate static library per board — `libSDL2-rpi3.a`, `libSDL2-rpi4.a`,
-`libSDL2-rpi5.a` — because Circle bakes the board in at configure time, each
+A separate static library per board - `libSDL2-rpi3.a`, `libSDL2-rpi4.a`,
+`libSDL2-rpi5.a` - because Circle bakes the board in at configure time, each
 built against its own circle-stdlib world. circle-stdlib is vendored as a
 pinned submodule of this library rather than expected as a sibling checkout,
 so `make deps` is self-contained.
@@ -709,5 +709,5 @@ changes it at this point.
 
 A build-time-seeded wall clock serves `time()` and `gettimeofday` before
 Circle's timer exists, because static constructors run before the host kernel
-builds one. Without it, `srand(time(NULL))` at global scope — ordinary,
-idiomatic C — silently killed a Pi 5 boot.
+builds one. Without it, `srand(time(NULL))` at global scope - ordinary,
+idiomatic C - silently killed a Pi 5 boot.

@@ -1,5 +1,5 @@
 //
-// video.cpp — window / software renderer / streaming texture over
+// video.cpp - window / software renderer / streaming texture over
 // Circle's CBcmFrameBuffer (double-buffered, vsync page flip).
 //
 // Scope matches MAME's drawsdl.cpp software path: one fullscreen window,
@@ -36,8 +36,8 @@ struct SDL_Window
     char title[128];
 
     // A hit test tells a window manager which part of a window acts as a
-    // title bar or a resize edge. There is no window manager here — one
-    // window, the whole display — so the condition the callback exists to
+    // title bar or a resize edge. There is no window manager here - one
+    // window, the whole display - so the condition the callback exists to
     // answer never arises. It is kept rather than refused so that an
     // application which relies on it for a borderless drag bar still links
     // and still gets the success SDL promises; the callback itself is
@@ -52,7 +52,7 @@ struct SDL_Window
 // back unchanged when the target is released.
 //
 // It is saved and restored as one block when the target changes, so the copy
-// held in the renderer is always the state of the CURRENT target and every
+// held in the renderer is always the state of the current target and every
 // drawing call reads it without asking which target it is drawing into.
 struct RenderView
 {
@@ -70,7 +70,7 @@ struct SDL_Renderer
     SDL_Window *window;
     // The framebuffer half the presentation core is to draw into next. It is
     // carried with the frame and handed to the executor, and it is the only
-    // thing here that refers to the panel at all — a slot number, never its
+    // thing here that refers to the panel at all - a slot number, never its
     // geometry or its address. Nothing on this side of the library knows what
     // the panel is or where it lives.
     unsigned back;
@@ -85,7 +85,7 @@ struct SDL_Renderer
     // the arithmetic itself.
     //
     // logical_w/h is 0 when no logical size is set, and the window's own
-    // size is then the coordinate system — the identity case, which costs
+    // size is then the coordinate system - the identity case, which costs
     // one comparison.
     int   logical_w, logical_h;
     bool  integer_scale;
@@ -102,7 +102,7 @@ struct SDL_Renderer
     //
     // A target's draw calls are never recorded and never cross to the
     // presentation core. They are executed into the texture as they are
-    // made, because a target's pixels are not a frame going anywhere — they
+    // made, because a target's pixels are not a frame going anywhere - they
     // are a texture the application may copy from on its very next call.
     SDL_Texture *target;
 
@@ -112,7 +112,7 @@ struct SDL_Renderer
     RenderView window_view;
 
     // Draw calls held back, in canvas coordinates, while the frame is still
-    // short enough to cross to the presentation core as a LIST. A frame that
+    // short enough to cross to the presentation core as a list. A frame that
     // outgrows the crossing count is composed into the virtual framebuffer
     // instead, and at the default count of zero every frame is.
     SDL2CirclePresentCmd cmds[SDL2CIRCLE_RECORD_MAX_CMDS];
@@ -122,13 +122,13 @@ struct SDL_Renderer
     // framebuffer. Cleared at the start of each frame.
     bool rasterizing;
 
-    // Pixels a command needs that exist nowhere else — a mirrored copy for
+    // Pixels a command needs that exist nowhere else - a mirrored copy for
     // SDL_RenderCopyEx, which the texture itself does not hold. A recorded
     // command is not executed until present, so those pixels have to outlive
     // the call that made them: they are bump-allocated here and the arena is
     // emptied when the next frame starts.
     //
-    // TWO of them, alternating, for the same reason the textures come in
+    // Two of them, alternating, for the same reason the textures come in
     // pairs. Under the core split a posted frame is still being read by the
     // presentation worker after RenderPresent returns, so emptying the arena
     // the application just drew into would pull those pixels out from under
@@ -140,10 +140,10 @@ struct SDL_Renderer
     u8     scratch_idx;
 };
 
-// THE VIRTUAL FRAMEBUFFER: the one framebuffer SDL has, at canvas
+// The virtual framebuffer: the one framebuffer SDL has, at canvas
 // resolution, and the surface every frame is composed into. It exists for as
-// long as a window does — it is allocated when the window is made, and a
-// window cannot be made without it — so nothing downstream has to ask whether
+// long as a window does - it is allocated when the window is made, and a
+// window cannot be made without it - so nothing downstream has to ask whether
 // SDL's framebuffer is really there.
 //
 // Two of them, alternating, for the same reason the textures come in
@@ -154,43 +154,41 @@ static u8 *s_canvas_surface = nullptr;
 static unsigned s_canvas_surface_idx = 0;
 static unsigned s_canvas_surface_pitch = 0;
 
-// A texture is STORED as ARGB8888 whatever format it was asked for, because
-// the presentation path reads a texture's pixels directly — a frame that is
+// A texture is stored as ARGB8888 whatever format it was asked for, because
+// the presentation path reads a texture's pixels directly - a frame that is
 // one opaque copy crosses to the presentation core as that texture, in
 // place, with nothing painted. Storing a texture in the application's format
 // would mean converting during presentation, on the core that must not be
 // delayed, every frame.
 //
-// So the format is honoured at the EDGE instead. `format` is what the
+// The format is honoured at the edge instead. `format` is what the
 // application asked for and what SDL_QueryTexture answers; pixels handed in
 // through SDL_UpdateTexture are converted on the way in, and
 // SDL_LockTexture hands back a staging buffer in the application's format
 // which SDL_UnlockTexture converts. An application therefore writes the
 // pixels it believes it is writing, and the cost falls on its own core.
 //
-// When the application's format IS ARGB8888 — still the common case — there
-// is no staging buffer and no conversion, and the path is exactly what it
-// was.
+// When the application's format is ARGB8888 - still the common case - there
+// is no staging buffer and no conversion, and the path is unchanged.
 struct SDL_Texture
 {
     int w, h;
-    Uint32 format;     // the format the APPLICATION asked for
+    Uint32 format;     // the format the application asked for
     int access;        // SDL_TEXTUREACCESS_*, as asked for
     u8 *pixels[3];     // [1] and [2] exist only under the core split: the app
                        // renders into one buffer while the presentation
                        // worker still reads the frame in flight
     u8 widx;           // buffer the app writes next
 
-    // WHICH FRAME EACH STORE IS SPOKEN FOR BY.
+    // Which frame each store is spoken for by.
     //
-    // A recorded copy hands the presentation core a RAW POINTER into one of
+    // A recorded copy hands the presentation core a raw pointer into one of
     // these stores, so the store must not be written again until that core
     // has finished reading the frame holding the pointer. busy_seq[i] is the
     // frame sequence of the copy that last referenced store i; 0 means never.
     //
-    // Tracking the buffer that was last POSTED is not the same question and
-    // is what went wrong before: it says where the writer went, not what the
-    // reader still holds.
+    // Tracking the buffer that was last posted is not the same question: it
+    // says where the writer went, not what the reader still holds.
     u64 busy_seq[3];
     int pitch;         // stored pitch, always w * 4
 
@@ -205,8 +203,8 @@ struct SDL_Texture
     Uint8 alphamod;
 
     // Held so that each setter's getter answers with what was set. The
-    // colour modulation is not applied when drawing — see
-    // SDL_SetTextureColorMod — and the scale mode has no effect because the
+    // colour modulation is not applied when drawing - see
+    // SDL_SetTextureColorMod - and the scale mode has no effect because the
     // blitters are nearest-neighbour throughout.
     Uint8 colormod_r, colormod_g, colormod_b;
     SDL_ScaleMode scale_mode;
@@ -220,7 +218,7 @@ struct SDL_Texture
 };
 
 // The size of what is being drawn into: the render target where one is set,
-// the CANVAS otherwise -- not necessarily the window's own reported size; see
+// the canvas otherwise -- not necessarily the window's own reported size; see
 // the geometry comment below the canvas variables, where these are defined.
 // Every rectangle an application hands over is placed against it, so a call
 // cannot be found honouring one and a call beside it honouring the other.
@@ -228,26 +226,26 @@ static inline int render_target_w(const SDL_Renderer *ren);
 static inline int render_target_h(const SDL_Renderer *ren);
 
 // The one fullscreen window (ID 1). Display-mode queries answer with the
-// canvas, not this — see the geometry comment below — because the two are
+// canvas, not this - see the geometry comment below - because the two are
 // not always the same rectangle.
 static SDL_Window *s_window = nullptr;
 
-// Three resolutions are in play, and every piece of geometry below belongs
-// to exactly one of them.
+// Every piece of geometry below belongs to exactly one of the resolutions
+// defined here.
 //
-//   SCANOUT   the PHYSICAL display: what the hardware really puts on the
+//   scanout   the physical display: what the hardware really puts on the
 //             wire. cmdline.txt width=/height= asks the firmware for a mode,
 //             the allocation is what sets it, and the firmware then reports
-//             the mode it actually set. THAT REPORT IS THE SCANOUT — read
-//             from the firmware, never calculated. Not from the pitch, not
-//             from the buffer size, and not from the width and height Circle
-//             echoes back out of its own constructor.
+//             the mode it actually set - that report is the scanout, read
+//             from the firmware and never calculated. Not from the pitch,
+//             not from the buffer size, and not from the width and height
+//             Circle echoes back out of its own constructor.
 //
 //             It belongs to the presentation path: the placement below and
 //             the present executor are its only readers, and nothing in SDL
 //             is ever answered with it.
 //
-//   CANVAS    the VIRTUAL display: the world the application is given, the
+//   canvas    the virtual display: the world the application is given, the
 //             shape that decides the letterboxing, and the shape every
 //             render target draws into that is not a texture of its own (see
 //             render_target_w/h below). Settled once, at the first of four
@@ -258,20 +256,20 @@ static SDL_Window *s_window = nullptr;
 //               2. SDL2Circle_DeclareVirtualDevice, called by the consumer
 //                  before SDL_Init.
 //               3. The first SDL_CreateWindow's own width and height. A
-//                  window IS the canvas here, so with neither override this
+//                  window is the canvas here, so with neither override this
 //                  is where the two become the same rectangle.
 //               4. The physical panel size, read from the firmware. Reached
 //                  only when none of the above named a size, so the library
 //                  never refuses to start for want of one.
 //
 //             Once any of the four has settled it, the canvas is fixed for
-//             the rest of the run — the placement, the window, the
+//             the rest of the run - the placement, the window, the
 //             display-mode answers all derive from it from that point on.
 //
-//   APPLICATION  what SDL_CreateWindow was asked for, reported back exactly
-//             as asked (SDL_GetWindowSize). It is the CANVAS by construction
+//   application  what SDL_CreateWindow was asked for, reported back exactly
+//             as asked (SDL_GetWindowSize). It is the canvas by construction
 //             under (2) and (3) above, but under (1) the switch may give the
-//             canvas a different shape — a consumer that named a size still
+//             canvas a different shape - a consumer that named a size still
 //             gets a window of that size, honoured as an answer to the
 //             question it asked, but draws into a canvas of the switch's
 //             shape. render_target_w/h is what settles which shape a given
@@ -287,8 +285,8 @@ static int s_scanout_w = 0, s_scanout_h = 0;
 static int s_canvas_w = 0, s_canvas_h = 0;
 
 // render_target_w/h (declared above, by the struct they read): every
-// rectangle an application hands over is placed against the CANVAS, whatever
-// the window's own reported size is under the switch — see the geometry
+// rectangle an application hands over is placed against the canvas, whatever
+// the window's own reported size is under the switch - see the geometry
 // comment above. A render target already answers with its own texture, which
 // this never touches.
 static inline int render_target_w(const SDL_Renderer *ren)
@@ -320,8 +318,8 @@ void SDL2Circle_SetVDisplaySwitch(int width, int height)
 // firmware granted, neither of which this declaration touches.
 //
 // A resolved canvas (s_canvas_w > 0) is the point after which no declaration
-// can be taken: everything downstream — the placement, the window, the
-// display-mode answers — has been derived from the canvas by then, and the
+// can be taken: everything downstream - the placement, the window, the
+// display-mode answers - has been derived from the canvas by then, and the
 // declaration promises a display whose size does not change under the
 // application. This is settled before or at the first window, on one core,
 // so the two flags need no more protection than that.
@@ -357,18 +355,18 @@ static int s_phys_w = 0, s_phys_h = 0;
 // the moment it is created and held here.
 //
 // Held rather than asked for again, because asking means calling into a
-// Circle device object and the callers that want this answer — the display
-// mode and display bounds queries — run on the application core. It never
+// Circle device object and the callers that want this answer - the display
+// mode and display bounds queries - run on the application core. It never
 // changes: the grant is made once and kept for the life of the program.
 static int s_grant_w = 0, s_grant_h = 0;
 
-// Ask the firmware what the physical display is. Core 0 only — it is a
-// mailbox transaction — and only meaningful after the allocation, because
+// Ask the firmware what the physical display is. Core 0 only - it is a
+// mailbox transaction - and only meaningful after the allocation, because
 // the allocation is what sets the mode and this reads back what was set.
 //
 // Circle cannot be asked this, which is why the question is put again here.
 // CBcmFrameBuffer::Initialize sends one combined tag call and the firmware
-// writes its real answer back into those same tag structures — Circle relies
+// writes its real answer back into those same tag structures - Circle relies
 // on that itself, testing the returned physical width and height for zero
 // before it will accept the allocation. It then keeps only the buffer
 // address, the size and the pitch. Its m_nWidth and m_nHeight are never
@@ -412,8 +410,8 @@ static void acquire_fb_on0(void *p)
     read_physical_display();
 }
 
-// Place the canvas on the scanout. Fit — aspect preserved, centered, the
-// remainder left black — is the default; cmdline.txt `canvas=stretch` asks
+// Place the canvas on the scanout. Fit - aspect preserved, centered, the
+// remainder left black - is the default; cmdline.txt `canvas=stretch` asks
 // for the whole scanout instead. Called once, when both resolutions exist.
 static void resolve_placement(void)
 {
@@ -442,21 +440,13 @@ static void resolve_placement(void)
     }
     else
     {
-        // Fit, in exact integer arithmetic.
-        //
-        // THIS RUNS ONCE, at startup, on core 0, before a single frame
-        // exists. It can afford to be slow, so it is written for obvious
-        // correctness and for nothing else. Do not shave operations here, do
-        // not fold the steps together to save a divide, and above all do not
-        // reintroduce a scale factor held as a fraction.
-        //
-        // That is what this used to do — a 16.16 fixed-point ratio — and the
-        // reason it was wrong is that 2.4 has no exact representation in
-        // 16.16. An 800x450 canvas on a 1920x1080 scanout is exactly 2.4, so
-        // it came out 1919x1079 and left a black line down the right edge
-        // and along the bottom. Ratios that happen to be representable, 1.5
-        // and 3.0 among them, were always right, which is what made it look
-        // sound. No amount of care inside that scheme reaches the exact case.
+        // Fit, in exact integer arithmetic. This runs once, at startup, on
+        // core 0, before a single frame exists, so it can afford to be slow:
+        // it is written for obvious correctness and nothing else. Do not
+        // fold the steps together to save a divide, and do not hold the
+        // scale factor as a fixed-point fraction - a ratio such as 2.4 has
+        // no exact fixed-point representation, and rounding it misplaces the
+        // picture by a pixel on the affected edge.
         //
         // All values are 64-bit throughout rather than reasoning about where
         // 32 bits would still be wide enough.
@@ -472,7 +462,7 @@ static void resolve_placement(void)
 
         if (by_width <= by_height)
         {
-            // Width limits — including when the two are equal, which is the
+            // Width limits - including when the two are equal, which is the
             // matching-aspect case that has to land whole. The picture is
             // the full width of the scanout, exactly, with no arithmetic on
             // that axis at all.
@@ -538,14 +528,14 @@ extern "C" int SDL2Circle_DeclareVirtualDevice(unsigned depth, int width,
     return 0;
 }
 
-// Acquire THE framebuffer and settle the scanout it was granted on, without
+// Acquire the framebuffer and settle the scanout it was granted on, without
 // touching the canvas.
 //
 // Kept apart from the display-size resolve below because the screen log
 // destination (src/console.cpp) needs exactly this and nothing more: it comes
 // up during the host kernel's initialisation, long before an application has
 // declared a canvas or asked for a window. One routine so the two can never
-// ask the firmware for different things — the request below is what SETS the
+// ask the firmware for different things - the request below is what sets the
 // display mode, and a second, different request would be a second mode.
 //
 // Returns where the scanout figure came from, or null when there is no
@@ -553,13 +543,13 @@ extern "C" int SDL2Circle_DeclareVirtualDevice(unsigned depth, int width,
 static const char *acquire_scanout(void)
 {
     // The boot options' width=/height= is a request to the firmware for a
-    // PHYSICAL DISPLAY MODE, and that is the whole of what it is. It is not
+    // physical display mode, and that is the whole of what it is. It is not
     // a canvas source and is never read as one.
     //
-    // Unset, the request is ZERO BY ZERO, which is Circle's "no size
+    // Unset, the request is zero by zero, which is Circle's "no size
     // requested": its CBcmFrameBuffer constructor then asks the firmware for
     // the display's own dimensions and allocates that. Naming a size here
-    // instead would SET that mode — the allocation is what sets it — so a
+    // instead would set that mode - the allocation is what sets it - so a
     // default of any kind drives the panel at a resolution nobody asked for
     // and then reads it back as though it were the display's own.
     int req_w = 0, req_h = 0;
@@ -636,7 +626,7 @@ bool SDL2Circle_ScanoutAcquire(SDL2CircleScanout *out)
 
 // Decide the canvas size, in precedence order: the --rapi-vdisplay switch,
 // then SDL2Circle_DeclareVirtualDevice, then the caller's own size, then the
-// physical panel size read from the firmware — which only a window has, so a
+// physical panel size read from the firmware - which only a window has, so a
 // display query arriving before any of the first three exist is passed 0,0
 // and falls through to the firmware. Nothing is written to s_canvas_w/h
 // here: the caller commits them only once the scanout is known too, so a
@@ -668,8 +658,8 @@ static bool settle_canvas(int fallback_w, int fallback_h,
 
     // The first three rungs all found nothing: no switch, no declaration, no
     // window with a usable size. Last resort, ask the firmware what the
-    // panel actually is and use that as the canvas, so a Pascal consumer —
-    // which cannot reach Circle's property tags itself — still starts.
+    // panel actually is and use that as the canvas, so a Pascal consumer -
+    // which cannot reach Circle's property tags itself - still starts.
     // acquire_scanout() is the same routine, and the same cached answer,
     // that settles the scanout below; it performs the mailbox read once and
     // every further call, this one included, reuses what it already has.
@@ -694,7 +684,7 @@ static bool settle_canvas(int fallback_w, int fallback_h,
 // the canvas exists.
 //
 // fallback_w/h are the window's own size, offered only by SDL_CreateWindow
-// (create_window_on0, below) — every other caller passes 0,0, so a display
+// (create_window_on0, below) - every other caller passes 0,0, so a display
 // query that arrives before the canvas has a source of its own is refused
 // rather than guessing at one.
 static bool resolve_display_size(int fallback_w = 0, int fallback_h = 0)
@@ -733,7 +723,7 @@ static u8 *s_fb_base = nullptr;
 static unsigned s_fb_pitch = 0;
 static int s_fb_w = 0, s_fb_h = 0;
 // 2 = page-flip between stacked halves; 1 = the firmware's grant cannot hold
-// two halves: present commands render into a SHADOW back buffer instead,
+// two halves: present commands render into a shadow back buffer instead,
 // blitted into the granted surface on flip -- true double buffering (no
 // partial frame is ever scanned) without touching memory past the grant.
 static unsigned s_fb_halves = 2;
@@ -748,7 +738,7 @@ static size_t s_shadow_bytes = 0;
 //
 // Only a DMA4 "large address" channel can reach the framebuffer's address
 // range, which is why the request below asks for one specifically. A Pi 3
-// has no such engine — and no shadow path either, because its firmware
+// has no such engine - and no shadow path either, because its firmware
 // grants the two halves a page flip needs, so it never arrives here.
 #if RASPPI >= 4
 #define SHADOW_DMA_CHANNEL DMA_CHANNEL_EXTENDED
@@ -757,19 +747,15 @@ static size_t s_shadow_bytes = 0;
 #endif
 
 // Beats per bus transaction, where a beat is 128 bits. Circle's screen DMA
-// uses 2 and its documentation says more than that congests the bus — but
-// that is written for console scrolling: a small, frequent move sharing the
-// bus with everything else, where latency matters and total time does not.
+// uses 2, sized for small, frequent console-scroll moves sharing the bus
+// with everything else, where latency matters and total time does not; this
+// is the opposite job, one bulk move of a whole screen, once a frame, which
+// has to finish inside the frame.
 //
-// This is the opposite job. One bulk move of a whole screen, once a frame,
-// which has to finish inside the frame. At 2 beats a transaction carries 32
-// bytes, and the measured result was a screen taking about 14.5 ms — around
-// 450 MB/s, which is a transaction-rate limit and nothing to do with what
-// the memory can do.
-//
-// 8 beats is 128 bytes a transaction: two cache lines, four times the
-// payload, and still well under the 15 the controller allows, which leaves
-// room to go further if a report ever asks for it.
+// At 2 beats (32 bytes a transaction) a screen took about 14.5 ms, around
+// 450 MB/s - a transaction-rate limit, not a memory-bandwidth one. 8 beats
+// is 128 bytes a transaction (two cache lines) and still well under the 15
+// the controller allows, leaving room to go further if ever needed.
 static const unsigned SHADOW_DMA_BURST = 8;
 
 static CDMAChannel *s_dma = nullptr;   // null: the CPU does the copy
@@ -791,7 +777,7 @@ static unsigned s_shadow_idx = 0;
 //
 // Composing costs the same arithmetic wherever it lands, but the framebuffer
 // is uncached, and the scaler's stream of single-pixel stores pays that price
-// one store at a time — measured on a Pi 4 at 26.1 ms for a 1280x720 frame
+// one store at a time - measured on a Pi 4 at 26.1 ms for a 1280x720 frame
 // against 1.4 ms into ordinary memory. Composed here and blitted out in whole
 // rows, the same frame costs 1.4 ms plus a 6.0 ms block move: the write to
 // uncached memory is made once, in the shape that memory is good at.
@@ -802,17 +788,17 @@ static u8 *s_stage = nullptr;
 static unsigned s_stage_pitch = 0;
 static size_t s_stage_bytes = 0;
 
-// Whether the present path — the shadow buffers and the DMA channel, or the
-// staging frame — has been built.
+// Whether the present path - the shadow buffers and the DMA channel, or the
+// staging frame - has been built.
 //
-// It is sized and shaped by THE framebuffer grant, and that grant is made
+// It is sized and shaped by the framebuffer grant, and that grant is made
 // once and never returned (see s_fb0), so nothing it depends on can change
 // while the machine runs: a second window adopts the same grant, the same
 // scanout geometry and the same present resources. It therefore belongs to
 // the grant's lifetime and not to a window's, and window teardown leaves it
 // alone.
 //
-// The alternative — rebuild it per window — strands what the previous one
+// The alternative - rebuild it per window - strands what the previous one
 // took, and neither resource is small: the shadows are a screen each, and
 // the DMA channel comes from a pool of a few that the sound device draws
 // from as well, so a consumer that restarts its video on a settings change
@@ -827,8 +813,8 @@ static bool s_present_ready = false;
 // stream of identical frames builds them once and reuses them; a consumer
 // that changes geometry pays one rebuild.
 //
-// Only the presentation owner ever runs a command — the worker core under
-// the core split, the calling core without it — so a single set of tables
+// Only the presentation owner ever runs a command - the worker core under
+// the core split, the calling core without it - so a single set of tables
 // is enough and no lock is needed. There is never a second scaler in
 // flight.
 static const int SCALE_MAP_MAX = 8192;   // covers any scanout up to 8K
@@ -850,7 +836,7 @@ static void build_scale_maps(int sw, int sh, int dw, int dh)
 // Resample sw x sh source pixels onto dw x dh destination pixels.
 //
 // dst_alpha says whether the destination's own alpha is worth composing.
-// It is false for every call that lands on the frame — a panel has nothing
+// It is false for every call that lands on the frame - a panel has nothing
 // behind its pixels, so the byte is never read back and is not spent on.
 // It is true only for a copy into a render target, where that byte is the
 // texture's own alpha and something may read it next: SDL_RenderReadPixels,
@@ -864,37 +850,25 @@ static void scale_copy(const SDL2CirclePresentCmd *cmd, u8 *dst, unsigned dpitch
     build_scale_maps(sw, sh, dw, dh);
 
     // An integer horizontal ratio replicates each source pixel a fixed
-    // number of times, which needs no table lookup at all — the common
+    // number of times, which needs no table lookup at all - the common
     // case for an emulator raster lifted onto a panel.
     const int xrep = (dw % sw == 0) ? dw / sw : 0;
 
     if (!cmd->blend && cmd->alphamod == 255)
     {
-        // EVERY destination row is resampled from the source. No destination
-        // row is ever copied from another one, and it is worth knowing why,
-        // because the opposite looks obvious and this code used to do it.
+        // Every destination row is resampled from the source; no row is
+        // ever copied from another one.
         //
         // Under vertical magnification several destination rows share a
-        // source row, so the second and later ones can be had by copying the
-        // first destination row back. That reads the WIDE side: the source
-        // row is small and the destination row is the magnified one — 398
-        // pixels against 1918, about 1.6 KB against 7.6 KB — so the copy
-        // reads five times as much as resampling from the source, to save
-        // some index arithmetic.
-        //
-        // The cache is the real cost. The destination is a whole-screen
-        // shadow, megabytes of it, and reading those lines back fills the
-        // cache with data nothing will ever read again — evicting the one
-        // small source row that every destination row mapping to it still
-        // needs. Measured on a Pi 5 at a locked 59.9 fps, 398x224 into a
-        // 796x448 canvas on a 1920x1080 panel, the presentation core was
-        // awake 76.4% of the time with the copy-back and 33-41% without it.
-        // Half the core, handed back by deleting the optimisation.
-        //
-        // It also hid in the numbers. The more magnification, the more rows
-        // are "reused" and the worse it gets, so a low source resolution
-        // paid more of the penalty than a high one and the cheaper mode
-        // measured as the dearer.
+        // source row, so a copy-back of the first destination row - cheaper
+        // by index arithmetic alone, since the source row is small and the
+        // destination row is the magnified one - looks like the right
+        // shortcut. It is not: the destination is a whole-screen shadow, and
+        // reading those rows back evicts the small source row from cache
+        // that every other destination row mapping to it still needs. On a
+        // Pi 5, 398x224 scaled into a 796x448 canvas on a 1920x1080 panel
+        // measured the presentation core awake 76.4% of the time with that
+        // copy and 33-41% without it. Do not reintroduce it.
         u8 *drow = dst;
         for (int j = 0; j < dh; j++, drow += dpitch)
         {
@@ -904,8 +878,8 @@ static void scale_copy(const SDL2CirclePresentCmd *cmd, u8 *dst, unsigned dpitch
             if (xrep)
             {
                 // Integer horizontal ratio: the source is read once and the
-                // destination only written. Nothing is read back, so this is
-                // not the same shape of mistake and it stays.
+                // destination only written. Nothing is read back, so the
+                // cache problem above does not apply here.
                 for (int i = 0, x = 0; i < sw; i++)
                 {
                     u32 p = s[i];
@@ -923,7 +897,7 @@ static void scale_copy(const SDL2CirclePresentCmd *cmd, u8 *dst, unsigned dpitch
     }
 
     // Blended: the destination is read as well as written, so no row can be
-    // reused — every destination pixel is composited in place.
+    // reused - every destination pixel is composited in place.
     //
     // Which alpha byte is written is decided once here, outside both loops,
     // not per pixel: the frame path (dst_alpha false) keeps the exact loop
@@ -995,7 +969,7 @@ static void scale_copy(const SDL2CirclePresentCmd *cmd, u8 *dst, unsigned dpitch
 // dst_alpha marks that last case. It defaults false, so every frame-path
 // call site is unchanged, and is passed true only for a render target,
 // where a blended copy has to compose the destination alpha it is writing
-// over rather than discard it — see scale_copy just above for the reason
+// over rather than discard it - see scale_copy just above for the reason
 // and the arithmetic.
 static void exec_into(const SDL2CirclePresentCmd *cmd, u8 *dst0, unsigned dpitch,
                       bool dst_alpha = false)
@@ -1016,7 +990,7 @@ static void exec_into(const SDL2CirclePresentCmd *cmd, u8 *dst0, unsigned dpitch
     const u8 *src = cmd->src;
     u8 *dst = dst0 + (size_t)cmd->dy * dpitch + (size_t)cmd->dx * 4;
 
-    // The destination extent already carries BOTH geometry hops, so one
+    // The destination extent already carries both geometry hops, so one
     // pass here covers application frame -> canvas -> scanout. Equal
     // extents are the unscaled blit below, unchanged to the byte.
     const int sw = cmd->sw > 0 ? cmd->sw : cmd->w;
@@ -1029,7 +1003,7 @@ static void exec_into(const SDL2CirclePresentCmd *cmd, u8 *dst0, unsigned dpitch
 
     // Unblended, at full alphamod: the source pixel replaces the
     // destination outright, its own alpha byte included, so this already
-    // carries a straight-alpha source's transparency through untouched —
+    // carries a straight-alpha source's transparency through untouched -
     // the frame path and the target path want exactly the same bytes here
     // and neither reads dst_alpha.
     if (!cmd->blend && cmd->alphamod == 255)
@@ -1105,7 +1079,7 @@ static void exec_into(const SDL2CirclePresentCmd *cmd, u8 *dst0, unsigned dpitch
 }
 
 // Canvas coordinates -> scanout coordinates, applied to a command on its way
-// to the glass. THE EXECUTOR BELOW IS THE ONLY CALLER, and that is the whole
+// to the glass. The executor below is the only caller, and that is the whole
 // point of where this sits: every command that reaches the framebuffer goes
 // through one function, so the mapping cannot be forgotten on a path that
 // nobody thought about. SDL never sees it, never asks for it, and has no
@@ -1128,7 +1102,7 @@ static bool map_onto_scanout(SDL2CirclePresentCmd *cmd)
     if (cmd->w <= 0 || cmd->h <= 0)
         return false;
 
-    // A fill of the WHOLE canvas is a clear of the whole display, border
+    // A fill of the whole canvas is a clear of the whole display, border
     // included. The letterbox is outside the canvas, so no canvas rectangle
     // can ever name it, and mapping this one the ordinary way would leave the
     // frame before last showing in the margins for as long as the picture
@@ -1183,7 +1157,7 @@ static void log_copy_geometry(const SDL2CirclePresentCmd &app,
                           out.w, out.h, out.dx, out.dy, how);
 }
 
-// Execute one command onto the glass. The command arrives in CANVAS
+// Execute one command onto the glass. The command arrives in canvas
 // coordinates, whoever posted it and whichever core is running this: the
 // presentation worker under the core split, the application's own core
 // without it. Both go through here, so both get the same picture.
@@ -1252,8 +1226,8 @@ void SDL2Circle_VideoFlip(unsigned half)
             }
 
             // The scaler wrote the shadow through the cache. Clean that
-            // range — clean, not invalidate, so the lines stay warm for the
-            // next frame — or the engine reads stale memory behind it.
+            // range - clean, not invalidate, so the lines stay warm for the
+            // next frame - or the engine reads stale memory behind it.
             CleanDataCacheRange((u64)(uintptr)s_shadow, (u64)s_shadow_bytes);
             s_dma->SetupMemCopy(s_fb_base, s_shadow, s_shadow_bytes,
                                 SHADOW_DMA_BURST, FALSE);
@@ -1279,7 +1253,7 @@ void SDL2Circle_VideoFlip(unsigned half)
     }
     // Blit the staged frame to the half about to be panned to. Whole rows
     // into uncached memory, which is the move that memory is built for, and
-    // the only writer of a half — so nothing half-composed is ever scanned.
+    // the only writer of a half - so nothing half-composed is ever scanned.
     if (s_stage)
     {
         const u8 *s = s_stage;
@@ -1298,7 +1272,7 @@ void SDL2Circle_VideoFlip(unsigned half)
         s_window->fb->WaitForVerticalSync();
     }
     // One-shot diagnostic: a firmware that refuses the pan (it reports the
-    // granted offset back) silently breaks the page flip — the visible
+    // granted offset back) silently breaks the page flip - the visible
     // half then only ever receives alternate frames.
     static bool s_flip_logged = false;
     if (!s_flip_logged)
@@ -1358,7 +1332,7 @@ static void start_rasterizing(SDL_Renderer *ren)
 // Record a draw call, or draw it.
 //
 // A frame is only ever held back for one reason: it may still be short
-// enough to CROSS as a list, and then the presentation core composes it and
+// enough to cross as a list, and then the presentation core composes it and
 // this core paints nothing. The moment it is too long for that, everything
 // held is replayed into the virtual framebuffer and this command and every
 // later one go straight in.
@@ -1366,8 +1340,8 @@ static void start_rasterizing(SDL_Renderer *ren)
 // At the default crossing count of zero nothing is ever held: the first draw
 // call of the frame starts the painting.
 //
-// There is no third possibility. A frame is NEVER handed over as the
-// application's own texture, however simple its shape — that pointer belongs
+// There is no third possibility. A frame is never handed over as the
+// application's own texture, however simple its shape - that pointer belongs
 // to the application, which is free to destroy the texture or draw the next
 // frame into it the moment present returns, while the presentation core is
 // still reading it.
@@ -1376,10 +1350,10 @@ static void emit_cmd(SDL_Renderer *ren, const SDL2CirclePresentCmd &cmd)
     if (cmd.w <= 0 || cmd.h <= 0)
         return;
 
-    // A RENDER TARGET IS A FOURTH DESTINATION, and the only one that is not
+    // A render target is a fourth destination, and the only one that is not
     // the frame. The command is executed into the texture's pixels here and
     // now, at the texture's own pitch, by the same executor that composes the
-    // virtual framebuffer — a target is that machinery aimed somewhere else.
+    // virtual framebuffer - a target is that machinery aimed somewhere else.
     //
     // Nothing about it may be held back. The recording path exists so that a
     // short frame can cross to the presentation core as a list, and a target
@@ -1387,7 +1361,7 @@ static void emit_cmd(SDL_Renderer *ren, const SDL2CirclePresentCmd &cmd)
     // from it on its very next call, so the pixels have to be there.
     //
     // The store is asked for on every command rather than remembered, because
-    // the answer can change under a frame in flight — see
+    // the answer can change under a frame in flight - see
     // texture_write_buffer. When it does change, the content is carried
     // across with it, so a target keeps what was drawn into it before.
     if (ren->target)
@@ -1444,9 +1418,9 @@ extern "C" int SDL_GetDisplayBounds(int, SDL_Rect *rect)
     return 0;
 }
 
-// Where the mouse pointer is allowed to be (src/mouse.cpp): the CANVAS,
+// Where the mouse pointer is allowed to be (src/mouse.cpp): the canvas,
 // which is the same rectangle SDL_GetDisplayBounds answers with and the same
-// one render_target_w/h draws into — on one screen with no window manager,
+// one render_target_w/h draws into - on one screen with no window manager,
 // the application's coordinate space and the display are the same rectangle,
 // whatever the window's own reported size is under the switch. A plain read
 // of state core 0 wrote, so the mouse pump may ask from there.
@@ -1497,8 +1471,8 @@ struct CreateWindowArgs
 // already published.
 static void setup_shadow_present(void)
 {
-    // The shadow and the granted surface agree on stride by construction —
-    // the scanout width is derived from the grant's own pitch — so the
+    // The shadow and the granted surface agree on stride by construction -
+    // the scanout width is derived from the grant's own pitch - so the
     // surface is one contiguous block and a flat copy is the whole job.
     // Should that ever stop holding, decline the engine rather than
     // transfer the wrong shape.
@@ -1516,7 +1490,7 @@ static void setup_shadow_present(void)
         //
         // Giving the channel back and taking it again leaves a window in
         // which something else could take it. Nothing can: every DMA channel
-        // this library takes or gives back — the sound device's included —
+        // this library takes or gives back - the sound device's included -
         // is taken or given back on core 0 through the call mailbox, which
         // serves one call at a time and never yields inside one. An
         // application core is live by now, and its own calls arrive through
@@ -1580,12 +1554,12 @@ static void create_window_on0(void *p)
 
     // The library's own boot switches, in case this is reached without an
     // SDL_Init that already read them (SDL2Circle_ReadBootArgs is
-    // idempotent) — --rapi-vdisplay has to be known before the canvas size
+    // idempotent) - --rapi-vdisplay has to be known before the canvas size
     // below is decided.
     SDL2Circle_ReadBootArgs();
 
-    // Settle the canvas: the switch, then a declaration, then THIS window's
-    // own size — the first window is what makes a canvas out of nothing at
+    // Settle the canvas: the switch, then a declaration, then this window's
+    // own size - the first window is what makes a canvas out of nothing at
     // all. Idempotent and already core 0, so later windows just confirm what
     // is already settled.
     if (!resolve_display_size(a->w, a->h))
@@ -1610,11 +1584,11 @@ static void create_window_on0(void *p)
         return;
     }
 
-    // The window's OWN size: what was asked for under the switch — the
+    // The window's own size: what was asked for under the switch - the
     // canvas is fixed at the switch's resolution regardless, so the window
     // is honoured as an answer to the question it asked rather than folded
-    // into the canvas — and the canvas itself in every other case, where the
-    // window IS the canvas by construction (see the geometry comment above
+    // into the canvas - and the canvas itself in every other case, where the
+    // window is the canvas by construction (see the geometry comment above
     // s_canvas_w/h). Drawing always targets the canvas; render_target_w/h is
     // where that is settled, and it never reads this field.
     SDL_Window *win = new SDL_Window;
@@ -1623,15 +1597,15 @@ static void create_window_on0(void *p)
     win->h = s_switch_set ? a->h : s_canvas_h;
     // The window's state, and the flags a game branches on.
     //
-    // THIS WINDOW ALWAYS HAS INPUT FOCUS. There is one window and no window
+    // This window always has input focus. There is one window and no window
     // manager to take focus away from it, so a game asking whether it is
     // focused is asking a question with only one possible answer here. A
     // flag that is never set is indistinguishable from a flag that is false,
     // and a game told it has no focus pauses, stops drawing or ignores
-    // input — a black screen with a clean log, which is the worst shape a
+    // input - a black screen with a clean log, which is the worst shape a
     // failure can take.
     //
-    // THE FLAGS DESCRIBE THE MACHINE, NOT THE REQUEST. What an application
+    // The flags describe the machine, not the request. What an application
     // asked SDL_CreateWindow for is carried through only where this window
     // can honour it; every bit below is cleared because it would otherwise
     // report the request back to the asker as though it had been granted.
@@ -1642,7 +1616,7 @@ static void create_window_on0(void *p)
     //   OPENGL, VULKAN,     there is no accelerated renderer of any kind
     //   METAL               here. A game that treats the window flag as the
     //                       test then takes its software path immediately,
-    //                       which is the path that works — rather than going
+    //                       which is the path that works - rather than going
     //                       down an accelerated one and finding out at
     //                       SDL_GL_CreateContext, or never checking and
     //                       drawing nothing at all. Upstream SDL reaches the
@@ -1661,7 +1635,7 @@ static void create_window_on0(void *p)
     win->hit_test_data = nullptr;
 
     // Publish the presentation geometry before the window becomes visible to
-    // the application core or the worker. This side is SCANOUT geometry, and
+    // the application core or the worker. This side is scanout geometry, and
     // it is the executor's alone: a present command is still in canvas
     // coordinates right up to the moment the executor maps it, and the
     // placement it maps into was settled by resolve_display_size above, out
@@ -1671,7 +1645,7 @@ static void create_window_on0(void *p)
     s_fb_w = s_scanout_w;
     s_fb_h = s_scanout_h;
 
-    // Believe the GRANT, not the request: double buffering draws and pans
+    // Believe the grant, not the request: double buffering draws and pans
     // across 2*h rows, and a firmware that grants fewer rows than that (the
     // Pi 5 grants the native mode's row count regardless of the virtual
     // height it acknowledges) would have every second frame written partly
@@ -1692,7 +1666,7 @@ static void create_window_on0(void *p)
     }
     else
     {
-        // Fit leaves borders no command will ever write — every present
+        // Fit leaves borders no command will ever write - every present
         // command is clipped to the canvas rectangle. Black them once, here,
         // across every granted row so both halves start clean. (The shadow
         // path gets this from calloc.)
@@ -1717,9 +1691,9 @@ static void create_window_on0(void *p)
 
     s_window = win;
 
-    // THE SCREEN STOPS BEING DRAWN ON HERE. Creating a window is the
-    // application taking the framebuffer — SDL_Init only brought video up,
-    // which is not the same thing — and the console and the application must
+    // The screen stops being drawn on here. Creating a window is the
+    // application taking the framebuffer - SDL_Init only brought video up,
+    // which is not the same thing - and the console and the application must
     // never hold it at once. Already core 0, so no marshalling is needed;
     // src/console.cpp's own lock covers a line already part way onto the
     // screen.
@@ -1771,7 +1745,7 @@ extern "C" SDL_Window *SDL_GetWindowFromID(Uint32 id)
 }
 
 // The renderer belonging to a window. There is one of each, so the answer is
-// whichever renderer was made — tracked here rather than on the window,
+// whichever renderer was made - tracked here rather than on the window,
 // which does not otherwise know it has one.
 static SDL_Renderer *s_renderer = nullptr;
 
@@ -1808,17 +1782,17 @@ extern "C" void SDL_DestroyWindow(SDL_Window *win)
 
         // Give the screen back: this was the window holding the
         // framebuffer, and it no longer does. Marshalled to core 0 for the
-        // same reason the take is (create_window_on0) — the drawing belongs
+        // same reason the take is (create_window_on0) - the drawing belongs
         // to the core that owns the devices.
         SDL2Circle_CallOn0(grant_screen_on0, nullptr);
     }
-    // win->fb is THE framebuffer (s_fb0), kept for the process lifetime:
+    // win->fb is the framebuffer (s_fb0), kept for the process lifetime:
     // deleting it cannot return the firmware's allocation, and the next
     // window must adopt the same grant rather than allocate a leak.
     //
     // The present path (the shadow buffers and their DMA channel, or the
     // staging frame) belongs to that same grant and outlives the window with
-    // it — see s_present_ready. Releasing it here would give the next window
+    // it - see s_present_ready. Releasing it here would give the next window
     // nothing to reuse, and taking a fresh DMA channel each time is what
     // empties the pool.
     delete win;
@@ -1838,7 +1812,7 @@ extern "C" Uint32 SDL_GetWindowFlags(SDL_Window *win)
     // Mouse focus is not stored, because it can change after the window is
     // made: a USB mouse may be plugged in or pulled out at any time. It is
     // asked of the mouse subsystem here so that this answer and
-    // SDL_GetMouseFocus can never disagree — a game that tests the flag and
+    // SDL_GetMouseFocus can never disagree - a game that tests the flag and
     // a game that calls the function are asking the same question, and one
     // of them getting a different answer is a bug nobody would think to look
     // for.
@@ -1851,7 +1825,7 @@ extern "C" Uint32 SDL_GetWindowFlags(SDL_Window *win)
 }
 
 // There is no title bar to put a title in, but an application that sets one
-// and reads it back gets what it set — some use it as their own record of
+// and reads it back gets what it set - some use it as their own record of
 // what is on screen.
 extern "C" void SDL_SetWindowTitle(SDL_Window *win, const char *title)
 {
@@ -2014,16 +1988,16 @@ extern "C" const SDL_Rect *SDL_GetWindowMouseRect(SDL_Window *)
 
 // A hit test exists so a window manager can be told which part of a window
 // drags it or resizes it, in place of a title bar. There is no window
-// manager here — one window, filling the one display, nothing else on the
-// glass to hand a region to — so the condition it exists to answer can never
+// manager here - one window, filling the one display, nothing else on the
+// glass to hand a region to - so the condition it exists to answer can never
 // come up, and the callback can never fire. Upstream reserves -1 for
 // "platform does not support this"; that would be honest for a board with
 // no window manager at all, except that the application calling this one
 // treats -1 as fatal. So the call is accepted instead: the callback and its
 // data are recorded, in case a future caller reads them back, and success is
 // returned, matching what SDL_SetWindowHitTest promises when a callback is
-// genuinely in effect. A NULL callback means what it means upstream —
-// disable hit-testing — which costs nothing extra to honour, since hit
+// genuinely in effect. A NULL callback means what it means upstream -
+// disable hit-testing - which costs nothing extra to honour, since hit
 // testing was never going to run either way.
 extern "C" int SDL_SetWindowHitTest(SDL_Window *win, SDL_HitTest callback, void *callback_data)
 {
@@ -2064,7 +2038,7 @@ extern "C" SDL_bool SDL_IsScreenSaverEnabled(void) { return SDL_FALSE; }
 //
 // There is one mode, it is the one the panel is in, and it cannot be
 // changed from here. A request for a different one is accepted and changes
-// nothing, and every query answers with the mode actually in force — which
+// nothing, and every query answers with the mode actually in force - which
 // is what an application checks before deciding how much it can draw.
 // ---------------------------------------------------------------------------
 
@@ -2094,7 +2068,7 @@ extern "C" SDL_DisplayMode *SDL_GetClosestDisplayMode(int displayIndex,
 }
 
 // No panel reports its physical size here, and SDL's contract is to fail
-// rather than invent one — an application that scales its text by the answer
+// rather than invent one - an application that scales its text by the answer
 // would lay itself out to a number that means nothing.
 extern "C" int SDL_GetDisplayDPI(int, float *ddpi, float *hdpi, float *vdpi)
 {
@@ -2107,7 +2081,7 @@ extern "C" int SDL_GetDisplayDPI(int, float *ddpi, float *hdpi, float *vdpi)
 
 // There is no compositor between the canvas and the panel, and no scaling
 // factor of the kind a desktop applies on a high-density display, so a
-// drawable pixel is a CANVAS pixel — not necessarily a window pixel: under
+// drawable pixel is a canvas pixel - not necessarily a window pixel: under
 // the --rapi-vdisplay switch a window may report a size of its own that the
 // canvas does not share (see the geometry comment above s_canvas_w/h).
 extern "C" void SDL_GL_GetDrawableSize(SDL_Window *win, int *w, int *h)
@@ -2147,7 +2121,7 @@ extern "C" int SDL_GetWindowGammaRamp(SDL_Window *, Uint16 *, Uint16 *, Uint16 *
 // There is no window system to describe, and SDL_syswm.h's structure is
 // entirely made of window-system handles. Declared with the structure left
 // opaque: naming it would mean including SDL_syswm.h here, whose contents
-// are decided by which window system the configuration names — and this
+// are decided by which window system the configuration names - and this
 // configuration names none.
 struct SDL_SysWMinfo;
 extern "C" SDL_bool SDL_GetWindowWMInfo(SDL_Window *, SDL_SysWMinfo *)
@@ -2201,34 +2175,22 @@ extern "C" int SDL_UpdateWindowSurfaceRects(SDL_Window *win,
     if (!win || !s_window_surface)
         return SDL_SetError("SDL_UpdateWindowSurfaceRects: no window surface");
 
-    // THE WINDOW SURFACE IS A FRAME LIKE ANY OTHER, and it takes the same
+    // The window surface is a frame like any other, and it takes the same
     // route to the glass: mapped from canvas coordinates onto the fitted
     // rectangle on the scanout, then handed to the presentation core.
     //
-    // Both halves of that used to be missing here, and each on its own is
-    // enough to put the picture in the wrong place. The command was built in
-    // CANVAS coordinates and executed unmapped, so a canvas smaller than the
-    // scanout landed at its own size in the corner with the fit — already
-    // computed, already logged — ignored; and it was executed on whichever
-    // core called, so the scale that the presentation core exists to do was
-    // done by the application's core instead. A game that draws through a
-    // renderer never saw either, which is why this survived: the renderer
-    // path does both, a few hundred lines up.
-    //
-    // WHY THE WHOLE CANVAS IS CARRIED ACROSS EACH TIME, and not just the
-    // rectangles the caller named. The surface handed over has to be one the
+    // The whole canvas is carried across each time, not just the rectangles
+    // the caller named. The surface handed over has to be one the
     // application cannot write while the presentation core is still reading
     // it, so the frame is copied into the virtual framebuffer, which is
     // double buffered exactly for that: this frame goes into the buffer the
     // worker is not holding. Copying only the named rectangles into that
-    // buffer would leave everything else in it showing the frame BEFORE last,
-    // so what is copied is the whole surface. It buys back far more than it
-    // costs — the scale it moves off this core is the larger picture, at
-    // scanout size, every frame. The named rectangles are therefore read for
-    // nothing but their bounds, and this path ignores them.
+    // buffer would leave everything else in it showing the previous frame,
+    // so what is copied is the whole surface; the named rectangles are read
+    // for nothing but their bounds, and this path otherwise ignores them.
     //
-    // The window IS the canvas, so these agree by construction — but the copy
-    // below writes canvas-sized storage from window-sized rows, and a
+    // The window is the canvas, so these agree by construction - but the
+    // copy below writes canvas-sized storage from window-sized rows, and a
     // disagreement would write past the end of it. Tested rather than
     // assumed.
     (void)rects; (void)numrects;
@@ -2352,10 +2314,10 @@ static void frame_scratch_next(SDL_Renderer *ren)
 // ---------------------------------------------------------------------------
 // The application's coordinates, and where they land on the window
 //
-// Three things sit between what an application draws and what the window
-// receives, in the order SDL2 applies them: the render scale, the logical
-// size (which scales and centres), and the viewport (which offsets). One
-// function does all three, and every entry point that takes a destination
+// Between what an application draws and what the window receives sit the
+// render scale, the logical size (which scales and centres), and the
+// viewport (which offsets), applied in that order by SDL2. One function
+// does all three, and every entry point that takes a destination
 // rectangle goes through it, so an application cannot find one call honouring
 // its logical size and another ignoring it.
 // ---------------------------------------------------------------------------
@@ -2525,7 +2487,7 @@ extern "C" int SDL_CreateWindowAndRenderer(int width, int height,
 }
 
 // The size of what is being drawn into: the render target's own size while
-// one is set, the CANVAS otherwise — render_target_w/h, not the window's own
+// one is set, the canvas otherwise - render_target_w/h, not the window's own
 // reported size, which under the switch is not necessarily the same thing.
 extern "C" int SDL_GetRendererOutputSize(SDL_Renderer *ren, int *w, int *h)
 {
@@ -2578,9 +2540,9 @@ extern "C" SDL_Texture *SDL_CreateTexture(SDL_Renderer *, Uint32 format,
     }
     if (format == SDL_PIXELFORMAT_INDEX8)
     {
-        // SDL2 gives a texture no palette — SDL_UpdateTexture takes pixels
-        // and nothing else — so an indexed texture has no way to say what
-        // its indices mean. A paletted game wants an indexed SURFACE, which
+        // SDL2 gives a texture no palette - SDL_UpdateTexture takes pixels
+        // and nothing else - so an indexed texture has no way to say what
+        // its indices mean. A paletted game wants an indexed surface, which
         // this library does provide, converted on the way to a texture.
         SDL_SetError("indexed textures have no palette in SDL2; use an "
                      "indexed surface and convert it");
@@ -2640,23 +2602,20 @@ static inline bool texture_is_native(const SDL_Texture *tex)
 // provably enough. MAME's software path redraws the full texture each
 // frame; the partial-update path still copies the stable content across
 // first.
-// Whether a store is spoken for: named by a frame that has been POSTED and
+// Whether a store is spoken for: named by a frame that has been posted and
 // not yet finished with.
 //
-// IT IS NOT ENOUGH TO ASK WHETHER THE WORKER HAS STARTED READING IT, and the
-// difference is worth writing down because the weaker test looks obviously
-// better and tears. A store carries ONE sequence — the last frame to name it
-// — so once a newer frame overwrites that mark, an older frame still queued
-// to read the same store is forgotten. Allowing the writer into a
-// posted-but-unstarted store is what lets a second frame claim it, and the
-// worker then reaches the first frame and reads a store two writers have
-// been through. Simulated with a worker slower than the poster, that tears
-// on essentially every frame.
+// Testing only whether the worker has started reading a store is not
+// enough. A store carries one sequence - the last frame to name it - so
+// once a newer frame overwrites that mark, an older frame still queued to
+// read the same store is forgotten, and allowing the writer into a
+// posted-but-unstarted store lets a second frame claim it while the worker
+// still has to reach the first.
 //
-// A store named by the frame still being BUILT is correctly free: it carries
-// a sequence above the posted one, and nothing has been sent that could read
-// it. Without that an application drawing to one texture twice before
-// presenting would wait for a frame nobody has posted.
+// A store named by the frame still being built is correctly free: it
+// carries a sequence above the posted one, and nothing has been sent that
+// could read it. Without that an application drawing to one texture twice
+// before presenting would wait for a frame nobody has posted.
 static bool texture_store_busy(const SDL_Texture *tex, u8 i)
 {
     const u64 b = tex->busy_seq[i];
@@ -2668,21 +2627,12 @@ static bool texture_store_busy(const SDL_Texture *tex, u8 i)
 // Hand back a store the application may write.
 //
 // Under the core split a posted frame holds a raw pointer into one of these,
-// and the worker reads it for as long as its scale runs — so the one thing
-// this must never do is return the store that scale is reading.
-//
-// WHAT WENT WRONG BEFORE, since the fix is easier to keep if the fault it
-// replaced is written down: the old rule flipped stores when the last
-// RECORDED copy named the one about to be written. That is a proxy for the
-// question and not the question. It tracks where the WRITER went last; what
-// matters is what the READER still holds, and the two agree only by
-// coincidence. The result when they disagreed was a frame torn between two
-// pictures — every pitch correct, every pixel real, all of it in the wrong
-// place, which is why it read as a stride fault and was not one.
-//
-// (An earlier account of this blamed frames that were recorded and never
-// posted. There are none: every SDL_RenderPresent posts. The proxy was
-// simply the wrong question.)
+// and the worker reads it for as long as its scale runs, so this must never
+// return the store that scale is reading. Tracking the store the last
+// recorded copy named is not the same test: it tracks where the writer went
+// last, not what the reader still holds, and the two agree only by
+// coincidence - a mismatch produces a frame torn between two pictures, every
+// pitch correct and every pixel real, just composed from the wrong stores.
 static u8 *texture_write_buffer(SDL_Texture *tex, bool preserve)
 {
     if (!SDL2Circle_SplitActive())
@@ -2691,14 +2641,12 @@ static u8 *texture_write_buffer(SDL_Texture *tex, bool preserve)
     if (!texture_store_busy(tex, tex->widx))
         return tex->pixels[tex->widx];      // still ours; no copy needed
 
-    // THREE STORES, AND THE THIRD IS WHAT REMOVES THE WAIT.
-    //
-    // With two, a poster running ahead of the worker has nowhere to put a
-    // frame: one store is being read and the other holds the frame already
-    // posted behind it, so the writer stops. That is the game core waiting
-    // for the presentation core, which is the thing this must not do — and
-    // simulation puts it at roughly every other frame once the worker is
-    // slower than the poster. With three there is always one that is neither.
+    // Three stores; the third is what removes the wait. With two, a poster
+    // running ahead of the worker has nowhere to put a frame: one store is
+    // being read and the other holds the frame already posted behind it, so
+    // the writer stops - the game core waiting on the presentation core,
+    // which this must not do. With three there is always one that is
+    // neither.
     //
     // Taken in rotation rather than by a flip, so a store released by the
     // worker comes back into use rather than one being favoured.
@@ -2884,7 +2832,7 @@ extern "C" void SDL_DestroyTexture(SDL_Texture *tex)
     if (s_renderer && s_renderer->target == tex)
         SDL_SetRenderTarget(s_renderer, nullptr);
     // A frame the worker has not finished with may still name this texture's
-    // pixels as its source — the reduced frame IS the texture, in place.
+    // pixels as its source - the reduced frame is the texture, in place.
     SDL2Circle_PresentQuiesce();
     free(tex->pixels[0]);
     free(tex->pixels[1]);
@@ -2921,8 +2869,8 @@ extern "C" int SDL_LockTexture(SDL_Texture *tex, const SDL_Rect *rect,
         return 0;
     }
 
-    // The application must see its OWN format under the lock, so it gets a
-    // staging buffer the size of the whole texture — kept between locks,
+    // The application must see its own format under the lock, so it gets a
+    // staging buffer the size of the whole texture - kept between locks,
     // because a streaming texture is locked every frame and reallocating it
     // each time is the cost this path is trying to avoid.
     const int need_pitch = tex->w * tex->app_bpp;
@@ -3073,17 +3021,17 @@ extern "C" int SDL_RenderCopy(SDL_Renderer *ren, SDL_Texture *tex,
     cmd.alphamod = tex->alphamod;
     emit_cmd(ren, cmd);
 
-    // A command the renderer DREW has already read this store, here, on this
-    // core, before returning — the pixels are in the virtual framebuffer and
+    // A command the renderer drew has already read this store, here, on this
+    // core, before returning - the pixels are in the virtual framebuffer and
     // the store is the application's again immediately.
     //
-    // A command the renderer HELD BACK is a different matter: it will cross
+    // A command the renderer held back is a different matter: it will cross
     // as a list, carrying a raw pointer into this store, so the store is
-    // spoken for by the frame being assembled — which will be posted as the
-    // next sequence — and nothing may write here until the worker
+    // spoken for by the frame being assembled - which will be posted as the
+    // next sequence - and nothing may write here until the worker
     // acknowledges that frame.
     //
-    // A copy INTO A RENDER TARGET was drawn as well, wherever it came from:
+    // A copy into a render target was drawn as well, wherever it came from:
     // nothing a target does crosses to the presentation core, so no frame
     // can be holding this store either.
     if (!ren->rasterizing && !ren->target)
@@ -3093,10 +3041,10 @@ extern "C" int SDL_RenderCopy(SDL_Renderer *ren, SDL_Texture *tex,
 
 // A copy that may be mirrored. The texture holds one set of pixels and has
 // no mirrored copy of its own, so the mirrored region is written into the
-// frame's scratch arena and copied from there — which is why the arena
+// frame's scratch arena and copied from there - which is why the arena
 // exists, and why it lasts exactly as long as a recorded command does.
 //
-// ROTATION IS REFUSED. Turning a picture by an arbitrary angle means
+// Rotation is refused. Turning a picture by an arbitrary angle means
 // resampling every destination pixel from a source position between four
 // others, which is a different piece of work from a blit and is not here.
 // Refusing says so; drawing it unrotated would be a picture that is wrong in
@@ -3196,7 +3144,7 @@ extern "C" int SDL_RenderCopyEx(SDL_Renderer *ren, SDL_Texture *tex,
 }
 
 // Reads back what has been drawn, out of whatever is being drawn into: the
-// render target where one is set, and otherwise the virtual framebuffer —
+// render target where one is set, and otherwise the virtual framebuffer -
 // the only framebuffer SDL has, and the one every frame is composed into.
 // The panel does not come into it: it is a different size, it holds the
 // picture fitted and centred inside a black margin, and none of that is
@@ -3213,7 +3161,7 @@ extern "C" int SDL_RenderReadPixels(SDL_Renderer *ren, const SDL_Rect *rect,
         return SDL_SetError("SDL_RenderReadPixels: no renderer or destination");
 
     // The read comes from whatever is being drawn into. A render target is
-    // already complete — every call into it was executed as it was made —
+    // already complete - every call into it was executed as it was made -
     // so there is nothing to finish first, and the store the last of them
     // went into is the one holding the content.
     const u8 *surface;
@@ -3425,8 +3373,8 @@ extern "C" SDL_bool SDL_RenderIsClipEnabled(SDL_Renderer *ren)
 //
 // Two destinations, and the renderer is aimed at one of them at a time: the
 // frame, or a texture created with SDL_TEXTUREACCESS_TARGET. Everything about
-// the second follows from one fact — a target's pixels are executed into as
-// each call is made, by the same executor that composes the frame — so the
+// the second follows from one fact - a target's pixels are executed into as
+// each call is made, by the same executor that composes the frame - so the
 // only work here is aiming, and the coordinate state that goes with the aim.
 // ---------------------------------------------------------------------------
 
@@ -3706,9 +3654,9 @@ extern "C" int SDL_RenderSetVSync(SDL_Renderer *ren, int vsync)
     return 0;
 }
 
-// A texture holds ARGB8888, so a surface in any other format — or one
+// A texture holds ARGB8888, so a surface in any other format - or one
 // carrying a colour key, which has to become real transparency before the
-// key is lost — is converted once here rather than at every update.
+// key is lost - is converted once here rather than at every update.
 extern "C" SDL_Texture *SDL_CreateTextureFromSurface(SDL_Renderer *ren,
                                                      SDL_Surface *surf)
 {
@@ -3755,12 +3703,12 @@ extern "C" SDL_Texture *SDL_CreateTextureFromSurface(SDL_Renderer *ren,
     // SDL carries the surface's blending across to the texture, so a surface
     // that blended goes on blending once it is one.
     //
-    // A COLOUR KEY OVERRIDES THAT, and it has to. A key is not a blend mode:
-    // a surface may carry one while its own blend mode says NONE, which is
+    // A colour key overrides that: a key is not a blend mode, and a surface
+    // may carry one while its own blend mode says none, which is
     // what SDL_SetColorKey leaves behind and what an image loaded from a
     // paletted file therefore has. The key became per-pixel alpha in the
     // conversion above, and a texture drawn with blending off would put those
-    // transparent pixels on screen as opaque black — a sprite in a black box,
+    // transparent pixels on screen as opaque black - a sprite in a black box,
     // erasing whatever it was meant to sit in front of. So a keyed surface
     // makes a blending texture, as SDL2 does.
     SDL_BlendMode blend = SDL_BLENDMODE_NONE;
@@ -3939,32 +3887,23 @@ unsigned g_SDL2CirclePresents = 0;
 
 // ---- what crosses to the presentation core ---------------------------------
 //
-// TWO THINGS, AND NOTHING ELSE.
+// What crosses is the virtual framebuffer - a bitmap at canvas resolution
+// that this library owns and composes itself, double buffered so the buffer
+// handed over is never the one the application's next frame is drawn into -
+// or, when the frame is short enough for the far side to compose it, a list
+// of commands in canvas coordinates. That crossing count is a build-time
+// choice (SDL2CIRCLE_PRESENT_MAX_CMDS, described in sdl2circle.h), and at
+// the default of zero only an empty frame ever takes it.
 //
-//   THE VIRTUAL FRAMEBUFFER, a bitmap at canvas resolution that this library
-//   owns and composed itself. It is double buffered, so the buffer handed
-//   over is never the one the application's next frame is drawn into.
-//
-//   A LIST OF COMMANDS in canvas coordinates, when the frame is short enough
-//   for the far side to compose it. That is a build-time choice
-//   (SDL2CIRCLE_PRESENT_MAX_CMDS, described in sdl2circle.h) and at the
-//   default of zero only an empty frame ever takes it.
-//
-// NEVER THE APPLICATION'S OWN MEMORY. This used to recognise the commonest
-// frame there is — clear the target, blit one opaque texture over it — and
-// send that texture straight across, in place, unpainted. It cost nothing and
-// it was wrong twice over: the presentation core went on reading a texture
-// the application was free to destroy or redraw the moment present returned,
-// and on that path SDL's framebuffer was never written at all, so the one
-// framebuffer SDL is supposed to have did not exist and anything that tried
-// to read it (SDL_RenderReadPixels) had nothing to read.
-//
-// What replaced it is one rule with no exceptions: every frame is composed
-// into the virtual framebuffer, and the virtual framebuffer is what crosses.
-// The price is one full-canvas copy per frame on this core, and for a frame
-// that used to be recognised, a second resample — the canvas is resampled
-// onto the scanout where before the texture went straight there. Both were
-// weighed and accepted.
+// Never the application's own memory: the presentation core must never be
+// handed a pointer into a texture or surface the application owns, because
+// the application is free to destroy or redraw it the moment present
+// returns while that core is still reading it. Every frame is composed into
+// the virtual framebuffer first, and the virtual framebuffer - or the
+// command list describing it - is what crosses. The cost is one full-canvas
+// copy per frame on this core, and a second resample at present time: the
+// canvas is resampled onto the scanout rather than a texture going straight
+// there.
 
 extern "C" void SDL_RenderPresent(SDL_Renderer *ren)
 {
@@ -3991,7 +3930,7 @@ extern "C" void SDL_RenderPresent(SDL_Renderer *ren)
     else
     {
         // Everything else was composed here, into the virtual framebuffer,
-        // as it was drawn. That surface IS the frame, at canvas resolution
+        // as it was drawn. That surface is the frame, at canvas resolution
         // and at the canvas origin: placing it on the panel is the executor's
         // job and not this one's.
         start_rasterizing(ren);
@@ -4037,8 +3976,8 @@ extern "C" void SDL_RenderPresent(SDL_Renderer *ren)
     }
 
     // Only a grant of two halves has a second half to draw into. On a
-    // single-half grant the half is not a target at all — the executor and
-    // the flip both ignore it and work through the shadow — and naming half 1
+    // single-half grant the half is not a target at all - the executor and
+    // the flip both ignore it and work through the shadow - and naming half 1
     // there would address memory past the grant.
     if (s_fb_halves == 2)
         ren->back ^= 1;

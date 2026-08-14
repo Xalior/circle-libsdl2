@@ -1,8 +1,8 @@
 //
-// mouse.cpp — Circle's USB mouse behind the SDL mouse API.
+// mouse.cpp - Circle's USB mouse behind the SDL mouse API.
 //
 // Circle binds a USB mouse and publishes it as the character device "mouse1".
-// This file takes it in RAW mode — no Setup(), no Circle-drawn cursor —
+// This file takes it in raw mode - no Setup(), no Circle-drawn cursor -
 // because the pointer belongs to whoever is drawing the screen, which here is
 // the application. What arrives is a stream of reports: how far the mouse
 // moved since the last one, which buttons are down, and how far the wheel
@@ -10,19 +10,19 @@
 //
 // So an absolute position exists only because something clamps the movement
 // to a screen. That is what this file does, against the rectangle the video
-// layer calls the pointer bounds — the application's window while one exists,
+// layer calls the pointer bounds - the application's window while one exists,
 // and the declared canvas before that. SDL_GetMouseState's coordinates are
 // that clamped position and nothing else.
 //
-// WHICH CORE DOES WHAT, exactly as joystick.cpp. USB belongs to core 0, so
+// Which core does what is exactly as joystick.cpp. USB belongs to core 0, so
 // attach, detach, report decoding and event synthesis all happen there, from
-// SDL2Circle_MousePump. Everything an application asks afterwards — where is
-// the pointer, what is held — is answered from the atomics below by whichever
+// SDL2Circle_MousePump. Everything an application asks afterwards - where is
+// the pointer, what is held - is answered from the atomics below by whichever
 // core asks, with no call to core 0 at all.
 //
 // Circle's report callback runs in interrupt context, and unlike a gamepad's
-// a mouse report cannot be reduced to a snapshot: REPORTS ARE QUEUED WHOLE
-// AND IN ORDER, never folded into a running displacement, because a button
+// a mouse report cannot be reduced to a snapshot: reports are queued whole
+// and in order, never folded into a running displacement, because a button
 // edge arriving with a movement is a different event from the same movement
 // without it. Press-drag-release is exactly that ordering, and a game reads
 // the position each button edge carries.
@@ -54,7 +54,7 @@ std::atomic<int>    s_x{0};
 std::atomic<int>    s_y{0};
 std::atomic<Uint32> s_buttons{0};       // SDL's mask, SDL_BUTTON_LMASK & co.
 
-// SDL_GetRelativeMouseState is CONSUMING: it returns the movement since the
+// SDL_GetRelativeMouseState is consuming: it returns the movement since the
 // last call and resets the accumulator. The producer adds to these, the
 // caller takes the whole value away.
 std::atomic<int> s_relx{0};
@@ -65,18 +65,18 @@ std::atomic<bool> s_attached{false};
 // SDL's relative mode: the pointer is hidden, held inside the window, and
 // motion is reported as deltas. Nothing here draws a cursor to hide, and the
 // position is clamped to the window in both modes, so what the flag actually
-// changes is that entering it starts the delta accumulator from zero — the
+// changes is that entering it starts the delta accumulator from zero - the
 // application asked for movement from now, not movement since whenever it
 // last looked.
 SDL_bool s_relative = SDL_FALSE;
 
-// SDL_ShowCursor is a COUNTER, not a boolean: every hide has to be matched by
+// SDL_ShowCursor is a counter, not a boolean: every hide has to be matched by
 // a show. A query (-1) must not disturb it.
 int s_cursor_shown = 1;
 
 // SDL hands applications an opaque SDL_Cursor*, and a null return means
-// failure. There is no cursor to draw — the application owns every pixel on
-// this screen — so every constructor hands back one shared non-null token:
+// failure. There is no cursor to draw - the application owns every pixel on
+// this screen - so every constructor hands back one shared non-null token:
 // callers keep working, and nothing here dereferences it. SDL_FreeCursor must
 // therefore not free it.
 SDL_Cursor *const s_cursor = reinterpret_cast<SDL_Cursor *>(-1);
@@ -89,7 +89,7 @@ const Uint32 WINDOW_ID = 1;
 // SDL's mouse instance ID. SDL2 has one pointer whatever is plugged in, so
 // there is one instance and it is 0.
 //
-// Circle does NOT merge mice: each one it binds gets its own device number,
+// Circle does not merge mice: each one it binds gets its own device number,
 // so a second mouse becomes "mouse2" and this file never looks at it. One
 // pointer, driven by the first mouse to arrive.
 const Uint32 MOUSE_ID = 0;
@@ -104,7 +104,7 @@ const Uint32 MOUSE_ID = 0;
 // Overflowing costs at most a click, never a stuck button: the queue's tail
 // always carries the newest button state, and edges are found by comparing
 // against it, so the pump's view of the buttons agrees with the hardware
-// again at the end of every pass. Only a press and its release BOTH arriving
+// again at the end of every pass. Only a press and its release both arriving
 // inside one overflow can vanish.
 //
 // The lock is taken at IRQ level because the producer is Circle's report
@@ -126,7 +126,7 @@ CSpinLock s_qlock(IRQ_LEVEL);
 
 // Two hands can be on this mouse: the physical device, and the robot-hands
 // macro channel in input.cpp. Each owns its own button word and every report
-// carries the UNION of them, so a script pressing a button cannot release one
+// carries the union of them, so a script pressing a button cannot release one
 // the operator is holding, and a script releasing its own cannot release the
 // operator's. Both are only ever touched under the queue lock.
 unsigned s_physButtons = 0;
@@ -184,7 +184,7 @@ void MouseRemovedHandler(CDevice *, void *)
 {
     // The report the hardware can no longer send. A mouse pulled out with a
     // button held would otherwise never produce the release edge, and a drag
-    // begun with it would run until the machine was rebooted — so the removal
+    // begun with it would run until the machine was rebooted - so the removal
     // posts an all-buttons-up report down the ordinary path and lets the pump
     // find the edge as usual.
     SDL2Circle_MouseReport(0, 0, 0, 0);
@@ -244,7 +244,7 @@ void PumpReport(const Report &r)
         s_x.store(x, std::memory_order_release);
         s_y.store(y, std::memory_order_release);
 
-        // The relative reading is the movement the mouse REPORTED, not the
+        // The relative reading is the movement the mouse reported, not the
         // movement the clamp allowed: an application in relative mode is
         // steering with the device, and a pointer parked against the edge of
         // the screen must not silently stop feeding it.
@@ -337,7 +337,7 @@ void QueueReport(int dx, int dy, int wheel, unsigned *pHand, unsigned buttons)
         // A queue this deep only fills if the pump has stopped draining it.
         // Fold the displacement into the newest report and let the newest
         // button state stand: displacement is additive, so no motion is lost,
-        // and the tail always carrying the LATEST button state is what
+        // and the tail always carrying the latest button state is what
         // guarantees the pump's view of the buttons is right again by the end
         // of the pass.
         Report *r = &s_queue[QUEUE_SIZE - 1];
@@ -423,7 +423,7 @@ Uint32 SDL_GetGlobalMouseState(int *x, int *y)
     return SDL_GetMouseState(x, y);
 }
 
-// CONSUMING: this returns the movement since the last call and resets the
+// Consuming: this returns the movement since the last call and resets the
 // accumulator, so two callers cannot both have it.
 Uint32 SDL_GetRelativeMouseState(int *x, int *y)
 {
@@ -435,8 +435,8 @@ Uint32 SDL_GetRelativeMouseState(int *x, int *y)
 }
 
 // Focus follows the pointer. With one window there is nowhere else for it to
-// be, so the answer is that window whenever a mouse is attached, and NULL —
-// SDL's "no window has mouse focus" — when there is no pointer at all.
+// be, so the answer is that window whenever a mouse is attached, and NULL -
+// SDL's "no window has mouse focus" - when there is no pointer at all.
 SDL_Window *SDL_GetMouseFocus(void)
 {
     if (!s_attached.load(std::memory_order_acquire))
@@ -474,9 +474,9 @@ int SDL_CaptureMouse(SDL_bool enabled)
 
 // --- warping ----------------------------------------------------------------
 //
-// Nothing has to move a physical mouse for this: the position IS the shim's,
+// Nothing has to move a physical mouse for this: the position is the shim's,
 // so a warp is a store. It is a store from the application's core while core 0
-// may be applying a report, and the next report wins — which is what a mouse
+// may be applying a report, and the next report wins - which is what a mouse
 // being moved during a warp means anyway.
 //
 // SDL delivers a motion event for a warp unless relative mode has it turned
@@ -562,7 +562,7 @@ void SDL_FreeCursor(SDL_Cursor *cursor)
 
 // SDL_ENABLE shows, SDL_DISABLE hides, SDL_QUERY (-1) asks without changing
 // anything. The return is always the resulting visibility. Nothing draws a
-// cursor here, so the counter is all there is to keep — and keeping it is what
+// cursor here, so the counter is all there is to keep - and keeping it is what
 // lets an application that hides and shows in pairs read back what it set.
 int SDL_ShowCursor(int toggle)
 {

@@ -1,24 +1,24 @@
 //
-// perf.cpp — per-core, per-category cycle accounting over the PMU.
+// perf.cpp - per-core, per-category cycle accounting over the PMU.
 //
 // Answers "where does each core's time go" by measurement: instrumented
 // sections (render, wait, audio pump, input pump, scheduler yield)
 // accumulate PMCCNTR_EL0 deltas into the bank of the core they ran on;
 // everything unaccounted on a core between reports is that core's own
-// uninstrumented compute — the application on its core, kernel and servo
-// housekeeping on core 0. IRQ time is not separable on this stack —
+// uninstrumented compute - the application on its core, kernel and servo
+// housekeeping on core 0. IRQ time is not separable on this stack -
 // interrupts land inside whichever section they preempt; splitting them
 // out needs an IRQ-entry hook Circle does not expose.
 //
 // The PMU cycle counter is per-core hardware, so each core enables its
 // own, lazily, the first time instrumented code runs there. A core that
-// never runs shim code never reports — under the single-core build the
+// never runs shim code never reports - under the single-core build the
 // report is core 0 alone, and further cores appear the moment a split
 // host puts work on them.
 //
 // Off by default: SDL2Circle_SetPerfInterval(seconds) arms it, and reports
 // print through the logger from the pump's heartbeat. That call is the only
-// way in — the library reads no boot configuration for it, and how a host
+// way in - the library reads no boot configuration for it, and how a host
 // decides to make the call is the host's design.
 //
 #include "sdl2circle.h"
@@ -53,13 +53,12 @@ static std::atomic<unsigned> s_interval{0};   // seconds; 0 = disabled
 static u64 s_lastReportTicks;     // CNTVCT at last report
 
 // The processor clock, needed to turn wall time into the cycles a core
-// WOULD have counted had it never slept.
+// would have counted had it never slept.
 //
-// MEASURED, not asked for. It used to come from a firmware query, and a
-// firmware query can answer zero — which divides into an awake figure of
-// exactly 100% on every core, indistinguishable from a machine that never
-// sleeps. A number the whole report is divided by must not have a failure
-// mode that looks like an answer.
+// Measured rather than asked for: a firmware query can answer zero, which
+// divides into an awake figure of exactly 100% on every core, indistinguishable
+// from a machine that never sleeps. A number the whole report is divided by
+// must not have a failure mode that looks like an answer.
 //
 // Counting cycles against the system counter over a short interval cannot
 // fail and cannot return zero, needs nothing outside the core it runs on,
@@ -197,7 +196,7 @@ void SDL2Circle_PerfTick(void)
     s_lastReportTicks = now;
 
     // Measured once, the first time a report is printed, on whichever core
-    // reports — they all run at the same clock, and a spinning core is
+    // reports - they all run at the same clock, and a spinning core is
     // awake by definition for as long as it takes.
     if (!s_cpuHz)
     {
@@ -223,7 +222,7 @@ void SDL2Circle_PerfTick(void)
             continue;
 
         // The reporter's own clock is read live; every other core's is
-        // its published stamp — at most one instrumented section stale.
+        // its published stamp - at most one instrumented section stale.
         u64 cycles = (c == self) ? SDL2Circle_PerfCycles() : bank.stampCycles;
         u64 total = cycles - bank.lastCycles;
         if (!total)
@@ -240,16 +239,14 @@ void SDL2Circle_PerfTick(void)
         u64 accounted = render + wdma + wvsync + wait + audio + input + serve + yield;
         u64 app = total > accounted ? total - accounted : 0;
 
-        // AWAKE against WALL, and this is the whole point of the line.
-        //
         // The cycle counter stops while a core is asleep in WFE, so `total`
-        // is not elapsed time — it is only the time this core was awake.
+        // is not elapsed time - it is only the time this core was awake.
         // Percentages of it answer "of the work this core did, how much was
-        // what", which is worth knowing but is NOT "how busy was this core".
-        // A core parked 92% of a frame and a core saturated flat out can
-        // print identical splits. So the split is stated as what it is — a
-        // division of the awake portion — and the awake portion itself is
-        // stated against the wall clock, which never stops.
+        // what", not "how busy was this core": a core parked 92% of a frame
+        // and a core saturated flat out can print identical splits. So the
+        // split is stated as a division of the awake portion, and the awake
+        // portion itself is stated against the wall clock, which never
+        // stops.
         u64 wallCycles = s_cpuHz
                          ? (u64)((__uint128_t)elapsed * s_cpuHz / cntfrq())
                          : 0;
@@ -284,7 +281,7 @@ void SDL2Circle_PerfTick(void)
     }
 }
 
-#else // AARCH != 64 — no counter backend: the inert instrument
+#else // AARCH != 64 - no counter backend: the inert instrument
 
 u64 SDL2Circle_PerfCycles(void) { return 0; }
 bool SDL2Circle_PerfEnabled(void) { return false; }

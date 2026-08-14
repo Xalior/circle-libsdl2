@@ -1,5 +1,5 @@
 //
-// init.cpp — subsystem bookkeeping, version, platform — and the two clocks
+// init.cpp - subsystem bookkeeping, version, platform - and the two clocks
 // this library serves for code that runs before the host kernel exists.
 //
 // The two feature macros come before every include, and they have to: newlib
@@ -24,7 +24,7 @@ static Uint32 s_initialized = 0;
 // ---- Wall clock before the kernel exists -----------------------------------
 //
 // newlib's time()/gettimeofday() reach the hardware through circle-newlib's
-// _gettimeofday, whose first act is CTimer::Get()->GetUniversalTime() — and
+// _gettimeofday, whose first act is CTimer::Get()->GetUniversalTime() - and
 // both Get() and that call die when no CTimer exists yet. Static constructors
 // run exactly that early, and real applications keep a clock call there:
 // srand(time(NULL)) at global scope is idiomatic C. With no exception handler
@@ -32,17 +32,17 @@ static Uint32 s_initialized = 0;
 // before its first line of output.
 //
 // This override, linked from the shim's always-used init object so it wins
-// over the libgloss version, makes every clock call safe and USEFUL:
+// over the libgloss version, makes every clock call safe:
 //
 //  - Before SDL_Init (the host contract: CInterruptSystem and CTimer exist
-//    before SDL_Init — see sdl2circle.h), time is served from the free-
+//    before SDL_Init - see sdl2circle.h), time is served from the free-
 //    running hardware counter, which ticks from power-on and needs neither
 //    an object nor an interrupt, seeded with this library's build time. A
 //    Pi has no battery RTC, so this is the clock "set once at the factory":
 //    wrong by the shelf age of the kernel image, ticking truly, and never
 //    1970.
 //
-//  - From SDL_Init on, calls delegate to the kernel's CTimer — unless its
+//  - From SDL_Init on, calls delegate to the kernel's CTimer - unless its
 //    clock is obviously unset (before this library was even built), in
 //    which case the factory clock keeps serving. A host kernel that sets
 //    real time (CTimer::SetTime, an RTC, NTP) always wins.
@@ -50,7 +50,7 @@ static Uint32 s_initialized = 0;
 // The Pi 5 makes the pre-main window especially unforgiving: the header
 // UART sits behind RP1, so even touching the serial console from a static
 // constructor is fatal. The clock is the one service the hardware gives us
-// for free that early — so the shim serves it.
+// for free that early - so the shim serves it.
 
 // Build-timestamp epoch (seconds since 1970-01-01 UTC) from __DATE__/__TIME__.
 static unsigned BuildEpoch(void)
@@ -79,7 +79,7 @@ static unsigned BuildEpoch(void)
     return (unsigned)(days * 86400L + hh*3600 + mm*60 + ss);
 }
 
-// True once SDL_Init has run — the host contract guarantees CTimer::Get()
+// True once SDL_Init has run - the host contract guarantees CTimer::Get()
 // is safe from then on. Before that, Get() itself may assert.
 static bool s_bKernelTimerUp = false;
 
@@ -126,8 +126,8 @@ extern "C" int _gettimeofday(struct timeval *ptimeval, void *ptimezone)
 
     // Delegate to the kernel's clock once it exists and has a plausible
     // time. A day of slack covers a host kernel image built shortly before
-    // this library. The read itself happens on core 0 — see
-    // SDL2Circle_KernelTimeUTC — because the clock is a device.
+    // this library. The read itself happens on core 0 - see
+    // SDL2Circle_KernelTimeUTC - because the clock is a device.
     {
         unsigned nSeconds = 0, nMicroSeconds = 0;
         if (SDL2Circle_KernelTimeUTC(&nSeconds, &nMicroSeconds)
@@ -141,7 +141,7 @@ extern "C" int _gettimeofday(struct timeval *ptimeval, void *ptimezone)
 
     // The factory clock: hardware counter elapsed since first use, on top
     // of the build time. CTimer::GetClockTicks64 is static and reads the
-    // free-running counter directly — valid from the first instruction.
+    // free-running counter directly - valid from the first instruction.
     static u64 s_nFirstTicks = 0;
     if (s_nFirstTicks == 0)
         s_nFirstTicks = CTimer::GetClockTicks64();
@@ -157,17 +157,17 @@ extern "C" int _gettimeofday(struct timeval *ptimeval, void *ptimezone)
 // The same override, for the same reason, from the same always-linked object:
 // this is the clock_gettime every consumer of this library reaches.
 //
-// WHAT THE C LIBRARY'S ONE DOES, AND WHY IT IS DANGEROUS HERE. It answers
-// CLOCK_REALTIME and CLOCK_MONOTONIC and refuses every other clock id — and
-// the refusal returns -1 WITHOUT WRITING THE TIMESPEC. A caller that does not
-// check the return, which is most of them because a monotonic clock is not
-// expected to fail, then reads whatever its own stack held. Read the clock
-// twice from the same stack frame and the same bytes come back both times, so
-// the clock appears to have stopped: any "spin until the clock has advanced"
-// loop runs forever, on whichever core it is on, printing nothing. That is a
-// silent hang with no evidence at all, and it is not an exotic way to reach
-// one — the header this project builds against defines CLOCK_MONOTONIC_RAW,
-// so an ordinary portable program asks for the refused id BY PREFERENCE.
+// The C library's own clock_gettime answers CLOCK_REALTIME and
+// CLOCK_MONOTONIC and refuses every other clock id, and the refusal returns
+// -1 without writing the timespec. A caller that does not check the return -
+// most of them, because a monotonic clock is not expected to fail - then
+// reads whatever its own stack held. Read the clock twice from the same
+// stack frame and the same bytes come back both times, so the clock appears
+// to have stopped: any "spin until the clock has advanced" loop runs
+// forever, on whichever core it is on, printing nothing. That is a silent
+// hang with no evidence at all, and it is not an exotic way to reach one -
+// the header this project builds against defines CLOCK_MONOTONIC_RAW, so an
+// ordinary portable program asks for the refused id by preference.
 //
 // So every id this board can answer meaningfully gets an answer:
 //
@@ -184,7 +184,7 @@ extern "C" int _gettimeofday(struct timeval *ptimeval, void *ptimezone)
 //                                 the program's CPU time IS the uptime.
 //
 // An id outside that set is still refused, because inventing an answer for a
-// clock nobody can name is worse than saying no. But the timespec is ZEROED
+// clock nobody can name is worse than saying no. But the timespec is zeroed
 // before the refusal, so a caller that ignores the return reads a defined
 // value instead of its own stack.
 extern "C" int clock_gettime(clockid_t clock_id, struct timespec *tp)
@@ -266,13 +266,13 @@ extern "C" int SDL_InitSubSystem(Uint32 flags)
     // that changes how a subsystem starts has to be known first.
     SDL2Circle_ReadBootArgs();
 
-    // NO VIRTUAL DISPLAY SIZE IS NEEDED HERE. Initialising video is not
-    // taking the display — creating a window is (src/video.cpp), and that is
+    // No virtual display size is needed here: initialising video is not
+    // taking the display - creating a window is (src/video.cpp), and that is
     // where the virtual framebuffer's size is settled and where the console
     // hands the screen over. An application may bring video up and never
     // create a window at all; nothing below depends on a size existing yet.
 
-    // Board hardware — the CPU clock and the case fan — is brought up from
+    // Board hardware - the CPU clock and the case fan - is brought up from
     // SDL2Circle_ArmCoreRuntime, not here. Every host kernel already makes
     // that call on core 0 before running anything else (see coreruntime.cpp),
     // which is earlier than any SDL_Init an application can issue, so by the
@@ -282,12 +282,11 @@ extern "C" int SDL_InitSubSystem(Uint32 flags)
     // has already brought it up, and both routes are idempotent.
 
     // Video/window devices come up lazily in SDL_CreateWindow. USB is not
-    // brought up here AT ALL any more: the host kernel owns the controller
-    // and has already initialised it, and this only finds it — see
-    // SDL2Circle_InputInit, which explains why building one here was fatal.
-    // Still marshalled, because what it finds is core 0's, but it is now a
-    // lookup rather than a device bring-up, so the servo's first lap has
-    // nothing in it that can block.
+    // brought up here at all: the host kernel owns the controller and has
+    // already initialised it, and this only finds it - see
+    // SDL2Circle_InputInit. Still marshalled, because what it finds is core
+    // 0's, but it is a lookup rather than a device bring-up, so the servo's
+    // first lap has nothing in it that can block.
     if (flags & (SDL_INIT_VIDEO | SDL_INIT_EVENTS | SDL_INIT_JOYSTICK
                  | SDL_INIT_GAMECONTROLLER))
     {
@@ -308,11 +307,11 @@ extern "C" int SDL_InitSubSystem(Uint32 flags)
     // from here on.
     s_bKernelTimerUp = true;
 
-    // Performance reports stay silent unless the HOST arms them through
+    // Performance reports stay silent unless the host arms them through
     // SDL2Circle_SetPerfInterval. The library reads no boot configuration
     // for this: cmdline.txt describes the machine, and how an instrument
-    // is switched on — a stamped defaults block, a host option, nothing at
-    // all — is the host's design, not the library's.
+    // is switched on - a stamped defaults block, a host option, nothing at
+    // all - is the host's design, not the library's.
 
     s_initialized |= flags;
     return 0;
