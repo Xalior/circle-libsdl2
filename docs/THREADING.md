@@ -56,6 +56,37 @@ Three things are worth knowing before turning it on:
 
 The two APIs continue to share one identity and one wait, so a lock held through one and inspected through the other agrees about who holds it.
 
+## What gives a thread its turn
+
+Nothing here is preemptive. A context runs when something on its core gives the core up, and these are the places that do:
+
+- every wait in the C++ primitives - a contended `std::mutex`, a condition variable, `std::call_once`, `join`;
+- every wait in SDL's own locks - `SDL_LockMutex`, `SDL_CondWait`, `SDL_SemWait`, `SDL_WaitThread` - and `SDL_AtomicLock` when it is contended;
+- `SDL_Delay`, and `std::this_thread::sleep_for`;
+- `std::this_thread::yield()`;
+- **every wait that crosses to another core**: `SDL_RenderPresent` and `SDL_UpdateWindowSurface` waiting on the presentation core, a read on standard input waiting on a human, and any call the library marshals to core 0;
+- a thread ending.
+
+The cross-core waits are the ones worth knowing about, because they are where most of the time goes. A `PRESENTVSYNC` caller spends most of every frame waiting for the presentation core, and a program parked at a prompt waits on a human indefinitely. All of that time now belongs to the threads on that core.
+
+**A main loop that does none of these keeps its core, and its own threads never start.** That is not a defect in the loop - it is what cooperative means - but from outside it looks like a working board doing nothing: the window draws, the pointer moves, and no fault is reported anywhere. So the core says so. Once, after five seconds, naming the thread:
+
+```
+sdl2cxx: core 1 has a runnable thread it has not given a turn in 5s — thread
+         2148340448 has never run at all. This core schedules its own threads
+         and nothing running on it has waited, yielded or slept since; a loop
+         that polls without yielding starves them, and std::this_thread::yield()
+         in it is the whole of the fix
+```
+
+The check is driven from the application's own per-frame beat, not from the scheduler, because the fault is precisely that the scheduler is never entered. It costs two loads and a compare per frame, and nothing at all on a core that schedules no threads.
+
+### One writer per mailbox
+
+A cross-core wait that hands the core on can be re-entered by the context that gets it. The library's own mailboxes are held against that: posting a frame, reading standard input and marshalling a call to core 0 each hold that mailbox's lock across both the wait and the write, so a second context blocks rather than overwriting a request in flight. The waits that only read a counter - waiting for a texture buffer to be released, or for a frame to reach the glass - take nothing, because they write nothing.
+
+SDL's own rule is unchanged and still yours to keep: **use a renderer, its textures and its window from one thread only.** That was already true across cores here, and a thread on the application core is no different.
+
 ## Giving a thread a core of its own
 
 A host kernel that has a spare core can lend it:
@@ -87,7 +118,9 @@ A pin wins over everything else. It is asked for immediately before the thread i
 
 ## The limits
 
-A wait occupies the core it waits on, off core 0, for the same reason `SDL_Delay` does - so a core with nothing else runnable is a spinning core. A timed wait off core 0 polls the system counter rather than sleeping to the deadline. `thread_local` destructors run when a thread ends, so a `thread_local` belonging to the application core - which never ends - is never destroyed.
+A wait occupies the core it waits on, off core 0, for the same reason `SDL_Delay` does - so a core with nothing else runnable is a spinning core. A core that has been asked to schedule its own threads and has none runnable still sleeps in `wfe` on a cross-core wait, exactly as it did before. A timed wait off core 0 polls the system counter rather than sleeping to the deadline. `thread_local` destructors run when a thread ends, so a `thread_local` belonging to the application core - which never ends - is never destroyed.
+
+The per-core performance report (`SDL2Circle_SetPerfInterval`) accounts a core's cycles, not a context's. Work another context does inside a cross-core wait is therefore counted against the waiting category. That is an instrument a host has to ask for, and it is off in a shipped image.
 
 ## Examples
 

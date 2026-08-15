@@ -10,6 +10,49 @@ followed.
 
 ## vPoC3
 
+### A cross-core wait gives its core to the threads on it
+
+Waiting for the presentation core, for a keypress on standard input, or for a
+call marshalled to core 0 used to put the application core to sleep. On a core
+that schedules its own threads that is the wrong idle: the core has runnable
+work of its own and was sleeping through it.
+
+All of those waits now hand the core to the next runnable context first, and
+sleep only when there is nothing to hand it to. This is where most of a
+core's spare time actually is - a `PRESENTVSYNC` caller waits most of every
+frame for the presentation core, and a program at a prompt waits on a human
+indefinitely.
+
+A core that has not been asked to schedule its own threads is unaffected and
+sleeps exactly as before.
+
+Three of those waits write a one-deep mailbox, and a wait that hands the core
+on can be re-entered by the context that gets it. Posting a frame, reading
+standard input and marshalling a call to core 0 now each hold that mailbox's
+lock across both the wait and the write, so a second caller blocks instead of
+overwriting a request in flight. One uncontended compare-and-swap per frame.
+The waits that only read a counter take no lock, because they write nothing.
+
+SDL's own rule is unchanged: use a renderer, its textures and its window from
+one thread only.
+
+### A thread that never gets a turn says so
+
+Nothing in this design is preemptive, so a main loop that never waits, yields
+or sleeps keeps its core and the threads on it never start. From outside that
+is a board doing nothing with no fault reported anywhere - the window draws,
+the pointer moves, and every part is working exactly as told.
+
+A core that has a runnable thread it has not given a turn in five seconds now
+says so on the log, once, naming the thread and whether it has ever run at
+all. The report is driven from the application's own per-frame beat rather
+than from the scheduler, because the fault is that the scheduler is never
+entered. It costs two loads and a compare per frame, and nothing on a core
+that schedules no threads.
+
+**Consumers should act** on this line if it appears: it means the loop needs a
+`std::this_thread::yield()` where it polls.
+
 ### An application core can run its own threads
 
 `SDL2Circle_ThreadsStayOnThisCore`, called on a core, makes every thread

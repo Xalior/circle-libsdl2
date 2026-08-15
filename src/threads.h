@@ -70,6 +70,18 @@ unsigned long long SDL2Circle_ThreadStartHere(void (*pBody)(void *),
 // lands back among the devices, has nothing on the board to tell it so.
 void SDL2Circle_ThreadAnnounceCore0(void);
 
+// Say, once per core, that this core has a runnable thread it has not given a
+// turn in some seconds (src/libcxxthreading.cpp). Nothing here is preemptive,
+// so a main loop that never waits, yields or sleeps keeps its core and its own
+// threads never start - which from outside is a working board doing nothing,
+// with no fault reported anywhere.
+//
+// Driven from the application's per-frame beat rather than from the scheduler,
+// because the fault IS that the scheduler is never entered. Costs two loads
+// and a compare per call; the run list is walked only once the interval has
+// gone by, and not at all on a core that schedules nothing.
+void SDL2Circle_ThreadStallCheck(void);
+
 // Release everything the ending thread put in thread-local storage: run each
 // value's destructor and free the slot (src/threads.cpp). Called when a thread
 // finishes and by SDL_TLSCleanup.

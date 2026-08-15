@@ -537,6 +537,14 @@ struct CoopContext
     u8            *m_pStack;                // heap; null for the main context
     size_t         m_nStackBytes;
     bool           m_bGuardReported;
+
+    // When this context was made, and when it last had the core. Kept so the
+    // starvation check below can tell a context that is simply between turns
+    // from one that has been runnable for seconds and never had one. Zero in
+    // m_nLastRan means it has never run at all, which is the case that says
+    // the core is not scheduling rather than that it is busy.
+    u64            m_nCreated;
+    u64            m_nLastRan;
     CoopRegs       m_Regs;
 };
 
@@ -552,6 +560,13 @@ struct CoopContext
 const u8       CoopGuardByte  = 0xA5;
 const unsigned CoopGuardBytes = 16;
 
+// How long a context may be runnable without getting a turn before its core
+// says so. The same five seconds SDL_WaitThread waits before reporting a
+// thread that has not finished, because it is the same judgement: long enough
+// that nothing ordinary takes it, short enough to arrive while somebody is
+// still watching the log.
+const u64 CoopStallReportUS = 5000000;
+
 // The whole of a core's scheduler. Every field is written and read by that
 // core and by nothing else, which is why none of them is atomic.
 //
@@ -566,6 +581,12 @@ struct CoreCoop
     void        *m_pReapStack;
     void        *m_pReapTLS;
     CoopContext *m_pReapContext;
+
+    // The starvation report: when the run list was last walked, and whether
+    // this core has already said what it found. Said once, because the answer
+    // does not change until the application does.
+    u64          m_nStallCheckedAt;
+    bool         m_bStallReported;
 };
 
 CoreCoop s_Coop[MaxCores];
@@ -805,6 +826,7 @@ bool ScheduleNext(void)
 
     CheckStackGuard(pCurrent);
 
+    pNext->m_nLastRan = NowMicros();
     Core.m_pCurrent = pNext;
 
     // That store has to be in memory BEFORE the switch, not after it. Sunk
@@ -951,6 +973,8 @@ unsigned long long SDL2Circle_ThreadStartHere(void (*pBody)(void *),
     pContext->m_pTLS           = &pContext->m_Storage;
     pContext->m_Storage.m_pBlock = pBlock;
     pContext->m_nId            = (unsigned long long)(uintptr_t)pContext;
+    pContext->m_nCreated       = NowMicros();
+    pContext->m_nLastRan       = 0;         // it has never had the core
     pContext->m_pStack         = pStack;
     pContext->m_nStackBytes    = nStackBytes;
     pContext->m_bGuardReported = false;
@@ -974,6 +998,71 @@ unsigned long long SDL2Circle_ThreadStartHere(void (*pBody)(void *),
 bool SDL2Circle_ThreadSchedulesHere(void)
 {
     return s_Coop[SDL2Circle_ThisCore() % MaxCores].m_pCurrent != nullptr;
+}
+
+// A THREAD THAT IS RUNNABLE AND NEVER GETS A TURN, SAID OUT LOUD.
+//
+// Nothing here is preemptive, so a context runs when something on its core
+// gives the core up - a wait, a sleep, a yield, or the end of a thread. An
+// application whose main loop does none of those keeps the core, and its own
+// threads never start. From outside that is a window that draws, a pointer
+// that moves and a program that does nothing, with no fault reported
+// anywhere: every part of the machine is working exactly as told.
+//
+// So the core says so. One line, once, naming the thread and how long it has
+// been waiting - the same shape and the same voice as SDL_WaitThread's own
+// five-second report, and for the same reason: an unbounded wait that nothing
+// will end is worth a sentence rather than a silent board.
+//
+// It cannot be done from inside the scheduler. The fault is precisely that
+// the scheduler is never entered, so a check there would never run. It is
+// driven instead from the application's own per-frame beat
+// (SDL2Circle_HeartbeatBump, src/split.cpp), which is the one thing a program
+// in this state still does.
+void SDL2Circle_ThreadStallCheck(void)
+{
+    CoreCoop &Core = s_Coop[SDL2Circle_ThisCore() % MaxCores];
+
+    // Two loads and a compare on the ordinary path, which is what a
+    // per-frame call has to cost. The run list is only walked once the
+    // interval has actually gone by.
+    if (Core.m_pCurrent == nullptr || Core.m_bStallReported)
+        return;
+
+    const u64 nNow = NowMicros();
+    if (nNow - Core.m_nStallCheckedAt < CoopStallReportUS)
+        return;
+    Core.m_nStallCheckedAt = nNow;
+
+    for (CoopContext *pContext = Core.m_pCurrent->m_pNext;
+         pContext != Core.m_pCurrent;
+         pContext = pContext->m_pNext)
+    {
+        // A context between turns is not starved; one that has been waiting
+        // longer than the whole report interval has not been scheduled at
+        // all in that time, and on a cooperative core that is the
+        // application's doing rather than its own.
+        const bool bNeverRan = pContext->m_nLastRan == 0;
+        const u64  nSince    = bNeverRan ? pContext->m_nCreated
+                                         : pContext->m_nLastRan;
+        if (nNow - nSince < CoopStallReportUS)
+            continue;
+
+        Core.m_bStallReported = true;
+        SDL2Circle_Log(From, SDL2CIRCLE_LOG_ERROR,
+                       "core %u has a runnable thread it has not given a turn "
+                       "in %us — thread %llu %s. This core schedules its own "
+                       "threads and nothing running on it has waited, yielded "
+                       "or slept since; a loop that polls without yielding "
+                       "starves them, and std::this_thread::yield() in it is "
+                       "the whole of the fix",
+                       SDL2Circle_ThisCore(),
+                       (unsigned)(CoopStallReportUS / 1000000),
+                       (unsigned long long)pContext->m_nId,
+                       bNeverRan ? "has never run at all"
+                                 : "has run before and is now waiting");
+        return;
+    }
 }
 
 extern "C" void sdl2circle_coop_start(void)
@@ -1698,7 +1787,14 @@ extern "C" int SDL2Circle_ThreadsStayOnThisCore(void)
     pRoot->m_pTLS  = CurrentStorage();
     pRoot->m_nId   = (unsigned long long)(nCore + 1);
 
-    s_Coop[nCore].m_pCurrent = pRoot;
+    // It is running now, by definition of who is calling. Stamped rather than
+    // left at zero so the starvation check never reads the context that ran
+    // main as one that has been waiting since the epoch.
+    pRoot->m_nCreated = NowMicros();
+    pRoot->m_nLastRan = pRoot->m_nCreated;
+
+    s_Coop[nCore].m_pCurrent       = pRoot;
+    s_Coop[nCore].m_nStallCheckedAt = pRoot->m_nCreated;
 
     // Whatever runs here now, this core has a job, so nothing may be pinned
     // on top of it later.

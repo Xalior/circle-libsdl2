@@ -27,6 +27,7 @@
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_circle.h>
 #include "sdl2circle.h"
+#include "threads.h"
 
 #include <circle/sysconfig.h>
 #include <circle/atomic.h>
@@ -100,14 +101,49 @@ unsigned SDL2Circle_ClaimedCores(void)
     return g_cores_claimed.load(std::memory_order_acquire);
 }
 
-// Idle appropriate to the calling core: core 0 must keep its cooperative
-// world alive; other cores nap in WFE.
+// THE ONE WAIT IN THIS FILE. Every cross-core wait below is a loop that
+// re-tests its own condition, and this is the whole of what it does between
+// tests.
+//
+// Each core is idle in the way that core can be. Core 0 must keep its
+// cooperative world alive, so it yields to Circle's scheduler. A core that
+// schedules its own threads has the same thing to do and its own scheduler to
+// do it with, so it hands the core to the next runnable context. A core with
+// neither has nothing to hand the time to, and sleeps until the far side
+// sends the event that ends the wait - which is what every core did here
+// before, and what a core no host has asked about still does.
+//
+// Waiting like this is what stops a cross-core wait starving the threads on
+// the waiting core. These waits are unbounded by design - the far side owns
+// something this side needs - and while one is outstanding the application
+// core would otherwise be asleep with runnable work on its own run list.
+// SDL_RenderPresent under PRESENTVSYNC is the case that bites: it waits most
+// of every frame, and that is most of every frame the threads did not get.
+//
+// A context that gets the core here may re-enter the very call that is
+// waiting. Every wait below that WRITES a mailbox therefore holds that
+// mailbox's lock across both the wait and the write; the ones that only read
+// a counter need nothing.
 static inline void idle_wait(void)
 {
     if (SDL2Circle_ThisCore() == 0 && CScheduler::IsActive())
+    {
         CScheduler::Get()->Yield();
-    else
-        wfe();
+        return;
+    }
+
+    // False on every core no host has asked to schedule its own threads, and
+    // on one that has nothing else runnable - so the sleep below is still
+    // what an unactivated build does, unchanged.
+    //
+    // One consequence, and it is the dev instrument rather than the machine:
+    // the perf scopes around some of these waits are per core, so work another
+    // context does here is accounted to the waiting category. Perf is off
+    // unless a host asks for it (SDL2Circle_SetPerfInterval).
+    if (SDL2Circle_ThreadScheduleNext())
+        return;
+
+    wfe();
 }
 
 // ---------------------------------------------------------------------------
@@ -279,10 +315,14 @@ void SDL2Circle_CallOn0(void (*fn)(void *), void *arg)
     g_call.req.store(seq, std::memory_order_release);
     publish();
     {
+        // Inside g_call_lock, which is what keeps the one-deep box
+        // single-producer: a context that gets the core inside this wait and
+        // calls here itself blocks on that lock rather than overwriting the
+        // request being served.
         StallWatch watch("a call it marshalled to core 0");
         while (g_call.ack.load(std::memory_order_acquire) < seq)
         {
-            wfe();
+            idle_wait();
             watch.tick();
         }
     }
@@ -414,9 +454,36 @@ struct alignas(64) FrameBox
 
 static FrameBox g_frame;
 
+// THE BOX HAS ONE PRODUCER, AND THIS IS WHAT MAKES THAT TRUE.
+//
+// Posting a frame is read the sequence, wait for the worker to have copied
+// the previous one out, write the commands, bump the sequence - and it is
+// only correct if nothing else posts in the middle of it. Two posters that
+// interleave both leave the wait on the same sequence, both write the command
+// array, and both store the same number into it: one frame silently replaces
+// the other, the worker may be copying while the second write lands, and the
+// posted/acked pair that decides when a texture store may be reused stops
+// meaning anything.
+//
+// That was previously true without a lock, for a reason that has stopped
+// holding. The wait was a sleep, so one line of execution per core could be
+// inside it, and SDL's own rule - render from one thread - covered the rest.
+// Now the wait hands the core to another context, so the second poster can be
+// on this core as well as on another one. Relying on a rule the library
+// cannot check, to protect a corruption it would never report, is not a
+// bargain worth keeping for one uncontended compare-and-swap per frame.
+//
+// The presentation core never takes this lock: it reads the box and publishes
+// counters, and holding a lock across a wait for it therefore cannot deadlock.
+static SpinLock g_frame_lock;
+
 void SDL2Circle_PresentPost(const SDL2CirclePresentCmd *cmds, unsigned ncmds,
                             unsigned half)
 {
+    // Held across the read, the wait and the write, which is the whole of
+    // what has to be one poster's.
+    g_frame_lock.lock();
+
     u64 seq = g_frame.seq.load(std::memory_order_relaxed);
     {
         // Wait for the box, never for the picture.
@@ -436,7 +503,7 @@ void SDL2Circle_PresentPost(const SDL2CirclePresentCmd *cmds, unsigned ncmds,
         StallWatch watch("the presentation core to copy the previous frame out");
         while (g_frame.taken.load(std::memory_order_acquire) < seq)
         {
-            wfe();
+            idle_wait();
             watch.tick();
         }
     }
@@ -448,6 +515,8 @@ void SDL2Circle_PresentPost(const SDL2CirclePresentCmd *cmds, unsigned ncmds,
     g_frame.half = half;
     g_frame.seq.store(seq + 1, std::memory_order_release);
     publish();
+
+    g_frame_lock.unlock();
 }
 
 // ---------------------------------------------------------------------------
@@ -485,11 +554,14 @@ void SDL2Circle_PresentWaitAck(u64 seq)
 {
     if (!g_split.load(std::memory_order_acquire))
         return;
+    // No lock: this reads one counter and writes nothing, so a second context
+    // that arrives here while this one waits simply waits for its own
+    // sequence beside it. Nothing is shared but the counter both are reading.
     SDL2CirclePerfScope wait(SDL2CIRCLE_PERF_WAIT);
     StallWatch watch("the presentation core to release a texture buffer");
     while (g_frame.ack.load(std::memory_order_acquire) < seq)
     {
-        wfe();
+        idle_wait();
         watch.tick();
     }
 }
@@ -515,11 +587,19 @@ void SDL2Circle_PresentWaitDone(u64 seq)
         t0 = CTimer::GetClockTicks64();
     }
 
+    // No lock, for the same reason as the acknowledgement wait above: one
+    // counter read, nothing written.
+    //
+    // THIS IS THE WAIT THE WHOLE CHANGE IS FOR. A PRESENTVSYNC caller paces
+    // itself here, which means it spends most of every frame in this loop -
+    // and before this it spent most of every frame asleep, with its own
+    // threads sitting runnable on the same core, unable to run until it drew
+    // the next frame.
     SDL2CirclePerfScope wait(SDL2CIRCLE_PERF_WAIT);
     StallWatch watch("the presentation core to finish presenting a frame");
     while (g_frame.done.load(std::memory_order_acquire) < seq)
     {
-        wfe();
+        idle_wait();
         watch.tick();
     }
 
@@ -542,8 +622,15 @@ void SDL2Circle_PresentQuiesce(void)
     // Wait for the worker to be out of the frame entirely - not merely done
     // reading what the poster owns (`ack`, which it publishes early so the
     // application core is never held up by output), but past the flip, where
-    // it is still using the window and the present buffers. Only the poster
-    // bumps `seq`, and this is the poster, so `seq` is stable here.
+    // it is still using the window and the present buffers.
+    //
+    // Held under the poster's lock for the whole wait. Only a poster bumps
+    // `seq`, so this has to be the only poster for the number it reads to
+    // still describe the last frame when the wait ends - and holding the lock
+    // is also the right meaning for the call: nothing may post a new frame
+    // while the thing being torn down is being drained.
+    g_frame_lock.lock();
+
     u64 seq = g_frame.seq.load(std::memory_order_relaxed);
     StallWatch watch("the presentation core to finish the frame in flight");
     while (g_frame.done.load(std::memory_order_acquire) < seq)
@@ -551,6 +638,8 @@ void SDL2Circle_PresentQuiesce(void)
         idle_wait();
         watch.tick();
     }
+
+    g_frame_lock.unlock();
 }
 
 extern "C" void SDL2Circle_SplitPresentCore(void)
@@ -573,6 +662,16 @@ extern "C" void SDL2Circle_SplitPresentCore(void)
             // Idle between frames. Instrumented so this core's report says
             // how much of it was spare: at a locked frame rate that is most
             // of it, and it must not read as work.
+            //
+            // A TRUE SLEEP, AND THE ONE WAIT IN THIS FILE THAT STAYS ONE.
+            // Every other wait here hands the core to the next runnable
+            // context first; this one has none to hand it to and is not the
+            // same kind of wait. It is this core having nothing to do rather
+            // than this core waiting on another party, and this core is a
+            // worker with one job. A host that asked this core to schedule
+            // threads as well would starve them here - and would be told so,
+            // once, by the starvation report (src/libcxxthreading.cpp),
+            // rather than left to find out from a frozen picture.
             SDL2CirclePerfScope wait(SDL2CIRCLE_PERF_WAIT);
             wfe();
             continue;
@@ -665,6 +764,15 @@ static std::atomic<u64> g_heartbeat{0};
 void SDL2Circle_HeartbeatBump(void)
 {
     g_heartbeat.fetch_add(1, std::memory_order_relaxed);
+
+    // The same beat answers a second question. The watchdog on core 0 asks
+    // whether this core is alive; this asks whether the threads ON it are
+    // getting any of it. A program can beat perfectly - draw every frame,
+    // move the pointer, drain every ring - while its own threads sit runnable
+    // and never start, because nothing in its loop gives the core up. This is
+    // the one thing such a program still does, so it is where that gets
+    // noticed. Inert on a core that schedules no threads of its own.
+    SDL2Circle_ThreadStallCheck();
 
     // Whoever beats this is the application, so whichever core it beats from
     // is the application core. That is the only place in this library that
@@ -1016,6 +1124,11 @@ struct alignas(64) StdinBox
 
 StdinBox g_stdin;
 
+// One reader at a time, for the same reason the frame box has one poster: the
+// wait for a keypress hands the core to another context, and that context may
+// read standard input too. See SDL2Circle_ReadStdin below.
+SpinLock g_stdin_lock;
+
 long read_stdin_now(void *buf, uint32_t len)
 {
     errno = 0;
@@ -1032,6 +1145,12 @@ extern "C" long SDL2Circle_ReadStdin(void *buf, uint32_t len)
     // library's own blocking read is legitimate to run.
     if (!g_split.load(std::memory_order_acquire) || SDL2Circle_ThisCore() == 0)
         return read_stdin_now(buf, len);
+
+    // One request in the box, one result slot, and the wait below now hands
+    // the core to another context - which may read standard input itself.
+    // Without this the second reader would overwrite the first's buffer
+    // pointer and both would be answered with one read.
+    g_stdin_lock.lock();
 
     g_stdin.buf = buf;
     g_stdin.len = len;
@@ -1052,22 +1171,33 @@ extern "C" long SDL2Circle_ReadStdin(void *buf, uint32_t len)
         // StallWatch - which is what a program actually wedged there still
         // trips.
         //
-        // Nothing bumps the heartbeat again in here. wfe() below is a true
-        // sleep: the only thing that wakes it is the sev() CSplitStdinTask
-        // issues when the real read completes, so a wait that runs long has
-        // no periodic wakeup to run a timer check on - a loop timing itself
-        // against CTimer here would sit in wfe() the whole second and never
-        // see it. The watchdog task (below, this file) reads g_stdin
-        // directly instead, so this core does not have to do anything for
-        // an outstanding request to keep counting as alive.
+        // Nothing bumps the heartbeat again in here. On a core with no
+        // threads of its own the wait below is still a true sleep: the only
+        // thing that wakes it is the sev() CSplitStdinTask issues when the
+        // real read completes, so a wait that runs long has no periodic
+        // wakeup to run a timer check on - a loop timing itself against
+        // CTimer here would sit in wfe() the whole second and never see it.
+        // The watchdog task (below, this file) reads g_stdin directly
+        // instead, so this core does not have to do anything for an
+        // outstanding request to keep counting as alive.
+        //
+        // A core that schedules its own threads gives them the time instead,
+        // and this is where the most of it is: a program parked at a prompt
+        // is waiting on a human, and a human is slow. Its threads run for
+        // the whole of that.
         StallWatch watch("a keypress on standard input", true);
         while (g_stdin.ack.load(std::memory_order_acquire) < seq)
         {
-            wfe();
+            idle_wait();
             watch.tick();
         }
     }
-    return g_stdin.result;
+
+    // Read before the lock goes: the slot is the next reader's the moment it
+    // does.
+    const long result = g_stdin.result;
+    g_stdin_lock.unlock();
+    return result;
 }
 
 // ---------------------------------------------------------------------------
