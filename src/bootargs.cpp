@@ -179,16 +179,19 @@ bool Dispatch(const char *pSwitch)
     // SDL2Circle_DeclareVirtualDevice and over the physical panel fallback -
     // see src/video.cpp, which holds the value and the precedence between
     // the four.
-    if (strncmp(pSwitch, "--rapi-vdisplay=", 16) == 0)
+    static const char VfbSwitch[] = "--rapi-vfb=";
+    static const size_t VfbSwitchLen = sizeof VfbSwitch - 1;
+
+    if (strncmp(pSwitch, VfbSwitch, VfbSwitchLen) == 0)
     {
         unsigned nWidth = 0, nHeight = 0;
-        if (!ParseSize(pSwitch + 16, nWidth, nHeight))
+        if (!ParseSize(pSwitch + VfbSwitchLen, nWidth, nHeight))
             return false;       // not WxH: not ours to act on
         if (nWidth == 0 || nHeight == 0)
             return false;       // not a display size
-        SDL2Circle_SetVDisplaySwitch((int)nWidth, (int)nHeight);
+        SDL2Circle_SetVfbSwitch((int)nWidth, (int)nHeight);
         SDL2Circle_Log(From, SDL2CIRCLE_LOG_NOTICE,
-                       "--rapi-vdisplay: virtual framebuffer %ux%u",
+                       "--rapi-vfb: virtual framebuffer %ux%u",
                        nWidth, nHeight);
         return true;
     }

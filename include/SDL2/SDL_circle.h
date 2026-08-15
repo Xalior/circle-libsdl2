@@ -145,7 +145,7 @@ int SDL2Circle_ThreadPinNext(unsigned nCore);
 // a size at all. This declaration is one of two ways to ask for something
 // else:
 //
-//   1. The board's own --rapi-vdisplay=WxH boot switch, read by the library
+//   1. The board's own --rapi-vfb=WxH boot switch, read by the library
 //      itself before any of this runs. It wins over everything below.
 //   2. This declaration, called by the application or its host kernel.
 //

@@ -20,7 +20,7 @@
 # optional defaults argument -- that is a live write to a running chainload,
 # not a file edit, and is no part of what this tool does. This tool only ever
 # edits a built image on disk, before it is ever pushed anywhere, so a stamped
-# image boots correctly with no loader involved at all. A --rapi-vdisplay
+# image boots correctly with no loader involved at all. A --rapi-vfb
 # passed by a loader at boot time still overrides what this tool wrote --
 # bootargs.cpp reads whichever bytes are in the block when the image runs,
 # and a wire write replaces them the same way this tool does.

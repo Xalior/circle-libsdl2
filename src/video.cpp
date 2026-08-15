@@ -251,7 +251,7 @@ static SDL_Window *s_window = nullptr;
 //             render_target_w/h below). Settled once, at the first of four
 //             moments, in this order:
 //
-//               1. --rapi-vdisplay=WxH (src/bootargs.cpp). A boot switch, so
+//               1. --rapi-vfb=WxH (src/bootargs.cpp). A boot switch, so
 //                  it wins over anything the application does.
 //               2. SDL2Circle_DeclareVirtualDevice, called by the consumer
 //                  before SDL_Init.
@@ -299,13 +299,13 @@ static inline int render_target_h(const SDL_Renderer *ren)
     return ren->target ? ren->target->h : s_canvas_h;
 }
 
-// The --rapi-vdisplay=WxH switch (src/bootargs.cpp), read from the boot
+// The --rapi-vfb=WxH switch (src/bootargs.cpp), read from the boot
 // argument block before SDL_Init runs and before any window can exist. Top
 // of the canvas precedence: once set, nothing below can out-rank it.
 static bool s_switch_set = false;
 static int s_switch_w = 0, s_switch_h = 0;
 
-void SDL2Circle_SetVDisplaySwitch(int width, int height)
+void SDL2Circle_SetVfbSwitch(int width, int height)
 {
     s_switch_w = width;
     s_switch_h = height;
@@ -498,7 +498,7 @@ static void resolve_placement(void)
 // accepted declaration is named on the resolve's own geometry line below.
 //
 // It is entirely optional, and stands or falls independently of the
-// --rapi-vdisplay switch: both may be set, and settle_canvas below is the one
+// --rapi-vfb switch: both may be set, and settle_canvas below is the one
 // place that decides which of them, or the window, actually becomes the
 // canvas.
 extern "C" int SDL2Circle_DeclareVirtualDevice(unsigned depth, int width,
@@ -624,7 +624,7 @@ bool SDL2Circle_ScanoutAcquire(SDL2CircleScanout *out)
     return true;
 }
 
-// Decide the canvas size, in precedence order: the --rapi-vdisplay switch,
+// Decide the canvas size, in precedence order: the --rapi-vfb switch,
 // then SDL2Circle_DeclareVirtualDevice, then the caller's own size, then the
 // physical panel size read from the firmware - which only a window has, so a
 // display query arriving before any of the first three exist is passed 0,0
@@ -638,7 +638,7 @@ static bool settle_canvas(int fallback_w, int fallback_h,
     {
         *out_w = s_switch_w;
         *out_h = s_switch_h;
-        *out_how = "--rapi-vdisplay switch";
+        *out_how = "--rapi-vfb switch";
         return true;
     }
     if (s_declared)
@@ -1383,7 +1383,7 @@ static void emit_cmd(SDL_Renderer *ren, const SDL2CirclePresentCmd &cmd)
 }
 
 // Answer one display-mode query. False when there is no display to describe:
-// no --rapi-vdisplay switch, no SDL2Circle_DeclareVirtualDevice and no window
+// no --rapi-vfb switch, no SDL2Circle_DeclareVirtualDevice and no window
 // yet, or a board with no scanout to read. Zeroed first, so a consumer that
 // also ignores this return reads an obviously empty mode rather than whatever
 // its stack held.
@@ -1554,7 +1554,7 @@ static void create_window_on0(void *p)
 
     // The library's own boot switches, in case this is reached without an
     // SDL_Init that already read them (SDL2Circle_ReadBootArgs is
-    // idempotent) - --rapi-vdisplay has to be known before the canvas size
+    // idempotent) - --rapi-vfb has to be known before the canvas size
     // below is decided.
     SDL2Circle_ReadBootArgs();
 
@@ -2082,7 +2082,7 @@ extern "C" int SDL_GetDisplayDPI(int, float *ddpi, float *hdpi, float *vdpi)
 // There is no compositor between the canvas and the panel, and no scaling
 // factor of the kind a desktop applies on a high-density display, so a
 // drawable pixel is a canvas pixel - not necessarily a window pixel: under
-// the --rapi-vdisplay switch a window may report a size of its own that the
+// the --rapi-vfb switch a window may report a size of its own that the
 // canvas does not share (see the geometry comment above s_canvas_w/h).
 extern "C" void SDL_GL_GetDrawableSize(SDL_Window *win, int *w, int *h)
 {

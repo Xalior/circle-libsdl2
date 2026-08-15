@@ -12,11 +12,11 @@
 #include <circle/types.h>
 #include <SDL2/SDL_circle.h>   // the public split/I-O surface backing this glue
 
-// The --rapi-vdisplay=WxH switch (src/bootargs.cpp), handed to video.cpp
+// The --rapi-vfb=WxH switch (src/bootargs.cpp), handed to video.cpp
 // as soon as the boot argument block has been read - well before SDL_Init,
 // let alone a window. It is the top of the precedence order the virtual
 // framebuffer's size is settled from; see src/video.cpp.
-void SDL2Circle_SetVDisplaySwitch(int width, int height);
+void SDL2Circle_SetVfbSwitch(int width, int height);
 
 // ---- the one display grant (src/video.cpp) ---------------------------------
 //

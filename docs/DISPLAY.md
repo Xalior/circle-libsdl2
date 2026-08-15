@@ -14,7 +14,7 @@ A Pi 3 or a Pi 4 applies the requested mode and reports it correctly, so neither
 
 **The canvas is the virtual display** - the display area the application is given, and the relation between its shape and the scanout's decides the letterboxing. It is settled once, at the first of these moments to occur, in this order - see [Declaring the display](#declaring-the-display):
 
-1. The `--rapi-vdisplay=WxH` boot switch.
+1. The `--rapi-vfb=WxH` boot switch.
 2. `SDL2Circle_DeclareVirtualDevice`, called by the application before `SDL_Init`.
 3. The application's first `SDL_CreateWindow` - the window and the canvas are the same rectangle when neither of the above was used.
 4. The physical panel size, read from the firmware, when none of the above ever gave one. Last resort only: it is reached exclusively where the library would otherwise refuse to start.
@@ -43,7 +43,7 @@ sdl2video: present: dma copy, channel 11, 8294400 bytes, double-shadowed
 sdl2video: copy src 320x224 -> canvas 720x504+0+36 -> scanout 1350x945+285+67 (nearest)
 ```
 
-The `(declared virtual device)` on the first line names which of the four sources in [Declaring the display](#declaring-the-display) settled the canvas - `--rapi-vdisplay switch`, `declared virtual device`, `first window created` or `physical panel size`.
+The `(declared virtual device)` on the first line names which of the four sources in [Declaring the display](#declaring-the-display) settled the canvas - `--rapi-vfb switch`, `declared virtual device`, `first window created` or `physical panel size`.
 
 The `present:` line names the path that is actually in use - `dma copy` or `cpu copy`, and the reason when it is the latter.
 
@@ -82,7 +82,7 @@ A display query that arrives before any window exists, or before the switch or a
 
 These can override that default, and they are settled in this order - the first one present wins outright, and neither is required for the other to work:
 
-1. **The `--rapi-vdisplay=WxH` boot switch**, handled by the library like every other `--rapi-` switch - see [Boot switches](#boot-switches). It is read from the boot argument block before `SDL_Init` runs, so it is known before any window can exist, and it wins over a declaration as well as over a window's own size.
+1. **The `--rapi-vfb=WxH` boot switch**, handled by the library like every other `--rapi-` switch - see [Boot switches](#boot-switches). It is read from the boot argument block before `SDL_Init` runs, so it is known before any window can exist, and it wins over a declaration as well as over a window's own size.
 2. **`SDL2Circle_DeclareVirtualDevice`**, called by the application before `SDL_Init`:
 
    ```c
@@ -96,7 +96,7 @@ These can override that default, and they are settled in this order - the first 
 
 Whichever of the four settles it, `SDL_GetCurrentDisplayMode`, `SDL_GetDesktopDisplayMode`, `SDL_GetDisplayMode` and `SDL_GetDisplayBounds` all answer with the canvas, and the library carries each frame from there to whatever the panel is really doing. **The application never learns the real output resolution.** It draws in the canvas, and the placement rules above put that onto the physical screen.
 
-**The switch and the window can disagree on purpose.** With `--rapi-vdisplay=WxH` set, `SDL_CreateWindow` still returns a window of the size the application asked for - `SDL_GetWindowSize` answers honestly - but the application draws into a canvas of the switch's size regardless, exactly as `SDL_GetRendererOutputSize` and `SDL_GetWindowSizeInPixels` report it. The two sizes are then deliberately different, and the scanout scaling above is what reconciles the canvas with the panel; nothing reconciles the window's reported size with the canvas, so a program meant to run under the switch should read its drawing size from the renderer or the display mode, not from `SDL_GetWindowSize`. Under a declaration, or with neither override, the window and the canvas are always the same rectangle, so this distinction does not arise.
+**The switch and the window can disagree on purpose.** With `--rapi-vfb=WxH` set, `SDL_CreateWindow` still returns a window of the size the application asked for - `SDL_GetWindowSize` answers honestly - but the application draws into a canvas of the switch's size regardless, exactly as `SDL_GetRendererOutputSize` and `SDL_GetWindowSizeInPixels` report it. The two sizes are then deliberately different, and the scanout scaling above is what reconciles the canvas with the panel; nothing reconciles the window's reported size with the canvas, so a program meant to run under the switch should read its drawing size from the renderer or the display mode, not from `SDL_GetWindowSize`. Under a declaration, or with neither override, the window and the canvas are always the same rectangle, so this distinction does not arise.
 
 - **It is fixed.** Once settled - by the switch, by a declaration, by the first window or by the physical panel fallback - the canvas does not change for the rest of the run, however many further windows are created or destroyed. A second `SDL_CreateWindow` (without the switch) reports the *already-settled* canvas size, not its own arguments; only the switch case lets each window report what it actually asked for while the canvas stays put. A `SDL2Circle_DeclareVirtualDevice` call arriving after the canvas has settled is refused, and so is a second call.
 - **32 bits per pixel, and nothing else.** The framebuffer is allocated at 32 bits and streaming ARGB8888 is the only texture format, so another depth is refused rather than quietly rounded to this one. Width and height must both be above zero, for the switch as well as for the declaration.
@@ -154,7 +154,7 @@ A boot argument block sits at a fixed offset inside the kernel image, and a load
 |---|---|
 | `--rapi-debug-uart` | types bytes arriving on the serial console into the machine as SDL key events. Takes **no value** |
 | `--rapi-perf=N` | a performance report every N seconds |
-| `--rapi-vdisplay=WxH` | the virtual framebuffer size - see [Declaring the display](#declaring-the-display). Wins over `SDL2Circle_DeclareVirtualDevice`, the first window's own size and the physical panel fallback |
+| `--rapi-vfb=WxH` | the virtual framebuffer size - see [Declaring the display](#declaring-the-display). Wins over `SDL2Circle_DeclareVirtualDevice`, the first window's own size and the physical panel fallback |
 
 An application still reads the same block for its own arguments, and still strips every `--rapi-` switch before its program sees them. Those are its arguments; reading the block twice is harmless, because nothing here writes to it.
 
