@@ -83,7 +83,7 @@ void SDL2Circle_CallOn0(void (*fn)(void *), void *arg);
 // one binary serve bench and product.
 void SDL2Circle_SetPerfInterval(unsigned nSeconds);
 
-// ---- the C++ threading runtime ----------------------------------------------
+// ---- the threading runtime --------------------------------------------------
 //
 // This library supplies libc++'s threading primitives — std::mutex,
 // std::recursive_mutex, std::condition_variable, std::call_once,
@@ -93,8 +93,8 @@ void SDL2Circle_SetPerfInterval(unsigned nSeconds);
 //
 // NOTHING HERE HAS TO BE CALLED. A port gets working C++ threading by
 // linking this library and making the SDL2Circle_ArmCoreRuntime call it
-// already makes. The three calls below are for the host kernel that wants
-// more than the default placement.
+// already makes. The calls below are for the host kernel that wants more
+// than the default placement.
 //
 // WHERE A std::thread RUNS, by default: on core 0, as a cooperative Circle
 // scheduler task, wherever it was created from. That is the placement a
@@ -103,6 +103,45 @@ void SDL2Circle_SetPerfInterval(unsigned nSeconds);
 // refused. It is cooperative: such a thread runs when core 0 yields, so a
 // thread that computes without ever blocking or sleeping holds core 0, and
 // core 0 is where every device is serviced.
+
+// Make the CALLING core schedule its own threads, from here on.
+//
+// Every thread created on this core afterwards — `std::thread` and
+// SDL_CreateThread alike — becomes a cooperative context ON THIS CORE: its
+// own stack, its own thread-local storage, its own identity, scheduled by
+// this library. No Circle task is built for it, Circle's scheduler is never
+// called, and nothing is posted to core 0.
+//
+// That is the placement an application wants for its own workers, and core 0
+// is the placement it does not. An application was moved off core 0 to get
+// away from the SD card, USB, the serial port and the scheduler, and a
+// worker placed on core 0 lands back among all four. Worse, core 0 is the
+// one core where a thread that does not yield costs the board something: an
+// application may quite reasonably hand a thread two seconds of arithmetic,
+// and neither API knows, when it makes a thread, that hardware timing is
+// waiting behind it. On core 0 those are two seconds of unserviced devices.
+// This core has nothing on it that hardware is waiting for, which is exactly
+// why work belongs here.
+//
+// It is not a change of threading semantics and it adds no preemption. A
+// thread on core 0 is a cooperative Circle task and a context here is
+// cooperative too: each runs until it waits, sleeps, yields or ends. What
+// changes is which core the cooperative context runs on. A thread that
+// computes without ever waiting holds this core, exactly as one on core 0
+// holds core 0 — but holding this core costs the board nothing.
+//
+// Call it ON the core it applies to, once, before that core creates a
+// thread — a host kernel's own Run() for that core is the natural place,
+// after SDL2Circle_ArmCoreRuntime. Calling it again does nothing.
+//
+// NOTHING IS AFFECTED BY THIS CALL BEING AVAILABLE. A host that never makes
+// it gets the default placement above, unchanged, with none of the
+// scheduler in play.
+//
+// Returns 0, or -1 with SDL_GetError explaining: core 0 has Circle's
+// scheduler and is not a candidate; a core running a pinned thread is not
+// either, because that core is reclaimed when the thread ends.
+int SDL2Circle_ThreadsStayOnThisCore(void);
 
 // Lend the CALLING core to the threading runtime as a home for pinned
 // threads, and never return. A host kernel calls this from

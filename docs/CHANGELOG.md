@@ -10,6 +10,56 @@ followed.
 
 ## vPoC3
 
+### An application core can run its own threads
+
+`SDL2Circle_ThreadsStayOnThisCore`, called on a core, makes every thread
+created on that core afterwards a cooperative context on that core -
+`std::thread` and `SDL_CreateThread` alike. The library schedules it itself:
+a stack out of the heap, a thread-local block of its own, an identity of its
+own, no Circle task, no call into Circle's scheduler and nothing posted to
+core 0.
+
+This matters because the default placement is core 0, and core 0 is the only
+core that services the SD card, the USB host and the serial port. An
+application that was moved off core 0 on purpose, creating a worker, put that
+worker back among them - and nothing said so. Worse, a thread that computes
+without yielding costs the board something only on core 0: neither API knows,
+when it makes a thread, that hardware timing is waiting behind it, and an
+application is entitled to hand a thread two seconds of arithmetic. On core 0
+those are two seconds of unserviced devices. An application core has nothing
+on it that hardware waits for, which is exactly why work belongs there.
+
+It changes nothing about threading semantics. A thread on core 0 is a
+cooperative Circle task and a context on an application core is cooperative
+too: each runs until it waits, sleeps, yields or ends, and neither was ever
+preemptive. What changes is which core the cooperative context runs on.
+
+**This is behaviour a host asks for.** A host kernel that does not make the
+call gets exactly what it got before, with none of the new code reached: the
+run list of a core nobody asked about is never created, every placement is
+the one it was, and `SDL_ThreadID` gives the answers it always gave. What
+such a host does now get is one line on the log, once per core, the first
+time a core off core 0 creates a thread - saying where the thread went and
+naming the call that changes it.
+
+A consumer that does make the call should check three things. Its threads now
+contend with the application rather than with core 0, so a worker that
+computes without ever waiting holds the application core instead of holding
+core 0 - which is the point, since holding the application core costs the
+board nothing. Its threads can no longer touch Circle directly, for the same
+reason the application core cannot: they are not on core 0, and the
+marshalling calls (`SDL2Circle_CallOn0`, the I/O service) are how they reach
+it. And each thread gets a fixed stack whose low end is checked on every
+switch, so an overrun that used to corrupt something silently is now a line
+on the log naming the thread. `SDL_CreateThreadWithStackSize` chooses that
+size, `SDL_CreateThread` gets SDL's usual megabyte, and a `std::thread` gets
+the size it would have had on core 0.
+
+`SDL2Circle_ThreadPinNext` is unchanged and still applies to `std::thread`
+alone; a pin still wins over everything else. The two threading APIs continue
+to share one identity and one wait, so a lock held through one and inspected
+through the other still agrees about who holds it.
+
 ### Standard input echoes what its reader chooses, not what Circle chose
 
 The console no longer echoes a typed character itself. `CConsole::SetOptions`

@@ -15,17 +15,20 @@
 //                            mutex really do exclude each other. On the
 //                            hardware core the wait loop yields to Circle's
 //                            scheduler, so the task holding the lock can run;
-//                            on any other core it spins, because there is no
-//                            scheduler there to hand the time to and the core
-//                            is dedicated to the application anyway.
+//                            on a core that schedules its own C++ threads it
+//                            gives the core to the next of them, for the same
+//                            reason; anywhere else it spins, because there is
+//                            nothing on that core to hand the time to and the
+//                            core is dedicated to the application anyway.
 //
-//   Threads                  Circle scheduler tasks. A task is a cooperative
-//                            thread and that is exactly what an application's
-//                            helper thread wants - but a task registers itself
-//                            with the scheduler while it is being built, so
-//                            the building has to happen on the hardware core.
-//                            A request from anywhere else is handed to the
-//                            core-0 creator task and waited for.
+//   Threads                  Cooperative, always, and on one of two cores. On
+//                            a core that schedules its own threads, a
+//                            cooperative context on that core, built here and
+//                            now. Everywhere else a Circle scheduler task -
+//                            which is cooperative too, but registers itself
+//                            with the scheduler while it is being built, so a
+//                            request from another core is handed to the core-0
+//                            creator task and waited for.
 //
 // What an application can rely on:
 //
@@ -54,13 +57,25 @@
 //   the system; without one there is nothing anywhere for a thread to run on
 //   and the call fails, sets the error and says so on the log.
 //
-//   A thread that does start is cooperative and runs on core 0, whichever
-//   core asked for it. It runs when something gives up that core, which the
-//   servo's every lap, every wait in this file and SDL_Delay all do. A thread
-//   that computes without ever calling into SDL or sleeping keeps the hardware
-//   core to itself, and the hardware core is also where the device servicing
-//   lives, so a long-running worker created this way is a decision about core
-//   0's time, not free parallelism.
+//   A thread that does start is cooperative, and which core it is cooperative
+//   against is the one thing a host kernel decides. By default it is core 0,
+//   whichever core asked for the thread; on a core that has called
+//   SDL2Circle_ThreadsStayOnThisCore it is that core. Either way the thread
+//   runs when something gives its core up, which the servo's every lap, every
+//   wait in this file and SDL_Delay all do.
+//
+//   THE DEFAULT IS THE PLACEMENT TO WATCH, not the other one. A thread that
+//   computes without ever calling into SDL or sleeping keeps its core, and on
+//   core 0 that core is where every device on the board is serviced. SDL has
+//   no idea, when it makes a thread, that hardware timing is waiting behind
+//   it - and an application is quite entitled to hand a thread two seconds of
+//   arithmetic. On core 0 those are two seconds without the SD card, the USB
+//   host or the serial port; on an application core there is nothing waiting
+//   for that core at all, which is why work belongs there.
+//
+//   std::thread follows the same rule and the same call. The two surfaces
+//   also share one identity and one wait, so a lock held through either and
+//   inspected through the other agrees about who holds it.
 //
 //   Thread priorities do not exist. Circle's scheduler is round-robin without
 //   them, so SDL_SetThreadPriority reports that it cannot do what was asked
@@ -106,8 +121,18 @@ extern "C" void SDL_AtomicLock(SDL_SpinLock *lock)
     // it; Circle's scheduler is cooperative, so two tasks on the hardware
     // core cannot both be inside such a section, and contention can therefore
     // only come from another core, which is really running and will release.
+    //
+    // On a core that schedules its own std::threads the holder CAN be on this
+    // core: another cooperative context, stopped where it gave the core up.
+    // Spinning would then wait for something the spin is itself preventing,
+    // so the spin hands the core on instead - and does nothing else. No audio
+    // pump, no device, nothing that could re-enter the section this lock
+    // guards; a raw lock stays raw.
     while (__atomic_exchange_n(lock, 1, __ATOMIC_ACQUIRE) != 0)
-        asm volatile("yield" ::: "memory");
+    {
+        if (!SDL2Circle_ThreadScheduleNext())
+            asm volatile("yield" ::: "memory");
+    }
 }
 
 extern "C" void SDL_AtomicUnlock(SDL_SpinLock *lock)
@@ -216,6 +241,14 @@ void SDL2Circle_ThreadWaitSpin(void)
     // section; the pump obeys it.
     SDL2Circle_AudioPump();
 
+    // A core whose host asked it to schedule its own std::threads has
+    // somewhere to hand the time to, exactly as core 0 does: the next
+    // runnable context on this core, which may be the very context that holds
+    // what this wait is waiting for. It answers false where no host asked, so
+    // a build that has never heard of this waits the way it always did.
+    if (SDL2Circle_ThreadScheduleNext())
+        return;
+
     asm volatile("yield" ::: "memory");
 }
 
@@ -239,13 +272,17 @@ bool WaitExpired(u64 start, Uint32 ms)
 // ---------------------------------------------------------------------------
 //
 // An identity has to be unique among everything that can hold a lock at the
-// same time, and there are two kinds of those. On the hardware core, one per
-// scheduler task, so the task object's own address answers. On any other core
-// there is exactly one line of execution, so the core number answers - offset
-// by one so that no identity is zero, which is what a free mutex holds.
+// same time, and there are three kinds of those. On the hardware core, one
+// per scheduler task, so the task object's own address answers. On a core
+// that schedules its own cooperative contexts, one per context, so the
+// thread's own record address answers. On any other core there is exactly one
+// line of execution, so the core number answers - offset by one so that no
+// identity is zero, which is what a free mutex holds.
 //
-// The two cannot collide: Circle's heap starts far above the highest core
-// number a board has.
+// None of the three can collide: Circle's heap starts far above the highest
+// core number a board has, and the context that ran main on a core keeps that
+// core's own number, so introducing a scheduler never changes the identity of
+// a line of execution that was already holding a lock.
 
 extern "C" SDL_threadID SDL_ThreadID(void)
 {
@@ -255,6 +292,10 @@ extern "C" SDL_threadID SDL_ThreadID(void)
         if (pTask != nullptr)
             return (SDL_threadID)(uintptr_t)pTask;
     }
+
+    const unsigned long long nContext = SDL2Circle_ThreadContextID();
+    if (nContext != 0)
+        return (SDL_threadID)nContext;
 
     return (SDL_threadID)(SDL2Circle_ThisCore() + 1);
 }
@@ -703,9 +744,12 @@ extern "C" void SDL_TLSCleanup(void)
 // Threads
 // ---------------------------------------------------------------------------
 
-// The handle, and who frees it: the thread runs on core 0 and whoever waits
-// for it or detaches it may be on another core, so the two sides are really
-// concurrent and the handle needs an owner at every instant.
+// The handle, and who frees it: whoever waits for a thread or detaches it may
+// be on a different core from the thread itself, so the two sides can be
+// really concurrent and the handle needs an owner at every instant. That is
+// true of both placements - a task on core 0 waited for from the application
+// core, or a context on the application core waited for from core 0 - and the
+// one word below settles it without either side knowing which it is.
 //
 // One word decides it. Each side sets its own bit - the thread when it ends,
 // the application when it detaches - and reads back what the other side had
@@ -807,6 +851,49 @@ private:
     SDL_Thread *m_pThread;
 };
 
+// What an SDL thread is when its core schedules its own: the work, and how
+// the end of it is published. The cooperative context owns the stack and the
+// thread-local block, and the context switch carries the thread pointer, so
+// none of the arming CSDLThreadTask has to do appears here.
+void sdl_context_body(void *p)
+{
+    SDL_Thread *thread = (SDL_Thread *)p;
+
+    // A thread that throws still has to finish, for the same reason it does
+    // as a task: nothing but this body can reach the publish below, so an
+    // exception escaping here would leave SDL_WaitThread spinning for the
+    // life of the board with no fault reported anywhere.
+    int status;
+    try
+    {
+        status = thread->fn(thread->data);
+    }
+    catch (...)
+    {
+        SDL2Circle_Log("sdl2thread", SDL2CIRCLE_LOG_ERROR,
+                       "thread \"%s\" ended by an exception it did not "
+                       "catch; SDL_WaitThread will report -1",
+                       thread->name[0] ? thread->name : "?");
+        status = -1;
+    }
+
+    SDL2Circle_TLSRelease((unsigned long)thread->id);
+
+    // In memory before the flag that publishes it, which the finish hook
+    // below sets under a release.
+    thread->status = status;
+}
+
+void sdl_context_finish(void *p)
+{
+    SDL_Thread *thread = (SDL_Thread *)p;
+
+    const int prev = __atomic_fetch_or(&thread->state, THREAD_FINISHED,
+                                       __ATOMIC_ACQ_REL);
+    if (prev & THREAD_DETACHED)
+        free(thread);           // nobody is waiting; this is the last exit
+}
+
 // What the core-0 creator task does for an SDL thread: build the task, settle
 // the handle's identity, release it. Nothing here waits, so nothing here can
 // hold the creator up.
@@ -853,11 +940,16 @@ extern "C" SDL_Thread *SDL_CreateThreadWithStackSize(SDL_ThreadFunction fn,
 
     const char *label = name != nullptr ? name : "SDLThread";
 
-    // A thread is a Circle scheduler task, so the system needs a scheduler -
-    // wherever the asking is done from. This is the one refusal left: without
-    // one there is nothing anywhere for the thread to run on, and saying so is
-    // better than a thread that silently never ran.
-    if (!CScheduler::IsActive())
+    // Whether this thread stays here or goes to core 0, asked once and used
+    // twice: it decides the refusal below as well as the placement, because a
+    // cooperative context on this core needs no scheduler anywhere.
+    const bool bStaysHere = SDL2Circle_ThreadSchedulesHere();
+
+    // A thread that goes to core 0 is a Circle scheduler task, so the system
+    // needs a scheduler - wherever the asking is done from. This is the one
+    // refusal left: without one there is nothing on core 0 for the thread to
+    // run on, and saying so is better than a thread that silently never ran.
+    if (!bStaysHere && !CScheduler::IsActive())
     {
         SDL2Circle_Log(From, SDL2CIRCLE_LOG_ERROR,
                        "SDL_CreateThread(\"%s\") refused: no CScheduler in "
@@ -895,6 +987,45 @@ extern "C" SDL_Thread *SDL_CreateThreadWithStackSize(SDL_ThreadFunction fn,
     if (stack < (size_t)TASK_STACK_SIZE)
         stack = (size_t)TASK_STACK_SIZE;
     stack = (stack + 15) & ~(size_t)15;
+
+    if (bStaysHere)
+    {
+        // This core schedules its own threads, so the thread is a cooperative
+        // context on it: no task, no scheduler, nothing posted to core 0, and
+        // the same stack size the task would have had.
+        //
+        // This is the placement a worker wants and core 0 is the placement it
+        // does not. SDL knows nothing about a board's hardware timing when it
+        // makes a thread, and an application is entitled to create one that
+        // computes for seconds without yielding - which on core 0 is seconds
+        // in which the SD card, the USB host and the serial port go
+        // unserviced, because core 0 is the only core that services them.
+        // Nothing is waiting on this core, which is exactly why work belongs
+        // here.
+        const unsigned long long id =
+            SDL2Circle_ThreadStartHere(sdl_context_body, sdl_context_finish,
+                                       thread, stack);
+        if (id == 0)
+        {
+            free(thread);
+            SDL2Circle_Log(From, SDL2CIRCLE_LOG_ERROR,
+                           "SDL_CreateThread(\"%s\") on core %u: no memory for "
+                           "its stack or its thread-local block", label,
+                           SDL2Circle_ThisCore());
+            SDL_SetError("Out of memory");
+            return nullptr;
+        }
+
+        // Settled before anything can yield, so SDL_GetThreadID answers
+        // correctly from the very first call and the thread itself sees its
+        // own identity: the context cannot run until this core next waits.
+        thread->id = (SDL_threadID)id;
+        return thread;
+    }
+
+    // Said once per core, because it is the placement nothing else announces.
+    if (SDL2Circle_ThisCore() != 0)
+        SDL2Circle_ThreadAnnounceCore0();
 
     // Constructing the task is what registers it with the scheduler, and the
     // scheduler is core 0's. On core 0 this builds it here and now; anywhere
@@ -936,15 +1067,16 @@ extern "C" void SDL_WaitThread(SDL_Thread *thread, int *status)
     if (thread == nullptr)
         return;
 
-    // Valid on every core. The thread being waited for runs on core 0, so on
-    // core 0 this wait yields to it and elsewhere it spins while core 0 gets
-    // on with it.
+    // Valid on every core, and on whichever core the thread being waited for
+    // was placed: the wait yields to Circle's scheduler on core 0, hands the
+    // core to the next cooperative context on a core that has them - which
+    // may be the very thread being waited for - and spins anywhere else.
     //
     // It also says so when it does not end. This wait can only be ended by
-    // the thread task publishing THREAD_FINISHED, and nothing else in the
-    // system can do it, so if that thread never finishes, this spins for the
-    // life of the board in silence unless it reports. It reports once, after
-    // a few seconds, rather than filling the console with it.
+    // the thread publishing THREAD_FINISHED, and nothing else in the system
+    // can do it, so if that thread never finishes, this spins for the life of
+    // the board in silence unless it reports. It reports once, after a few
+    // seconds, rather than filling the console with it.
     const u64 started = CTimer::GetClockTicks64();
     bool reported = false;
     while (!(__atomic_load_n(&thread->state, __ATOMIC_ACQUIRE) & THREAD_FINISHED))
@@ -954,8 +1086,8 @@ extern "C" void SDL_WaitThread(SDL_Thread *thread, int *status)
             reported = true;
             SDL2Circle_Log("sdl2thread", SDL2CIRCLE_LOG_ERROR,
                            "SDL_WaitThread(\"%s\") has waited 5s on core %u — "
-                           "that thread runs on core 0 and has not finished; "
-                           "if it threw, it never will",
+                           "that thread has not finished; if it threw, it "
+                           "never will",
                            thread->name[0] ? thread->name : "?",
                            SDL2Circle_ThisCore());
         }
