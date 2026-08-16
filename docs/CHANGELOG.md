@@ -24,7 +24,7 @@ presses filters on the flag, which is what the flag has always been for and
 which now sometimes reports true.
 
 One key repeats at a time - the one pressed most recently - after half a
-second, then about thirty characters a second. Pressing a second key while
+second, then ten a second. Pressing a second key while
 the first is held moves the repeat to it, and releasing the second does not
 bring the first back. Modifiers and lock keys never repeat and never take the
 repeat from a key that has it, so holding a letter and then pressing shift

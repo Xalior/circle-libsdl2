@@ -30,7 +30,7 @@ A USB keyboard reports which keys are down and nothing more, so a held key produ
 
 **One key repeats at a time: the one pressed most recently.** Press a second key while the first is held and the repeat moves to the second; release the second and the first does not resume. This is what a keyboard controller of the period did and what a person expects.
 
-**The first repeat comes after half a second, and the rest at about thirty characters a second.** The delay is long enough that ordinary typing never provokes one. Neither value can be changed by an application, and there is nothing to turn on: an application that reads key events already receives them.
+**The first repeat comes after half a second, and the rest at ten a second.** The delay is long enough that ordinary typing never provokes one. Neither value can be changed by an application, and there is nothing to turn on: an application that reads key events already receives them.
 
 **Modifiers and lock keys never repeat**, and never take the repeat away from a key that has it. Holding shift is one event rather than a stream, and holding a letter and then pressing shift goes on repeating the letter in upper case.
 

@@ -342,16 +342,8 @@ void PushTextInputEvent(SDL_Scancode sc, Uint16 mod)
 SDL_Scancode s_repeatSc = SDL_SCANCODE_UNKNOWN;
 u64 s_repeatDue = 0;      // wall-clock (us) the next repeat falls due at
 
-// The wait before the first repeat, and the interval between the rest. These
-// are SDL's own long-standing defaults, and the delay is what the AT keyboard
-// controller powered up with, so a board feels like the machine an operator
-// already has their hands trained on. Half a second is several times the gap
-// between two keystrokes of ordinary typing, which is what keeps a fast
-// typist from ever provoking a repeat; 30 ms is about thirty characters a
-// second, brisk enough to hold a cursor key down and cross a line of text
-// without waiting for it.
 const u64 KEY_REPEAT_DELAY_US = 500000;
-const u64 KEY_REPEAT_INTERVAL_US = 30000;
+const u64 KEY_REPEAT_INTERVAL_US = 100000;
 
 // Keys that change a state rather than produce something, and so never
 // repeat. Holding shift is one press and not a stream of them, and a lock key
