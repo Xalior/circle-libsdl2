@@ -22,6 +22,20 @@ So on a board set to `UK`, shift-2 types `"`, shift-3 types `£` and the key bes
 
 **The keypad types its digits and operators whatever the layout says.** Every layout prints the same characters on it, and Circle's tables gate the digits behind num lock, which nothing here turns on.
 
+## Key repeat
+
+A USB keyboard reports which keys are down and nothing more, so a held key produces one report and then stops changing. The repeats every machine appears to make are made by the machine, and this library makes them.
+
+**A repeat is an `SDL_KEYDOWN` with `key.repeat` set**, carrying the same scancode, keycode and modifiers as the press it repeats, and followed by the same `SDL_TEXTINPUT` that press produced. It is a press in every other respect. An application that wants real presses only - a game counting how many times a key was struck - ignores an event with the flag set; one that is collecting text uses the repeats, which is the whole point of holding a key down.
+
+**One key repeats at a time: the one pressed most recently.** Press a second key while the first is held and the repeat moves to the second; release the second and the first does not resume. This is what a keyboard controller of the period did and what a person expects.
+
+**The first repeat comes after half a second, and the rest at about thirty characters a second.** The delay is long enough that ordinary typing never provokes one. Neither value can be changed by an application, and there is nothing to turn on: an application that reads key events already receives them.
+
+**Modifiers and lock keys never repeat**, and never take the repeat away from a key that has it. Holding shift is one event rather than a stream, and holding a letter and then pressing shift goes on repeating the letter in upper case.
+
+The repeats are generated on the pump that reads the keyboard, so they arrive when the application next reads its events. A main loop that polls more slowly than the repeat interval receives repeats at its own rate rather than a backlog of them.
+
 ## Joysticks and game controllers
 
 SDL has different ways of reading the same piece of hardware, and this library offers both.

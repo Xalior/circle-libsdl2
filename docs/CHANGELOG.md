@@ -10,6 +10,35 @@ followed.
 
 ## vPoC3
 
+### A held key repeats
+
+A USB keyboard reports which keys are down and nothing more, so holding a key
+produced one character and then silence: the reports stopped changing and
+there was nothing left to translate. Every machine that appears to repeat a
+held key makes the repeats itself, and the library now does it.
+
+A repeat is an `SDL_KEYDOWN` with `key.repeat` set, carrying the same
+scancode, keycode and modifiers as the press it repeats, followed by the same
+`SDL_TEXTINPUT` that press produced. An application that wants only real
+presses filters on the flag, which is what the flag has always been for and
+which now sometimes reports true.
+
+One key repeats at a time - the one pressed most recently - after half a
+second, then about thirty characters a second. Pressing a second key while
+the first is held moves the repeat to it, and releasing the second does not
+bring the first back. Modifiers and lock keys never repeat and never take the
+repeat from a key that has it, so holding a letter and then pressing shift
+goes on repeating the letter in upper case.
+
+The repeats are generated where the keyboard is already read, on core 0's
+input pump, so nothing new runs asynchronously and no timer was added. A key
+the debug-UART robot hands leave down repeats as well, since it is a held key
+like any other; a `key tap` is far shorter than the delay and never does.
+
+There is nothing to configure and no call to make: the delay and the rate are
+the library's, and an application that already reads key events receives the
+repeats.
+
 ### A cross-core wait gives its core to the threads on it
 
 Waiting for the presentation core, for a keypress on standard input, or for a

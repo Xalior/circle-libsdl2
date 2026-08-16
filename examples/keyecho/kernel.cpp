@@ -151,8 +151,14 @@ TShutdownMode CKernel::Run(void)
                 lastScancode = ev.key.keysym.scancode;
                 lastDown = (ev.type == SDL_KEYDOWN);
                 nEvents++;
+                // A repeat is a key press with the repeat flag set, and it
+                // is named separately here because it is otherwise
+                // indistinguishable from a second press of the same key.
+                const char *what = lastDown
+                                       ? (ev.key.repeat ? "REPEAT" : "DOWN")
+                                       : "UP";
                 m_Logger.Write(From, LogNotice, "%s scancode=%02X sym=%d",
-                               lastDown ? "DOWN" : "UP", lastScancode,
+                               what, lastScancode,
                                (int)ev.key.keysym.sym);
             }
         }

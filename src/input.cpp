@@ -325,12 +325,89 @@ void PushTextInputEvent(SDL_Scancode sc, Uint16 mod)
     SDL_PushEvent(&ev);
 }
 
-void PushKeyEvent(SDL_Scancode sc, bool down)
+// --- Key repeat --------------------------------------------------------------
+//
+// A USB keyboard reports which keys are down and nothing more. Hold one and
+// the reports stop changing, so the diffing in the pump has nothing to say
+// and exactly one character arrives. Every machine that appears to repeat a
+// held key makes the repeats itself, from a clock, and this is where that is
+// done - out of the key state this file already keeps, on the pump that
+// already reads the keyboard.
+//
+// One key repeats at a time: the one pressed most recently, as a keyboard
+// controller of the period behaved. Pressing a second key while the first is
+// held moves the repeat to the second, and releasing the second does not
+// bring the first back - the hand has moved on, and a machine that resumed an
+// older key would type a character nobody asked for.
+SDL_Scancode s_repeatSc = SDL_SCANCODE_UNKNOWN;
+u64 s_repeatDue = 0;      // wall-clock (us) the next repeat falls due at
+
+// The wait before the first repeat, and the interval between the rest. These
+// are SDL's own long-standing defaults, and the delay is what the AT keyboard
+// controller powered up with, so a board feels like the machine an operator
+// already has their hands trained on. Half a second is several times the gap
+// between two keystrokes of ordinary typing, which is what keeps a fast
+// typist from ever provoking a repeat; 30 ms is about thirty characters a
+// second, brisk enough to hold a cursor key down and cross a line of text
+// without waiting for it.
+const u64 KEY_REPEAT_DELAY_US = 500000;
+const u64 KEY_REPEAT_INTERVAL_US = 30000;
+
+// Keys that change a state rather than produce something, and so never
+// repeat. Holding shift is one press and not a stream of them, and a lock key
+// repeating would turn caps lock on and off thirty times a second - the
+// layout's lock state advances once per press of it (TypedText, above).
+//
+// They cannot take the repeat over from another key either, and that is the
+// behaviour a person expects: hold a letter, then press shift, and the letter
+// goes on repeating in upper case rather than stopping dead.
+bool RepeatEligible(SDL_Scancode sc)
+{
+    switch (sc)
+    {
+    case SDL_SCANCODE_LCTRL:  case SDL_SCANCODE_RCTRL:
+    case SDL_SCANCODE_LSHIFT: case SDL_SCANCODE_RSHIFT:
+    case SDL_SCANCODE_LALT:   case SDL_SCANCODE_RALT:
+    case SDL_SCANCODE_LGUI:   case SDL_SCANCODE_RGUI:
+    case SDL_SCANCODE_CAPSLOCK:
+    case SDL_SCANCODE_NUMLOCKCLEAR:
+    case SDL_SCANCODE_SCROLLLOCK:
+        return false;
+    default:
+        return true;
+    }
+}
+
+// `repeat` marks an event this file generated for a key that is already down,
+// rather than one a report asked for. It is the only difference between the
+// two: a repeat is a key press in every other respect, carries the same
+// scancode, keycode and modifiers, and produces the same typed text.
+void PushKeyEvent(SDL_Scancode sc, bool down, bool repeat = false)
 {
     if (sc <= SDL_SCANCODE_UNKNOWN || sc >= SDL_NUM_SCANCODES)
         return;
 
     s_keyState[sc] = down ? 1 : 0;
+
+    // A press takes the repeat; a release gives it up, which is what stops a
+    // repeat when the key comes up. Losing the keyboard arrives here as well:
+    // KeyboardRemovedHandler empties the report, and the pump turns that into
+    // the release of everything that was held.
+    if (!repeat)
+    {
+        if (down)
+        {
+            if (RepeatEligible(sc))
+            {
+                s_repeatSc = sc;
+                s_repeatDue = CTimer::GetClockTicks64() + KEY_REPEAT_DELAY_US;
+            }
+        }
+        else if (sc == s_repeatSc)
+        {
+            s_repeatSc = SDL_SCANCODE_UNKNOWN;
+        }
+    }
 
     SDL_Event ev;
     memset(&ev, 0, sizeof(ev));
@@ -338,7 +415,7 @@ void PushKeyEvent(SDL_Scancode sc, bool down)
     ev.key.timestamp = SDL_GetTicks();
     ev.key.windowID = 1;   // the single window owns the keyboard
     ev.key.state = down ? SDL_PRESSED : SDL_RELEASED;
-    ev.key.repeat = 0;
+    ev.key.repeat = repeat ? 1 : 0;
     ev.key.keysym.scancode = sc;
     ev.key.keysym.sym = KeycodeFor(sc);
     ev.key.keysym.mod = s_modState;
@@ -349,6 +426,31 @@ void PushKeyEvent(SDL_Scancode sc, bool down)
     // for editing keys in the same pass.
     if (down)
         PushTextInputEvent(sc, s_modState);
+}
+
+// The repeat that has fallen due, if one has. Called from the input pump, so
+// a repeat is generated when the keyboard is next read and nothing here runs
+// asynchronously: under the core split that pump is core 0's servo lap, and
+// without it, the application's own SDL_PumpEvents. Either runs far more
+// often than the interval below, and a loop that pumps more slowly than that
+// gets its repeats at its own rate rather than a faster one it could not have
+// delivered anyway.
+void KeyRepeatPump(void)
+{
+    if (s_repeatSc == SDL_SCANCODE_UNKNOWN)
+        return;
+
+    const u64 now = CTimer::GetClockTicks64();
+    if (now < s_repeatDue)
+        return;
+
+    // One repeat per pass, and the next falls due an interval from now rather
+    // than from when this one was owed. A pump that ran late owes nothing: the
+    // key was held for as long as it was held, and a burst of characters to
+    // make up for a missed interval is exactly what a text field must never
+    // be given.
+    s_repeatDue = now + KEY_REPEAT_INTERVAL_US;
+    PushKeyEvent(s_repeatSc, true, true);
 }
 
 bool InReport(const RawReport &r, unsigned char key)
@@ -391,6 +493,10 @@ bool InReport(const RawReport &r, unsigned char key)
 // together - that a stream of self-releasing taps can never express (there is
 // no single byte for "both shifts at once", the Sinclair reset):
 //   key down lshift / key down rshift / key up rshift / key up lshift
+//
+// A key left down repeats like any other held key: held past the repeat delay
+// it produces key presses with the repeat flag set until the matching `key
+// up`. A tap is far shorter than that delay and never repeats.
 //
 // <key> is a single printable character (US-layout, shift auto-applied for
 // tap/type) or a name: lshift rshift lctrl rctrl lalt ralt lgui rgui
@@ -1007,36 +1113,41 @@ void SDL2Circle_InputPump(void)
 
     static u32 lastSeq = 0;
     u32 seq = s_reportSeq;
-    if (seq == lastSeq)
-        return;
-    lastSeq = seq;
-
-    RawReport now = s_report;   // struct copy; handler may overwrite, next
-                                // pump picks up the newer sequence
-
-    // modifier diffs
-    unsigned char modDiff = now.mods ^ s_prev.mods;
-    for (int bit = 0; bit < 8; bit++)
+    if (seq != lastSeq)
     {
-        if (!(modDiff & (1 << bit)))
-            continue;
-        bool down = now.mods & (1 << bit);
-        if (down)
-            s_modState |= ModMask[bit];
-        else
-            s_modState &= ~ModMask[bit];
-        PushKeyEvent(ModScancode[bit], down);
+        lastSeq = seq;
+
+        RawReport now = s_report;   // struct copy; handler may overwrite, next
+                                    // pump picks up the newer sequence
+
+        // modifier diffs
+        unsigned char modDiff = now.mods ^ s_prev.mods;
+        for (int bit = 0; bit < 8; bit++)
+        {
+            if (!(modDiff & (1 << bit)))
+                continue;
+            bool down = now.mods & (1 << bit);
+            if (down)
+                s_modState |= ModMask[bit];
+            else
+                s_modState &= ~ModMask[bit];
+            PushKeyEvent(ModScancode[bit], down);
+        }
+
+        // key releases, then presses
+        for (int i = 0; i < 6; i++)
+            if (s_prev.keys[i] > 3 && !InReport(now, s_prev.keys[i]))
+                PushKeyEvent((SDL_Scancode)s_prev.keys[i], false);
+        for (int i = 0; i < 6; i++)
+            if (now.keys[i] > 3 && !InReport(s_prev, now.keys[i]))
+                PushKeyEvent((SDL_Scancode)now.keys[i], true);
+
+        s_prev = now;
     }
 
-    // key releases, then presses
-    for (int i = 0; i < 6; i++)
-        if (s_prev.keys[i] > 3 && !InReport(now, s_prev.keys[i]))
-            PushKeyEvent((SDL_Scancode)s_prev.keys[i], false);
-    for (int i = 0; i < 6; i++)
-        if (now.keys[i] > 3 && !InReport(s_prev, now.keys[i]))
-            PushKeyEvent((SDL_Scancode)now.keys[i], true);
-
-    s_prev = now;
+    // After the reports, so a key that came up in this pass has already given
+    // the repeat up and cannot produce one more character on its way out.
+    KeyRepeatPump();
 }
 
 // An override, for a kernel that wants injection to read from a device other
