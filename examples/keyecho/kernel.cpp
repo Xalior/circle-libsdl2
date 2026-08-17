@@ -6,6 +6,7 @@
 //   center        last scancode as two big hex digits
 //                 (green while key held, dimmed red after release)
 //   below         8 modifier lights (LCTRL LSHIFT LALT LGUI  RCTRL ...)
+//                 3 lock lights below them, green (CAPS NUM SCROLL)
 //   lower half    32x8 grid of scancodes 0..255 from SDL_GetKeyboardState
 //   bottom edge   one small square per key event received
 //
@@ -197,6 +198,15 @@ TShutdownMode CKernel::Run(void)
         for (int i = 0; i < 8; i++)
             fill(W / 2 - 200 + i * 52, H / 6 + 260, 40, 40,
                  (mods & modbits[i]) ? 0xFFFFC020 : 0xFF282828);
+
+        // lock lights, on their own row and in their own colour, because they
+        // are not the same kind of thing as the row above: a modifier light is
+        // on while the key is held, a lock light stays on after the key comes
+        // back up and goes out on the next press of it.
+        static const SDL_Keymod lockbits[3] = {KMOD_CAPS, KMOD_NUM, KMOD_SCROLL};
+        for (int i = 0; i < 3; i++)
+            fill(W / 2 - 72 + i * 52, H / 6 + 312, 40, 40,
+                 (mods & lockbits[i]) ? 0xFF20FF60 : 0xFF282828);
 
         // held-key grid: scancodes 0..255, 32 x 8
         const Uint8 *state = SDL_GetKeyboardState(nullptr);

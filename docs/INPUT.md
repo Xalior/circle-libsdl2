@@ -20,7 +20,19 @@ So on a board set to `UK`, shift-2 types `"`, shift-3 types `£` and the key bes
 
 **The keycode (`keysym.sym`) does not follow the layout**, although desktop SDL's does. It stays what a US keyboard would report, for the same reason scancodes stay physical: applications bind their actions to keycodes, out of configuration files and out of compiled-in defaults, and a keycode that moved with `keymap=` would silently rebind a game's controls on any board not set to `us`. `SDL_GetKeyFromScancode` and `SDL_GetScancodeFromKey` answer accordingly, and remain each other's inverse.
 
-**The keypad types its digits and operators whatever the layout says.** Every layout prints the same characters on it, and Circle's tables gate the digits behind num lock, which nothing here turns on.
+**The keypad types its digits and operators whatever the layout says, and whatever num lock says.** Every layout prints the same characters on it, so the keypad is not routed through the layout at all. This is a real difference from a desk machine, and worth knowing: turning num lock off does not turn the keypad into a set of arrow keys, because Circle's tables gate the keypad digits behind num lock and num lock starts off - a board fresh from the boot would have a keypad that typed nothing until somebody found the key.
+
+## Lock keys
+
+**Caps lock, num lock and scroll lock are states, not held keys.** Each is on or off between presses, and the key that sets it is up almost all of the time the lock is on. SDL carries all three in the same modifier word as shift and control - `KMOD_CAPS`, `KMOD_NUM` and `KMOD_SCROLL` - so `SDL_GetModState` and the `keysym.mod` of every key event report whether the lock is on, never whether the key is down.
+
+**The state changes on the press**, as it does on a machine with a lamp on the keyboard: the `SDL_KEYDOWN` for the caps lock key already carries the new `KMOD_CAPS`, and so does the `SDL_KEYUP` that follows it, because nothing changed in between. An application can light an indicator straight from the press.
+
+**Holding a modifier with a lock key changes nothing.** Shift-caps-lock is caps lock, and so is control-caps-lock; the lock keys are the one part of the keyboard that means the same whatever is held with them.
+
+**Caps lock is the layout's own state**, the same one that decides the case of the letters `SDL_TEXTINPUT` carries, so what an application reads from `KMOD_CAPS` and what it receives as text can never disagree. All three locks start off at boot.
+
+**The keyboard's own lamps are not lit.** This library never writes the LEDs on the USB keyboard, so the state is the application's to show on screen. `examples/keyecho` shows all three.
 
 ## Key repeat
 
@@ -58,4 +70,4 @@ Also unimplemented, and reporting failure rather than pretending: controller LED
 
 ## Examples
 
-`examples/keyecho` displays scancode, modifiers and a grid of held keys. `examples/mouseview` shows the pointer on screen with buttons and motion. `examples/padview` shows all attached joysticks, gamepads and wheels: name, GUID, USB IDs, live axis bars, button lights, and hot-plug events.
+`examples/keyecho` displays scancode, modifier lights, lock lights and a grid of held keys. `examples/mouseview` shows the pointer on screen with buttons and motion. `examples/padview` shows all attached joysticks, gamepads and wheels: name, GUID, USB IDs, live axis bars, button lights, and hot-plug events.

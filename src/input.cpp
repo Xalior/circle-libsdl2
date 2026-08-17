@@ -185,6 +185,42 @@ CKeyMap *KeyMap(void)
     return s_pKeyMap;
 }
 
+// Caps lock, num lock and scroll lock are states rather than held keys: each
+// one is on or off between presses, and the key that changes it is up almost
+// all of the time it is on. SDL carries them in the same modifier word as
+// shift and control, which is why they need saying here at all - an
+// application reading KMOD_CAPS is asking whether the lock is on, never
+// whether the key is down.
+bool IsLockScancode(SDL_Scancode sc)
+{
+    return sc == SDL_SCANCODE_CAPSLOCK
+        || sc == SDL_SCANCODE_NUMLOCKCLEAR
+        || sc == SDL_SCANCODE_SCROLLLOCK;
+}
+
+// Turn one press of a lock key into the new lock state, in the modifier word.
+//
+// The layout holds the locks, not this file. Circle's CKeyMap toggles them
+// inside Translate and reports all three through GetLEDStatus, and the same
+// state decides the case of the letters it hands back - so a second copy kept
+// here would be a second answer to the same question, and typed text and
+// KMOD_CAPS would disagree the first time the two drifted apart.
+//
+// Translate is asked with no modifiers held, because the lock keys are the
+// one thing on the keyboard that means the same whatever is held with it:
+// shift-caps-lock is caps lock, and with real modifiers passed the ctrl and
+// alt branches inside Translate would return before reaching the toggle.
+void AdvanceLock(SDL_Scancode sc)
+{
+    KeyMap()->Translate((u8)sc, 0);
+
+    const u8 nLEDs = KeyMap()->GetLEDStatus();
+    s_modState &= ~(Uint16)(KMOD_NUM | KMOD_CAPS | KMOD_SCROLL);
+    if (nLEDs & KEYB_LED_NUM_LOCK)    s_modState |= KMOD_NUM;
+    if (nLEDs & KEYB_LED_CAPS_LOCK)   s_modState |= KMOD_CAPS;
+    if (nLEDs & KEYB_LED_SCROLL_LOCK) s_modState |= KMOD_SCROLL;
+}
+
 // SDL's modifier word in the form Circle's keymap expects. Circle separates
 // the two Alt keys by meaning rather than by side: the left one is Alt, the
 // right one is AltGr, the level shift that European layouts put their extra
@@ -224,6 +260,13 @@ int Utf8FromLatin1(unsigned cp, char *out)
 // NUL-terminated UTF-8 string otherwise.
 bool TypedText(SDL_Scancode sc, Uint16 mod, char *out)
 {
+    // A lock key types nothing, and its own press has already advanced the
+    // layout's lock state (AdvanceLock, called from PushKeyEvent before the
+    // event goes out). Falling through to Translate below would toggle the
+    // same lock a second time and put it straight back where it started.
+    if (IsLockScancode(sc))
+        return false;
+
     // A key held with control, the left alt or a GUI key is a command, not
     // text, and SDL sends no SDL_TEXTINPUT for one.
     //
@@ -241,8 +284,8 @@ bool TypedText(SDL_Scancode sc, Uint16 mod, char *out)
     // The keypad is not routed through the layout. Its printable keys carry
     // the same characters in every layout Circle ships, so there is nothing
     // for a layout to say about them; and Circle gates the digits on num
-    // lock, which starts off and which nothing here ever turns on, so asking
-    // the layout would stop the keypad typing digits at all. A keypad being
+    // lock, which starts off, so a board fresh from the boot would have a
+    // keypad that typed nothing until someone found the key. A keypad being
     // navigated instead sends its own scancodes.
     if (!altgr)
     {
@@ -307,13 +350,17 @@ bool TypedText(SDL_Scancode sc, Uint16 mod, char *out)
 
 void PushTextInputEvent(SDL_Scancode sc, Uint16 mod)
 {
-    // Asked even when nothing is collecting text, because this call is also
-    // what advances the layout's lock state: caps lock is a key like any
-    // other, and a layout that stopped counting presses of it while text
-    // input was off would come back with every letter in the wrong case.
+    // Nothing here has a side effect worth having when no one is collecting
+    // text. The layout's lock state is advanced on the press itself, in
+    // PushKeyEvent, which is the one thing in this path that has to happen
+    // whether an application is reading text or not - a lock that stopped
+    // counting its presses while text input was off would come back with
+    // every letter in the wrong case.
+    if (!s_textInputActive)
+        return;
+
     char Text[8];
-    const bool bText = TypedText(sc, mod, Text);
-    if (!bText || !s_textInputActive)
+    if (!TypedText(sc, mod, Text))
         return;
 
     SDL_Event ev;
@@ -400,6 +447,15 @@ void PushKeyEvent(SDL_Scancode sc, bool down, bool repeat = false)
             s_repeatSc = SDL_SCANCODE_UNKNOWN;
         }
     }
+
+    // A lock changes on the press, as it does on a real keyboard: the lamp
+    // lights as the key goes down and the letters that follow are already in
+    // the new case. So the state is advanced here, before the event is built,
+    // and the press itself carries the new KMOD_CAPS or KMOD_NUM rather than
+    // the state it just left behind. The release carries the same thing,
+    // because nothing changed in between.
+    if (down && !repeat && IsLockScancode(sc))
+        AdvanceLock(sc);
 
     SDL_Event ev;
     memset(&ev, 0, sizeof(ev));

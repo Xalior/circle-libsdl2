@@ -10,6 +10,26 @@ followed.
 
 ## vPoC3
 
+### Caps lock and num lock reach the application
+
+`SDL_GetModState` and the `keysym.mod` of every key event now carry
+`KMOD_CAPS`, `KMOD_NUM` and `KMOD_SCROLL`. Before this they never did: the
+modifier word was built from the eight held modifiers alone, so an
+application asking whether caps lock was on always got no, and a status bar
+with a CAPS lamp on it could never light.
+
+The three locks are states rather than held keys, and they are reported that
+way: the state changes on the press and stands until the next press, so both
+the `SDL_KEYDOWN` and the `SDL_KEYUP` of a caps lock keystroke carry the new
+state. Modifiers held with a lock key make no difference to it.
+
+The state read is the keyboard layout's own - the same one that decides the
+case of the letters `SDL_TEXTINPUT` carries - so the modifier bit and the
+typed text cannot disagree. See [Lock keys](INPUT.md#lock-keys).
+
+`examples/keyecho` shows the three locks as their own row of lights, below
+the modifier lights and in a different colour.
+
 ### A held key repeats
 
 A USB keyboard reports which keys are down and nothing more, so holding a key
