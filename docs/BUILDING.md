@@ -23,7 +23,7 @@ This library **supplies its own runtime world** - the configured `circle-stdlib`
 | Pi 4 | `circle-stdlib-rpi4` | `libSDL2-rpi4.a` |
 | Pi 5 | `circle-stdlib-rpi5` | `libSDL2-rpi5.a` |
 
-`make deps` does all of them. For each board it fetches the world's sources - including libc++ from an immutable LLVM tag, because Codeberg regenerates its archives and downloading the tarball fails its hash check on a clean build - then configures that world (`-r <board> -p aarch64-none-elf- --libcxx-repo --kernel-max-size 256 -o ARM_ALLOW_MULTI_CORE -o KERNEL_STACK_SIZE=0x200000`) and builds it, and finally builds this library against each. The first build is long: newlib and libc++ are compiled from source, once per board.
+`make deps` does all of them. For each board it fetches the world's sources - including libc++ from an immutable LLVM tag, because Codeberg regenerates its archives and downloading the tarball fails its hash check on a clean build - then configures that world (`-r <board> -p aarch64-none-elf- --libcxx-repo --kernel-max-size 255 -o ARM_ALLOW_MULTI_CORE -o KERNEL_STACK_SIZE=0x200000`) and builds it, and finally builds this library against each. The first build is long: newlib and libc++ are compiled from source, once per board.
 
 Afterwards, name the archive to rebuild one board - `BOARD` selects which, and defaults to `rpi4`:
 

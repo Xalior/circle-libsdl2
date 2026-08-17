@@ -352,7 +352,7 @@ world-build:
 	+@$(NOT_DRY_RUN)
 	@[ -f $(CIRCLE_STDLIB)/Config.mk ] || \
 		( cd $(CIRCLE_STDLIB) && bash ./configure -r $(RASPPI_$(BOARD)) -p aarch64-none-elf- \
-			--libcxx-repo --kernel-max-size 256 -o ARM_ALLOW_MULTI_CORE \
+			--libcxx-repo --kernel-max-size 255 -o ARM_ALLOW_MULTI_CORE \
 			-o KERNEL_STACK_SIZE=$(CIRCLE_KERNEL_STACK_SIZE) && $(MAKE) MAKEINFO=true )
 
 # Convenience: fetch then build one board's world.
