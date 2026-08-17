@@ -2,7 +2,7 @@
 
 ## Overview
 
-Audio is delivered through the callback API: `SDL_OpenAudioDevice` with a callback function. The device plays 16-bit signed stereo into `CHDMISoundBaseDevice` with a ~100 ms hardware queue.
+Audio is delivered through the callback API: `SDL_OpenAudioDevice` with a callback function. The device plays 16-bit signed stereo into `CHDMISoundBaseDevice` with a 30 ms hardware queue - short enough that what is waiting in it is not heard as delay. Without the core split the queue is lengthened where it would be shorter than two of the application's own callback blocks, because a queue that cannot hold two blocks empties between them; with the split on, the servo task fills the queue from the ring a frame at a time and needs no such floor.
 
 **Format handling.** An application that asks for a format and does not permit a change gets what it asked for, converted at the device boundary; `obtained` reports the conversion spec. Permit a change and `obtained` reports the device's 16-bit stereo instead, which has no conversion cost.
 

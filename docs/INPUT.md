@@ -38,7 +38,7 @@ So on a board set to `UK`, shift-2 types `"`, shift-3 types `£` and the key bes
 
 A USB keyboard reports which keys are down and nothing more, so a held key produces one report and then stops changing. The repeats every machine appears to make are made by the machine, and this library makes them.
 
-**A repeat is an `SDL_KEYDOWN` with `key.repeat` set**, carrying the same scancode, keycode and modifiers as the press it repeats, and followed by the same `SDL_TEXTINPUT` that press produced. It is a press in every other respect. An application that wants real presses only - a game counting how many times a key was struck - ignores an event with the flag set; one that is collecting text uses the repeats, which is the whole point of holding a key down.
+**A repeat is an `SDL_KEYDOWN` with `key.repeat` set**, carrying the same scancode and keycode as the press it repeats, and followed by the `SDL_TEXTINPUT` that key produces. The modifiers on it are the ones held at the moment the repeat is made rather than a copy of the ones held at the original press, which is what lets a letter held down start repeating in upper case the moment shift goes down. It is a press in every other respect. An application that wants real presses only - a game counting how many times a key was struck - ignores an event with the flag set; one that is collecting text uses the repeats, which is the whole point of holding a key down.
 
 **One key repeats at a time: the one pressed most recently.** Press a second key while the first is held and the repeat moves to the second; release the second and the first does not resume. This is what a keyboard controller of the period did and what a person expects.
 
@@ -64,10 +64,10 @@ Both layers deliver the SDL events an application expects - `SDL_JOYAXISMOTION`,
 
 **Rumble is coarse, and the library does not pretend otherwise.** Circle offers settings - off, weak, strong - so `SDL_JoystickRumble` and `SDL_GameControllerRumble` take the stronger of SDL's two magnitudes and choose the closest of those, honouring the duration. There is no per-motor control and no envelope underneath to expose.
 
-`SDL_Haptic` - SDL's force-feedback API, with its effect shapes and directions - is **not implemented at all**, because nothing under it could carry an effect faithfully, and an effect that silently becomes a buzz is worse than one that reports it cannot be played.
+`SDL_Haptic` - SDL's force-feedback API, with its effect shapes and directions - **drives nothing**, because nothing under it could carry an effect faithfully, and an effect that silently becomes a buzz is worse than one that reports it cannot be played. The calls are all there and all link: every query answers that there is no haptic device, and every action fails with a message saying so, which is what sends an application's "rumble if it can" path down its other branch.
 
 Also unimplemented, and reporting failure rather than pretending: controller LEDs, trigger rumble, motion sensors, touchpads, and virtual joysticks.
 
 ## Examples
 
-`examples/keyecho` displays scancode, modifier lights, lock lights and a grid of held keys. `examples/mouseview` shows the pointer on screen with buttons and motion. `examples/padview` shows all attached joysticks, gamepads and wheels: name, GUID, USB IDs, live axis bars, button lights, and hot-plug events.
+`examples/keyecho` displays scancode, modifier lights, lock lights and a grid of held keys. `examples/mouseview` shows the pointer on screen with buttons and motion. `examples/padview` counts every attached joystick, gamepad and wheel and logs them arriving and leaving; the first two get a panel each, with name, GUID, USB IDs, live axis bars and button lights, and anything beyond the second is reported as a count rather than drawn.
