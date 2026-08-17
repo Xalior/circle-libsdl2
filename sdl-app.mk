@@ -48,6 +48,19 @@ SDL_APP_DIR := $(dir $(lastword $(MAKEFILE_LIST)))
 
 SDL_APP_LDSCRIPT ?= $(SDL_APP_DIR)sdl-app.ld
 
+# THE FRAGMENT THE SCRIPT PULLS IN IS A LINKER INPUT TOO, and it has to be
+# named here for make to know that. sdl-app.ld carries `INCLUDE
+# sdl-app-init.ld`; the linker resolves that name itself, through the
+# -L$(SDL_APP_DIR) on the link line, and says nothing about it to make. Listed
+# only as the script, an edited fragment leaves the image up to date and the
+# board keeps running the constructors the old fragment placed — a change that
+# reports success and does nothing, which is the one failure this file exists
+# to make impossible.
+#
+# An application that overrides SDL_APP_LDSCRIPT with a script of its own is
+# expected to INCLUDE the same fragment by name, so this holds for it as well.
+SDL_APP_LDDEPS = $(SDL_APP_LDSCRIPT) $(SDL_APP_DIR)sdl-app-init.ld
+
 # THE CROSS COMPILER GOES THROUGH ccache WHEN THERE IS ONE.
 #
 # Circle's Rules.mk, which an application includes before this file, names the
@@ -99,7 +112,7 @@ LIBS := $(filter-out %/liblibcxx-threading.a,$(LIBS))
 # left in, make would try to build the flag and stop.
 LIBS_FILES = $(filter-out -%,$(LIBS))
 
-$(TARGET).img: $(OBJS) $(LIBS_FILES) $(SDL_APP_LDSCRIPT)
+$(TARGET).img: $(OBJS) $(LIBS_FILES) $(SDL_APP_LDDEPS)
 	@echo "  LD    $(TARGET).elf (sdl-app.ld)"
 	@$(LD) -o $(TARGET).elf -Map $(TARGET).map $(LDFLAGS) \
 		-L$(SDL_APP_DIR) -T $(SDL_APP_LDSCRIPT) $(CRTBEGIN) $(OBJS) \
