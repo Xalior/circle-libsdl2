@@ -150,21 +150,25 @@
 // the window grows, well past this depth. The worst SINGLE read grows too, and
 // much faster: a deep window is one transaction the calling core sits blocked
 // on, so read-ahead trades many small waits for one large one. Totals call
-// that a pure win; a program drawing frames does not, because the same delay
-// spread over many reads is invisible and gathered into one read lands inside
-// a frame and drops it.
+// that a pure win; RESPONSIVENESS does not, because the same delay spread over
+// many reads is absorbed, and gathered into one read it becomes a stall long
+// enough to be noticed by whatever that core owes an answer to.
 //
 // This is set well below the fastest depth on purpose, at the point where the
-// worst single read stays a small fraction of a frame — so a program pays no
-// visible price for it even when it reads while drawing. It still takes the
-// large majority of the reduction in total time, which is what makes this
-// depth worth having on by default rather than something to opt into.
+// worst single read stays short against the deadlines a calling core is
+// usually holding — so a program pays no visible price for it even when it
+// reads and serves at the same time. It still takes the large majority of the
+// reduction in total time, which is what makes this depth worth having on by
+// default rather than something to opt into.
 //
-// A program that does all its reading while nothing is drawn — loading
-// screens, and most games — can go several times deeper for a further gain,
-// and the switch is there for that. The report gives both numbers it trades
-// between: the share of each window that was actually wanted, and the largest
-// single read.
+// WHOSE DEADLINE IT IS depends on the program, and that is why this is a
+// default rather than a rule. A core that is driving something to a schedule —
+// drawing, feeding a sound device, answering another core — pays for a long
+// transaction. A core doing none of those while it reads does not, and can go
+// several times deeper for a further gain: the total keeps improving long
+// after the worst case has stopped mattering. The switch is there for that,
+// and the report gives both numbers it trades between: the share of each
+// window that was actually wanted, and the largest single read.
 #define DISKCACHE_DEFAULT_READAHEAD_KB  4
 
 // A window deeper than this is refused however it was asked for. Beyond it a
