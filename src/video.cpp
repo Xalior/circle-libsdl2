@@ -1934,6 +1934,33 @@ extern "C" void SDL_SetWindowBordered(SDL_Window *, SDL_bool) {}
 extern "C" void SDL_SetWindowResizable(SDL_Window *, SDL_bool) {}
 extern "C" void SDL_SetWindowAlwaysOnTop(SDL_Window *, SDL_bool) {}
 
+// Window opacity needs something behind the window to show through. There is
+// one framebuffer and it is scanned out to the panel, so the window is always
+// fully opaque and asking for anything else fails, which is what SDL does on
+// any platform without a compositor.
+//
+// The entry point exists because callers set opacity without reading the
+// result - a program that dims its window on losing focus, say - and an
+// absent symbol would stop such a program linking at all.
+extern "C" int SDL_SetWindowOpacity(SDL_Window *win, float opacity)
+{
+    if (!win)
+        return SDL_SetError("SDL_SetWindowOpacity: no window");
+    if (opacity >= 1.0f)
+        return 0;
+    return SDL_SetError("SDL_SetWindowOpacity: the display has no compositor, "
+                        "so a window is always fully opaque");
+}
+
+extern "C" int SDL_GetWindowOpacity(SDL_Window *win, float *out_opacity)
+{
+    if (!win)
+        return SDL_SetError("SDL_GetWindowOpacity: no window");
+    if (out_opacity)
+        *out_opacity = 1.0f;
+    return 0;
+}
+
 // There is nothing to grab away from and nowhere for a pointer to leave to,
 // so the grab is recorded and the input path is unaffected.
 extern "C" void SDL_SetWindowGrab(SDL_Window *win, SDL_bool grabbed)
