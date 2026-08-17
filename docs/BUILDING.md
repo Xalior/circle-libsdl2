@@ -4,6 +4,7 @@
 
 - The **Arm GNU toolchain** for `aarch64-none-elf` (bare-metal AArch64) on your `PATH` - from the [Arm GNU Toolchain downloads](https://developer.arm.com/downloads/-/arm-gnu-toolchain-downloads).
 - A modern `bash` (5+) and GNU `getopt` on your `PATH` - circle-stdlib's `configure` needs `mapfile` and GNU-style option parsing (macOS ships bash 3.2 and BSD getopt; `brew install bash gnu-getopt` provides both).
+- **GNU `make` 4.0 or later.** Version 3.x compares file timestamps only to the second, so a source rewritten within the same second its object was compiled in is never seen as newer and the stale object goes into the link. macOS ships 3.81 as `make`; `brew install make` provides a current one as `gmake`, and every `make` in this document means that one. The library's Makefile and every example refuse to run under 3.x and say so, rather than building something that looks finished.
 
 ## Building the library
 

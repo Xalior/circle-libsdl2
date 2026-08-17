@@ -25,6 +25,21 @@
 # sdl-app.ld is derived from Circle's circle.ld and remains GPLv3 (see its
 # header); the rest of this project is zlib-licensed.
 
+# macOS ships GNU make 3.81 as `make`. It compares file timestamps to the
+# second, so a source rewritten within the same second its object was compiled
+# in is never seen as newer and the object carries the older text into the
+# link. Homebrew installs a current one as gmake.
+#
+# The same guard stands at the top of this project's own Makefile. It is
+# repeated here because an application under examples/ is built by running
+# make in its own directory, which never reads that file - and 3.81 does not
+# fail there, it reports the kernel image up to date and builds nothing at
+# all, so an edited source presents as a build that worked and a board that
+# did not change. This is the one file every application here includes.
+ifeq ($(filter 1.% 2.% 3.%,$(MAKE_VERSION)),$(MAKE_VERSION))
+$(error this build needs GNU make 4.0 or later; this is '$(MAKE)' version '$(MAKE_VERSION)'. Homebrew installs one as gmake.)
+endif
+
 # This directory, captured before anything else can change MAKEFILE_LIST. It
 # is both where the default script lives and where the linker is told to look
 # for INCLUDEd fragments, so an application that overrides the script with its
