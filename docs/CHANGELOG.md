@@ -10,6 +10,42 @@ followed.
 
 ## vPoC3
 
+### The locks reach the keyboard, and the keypad gets its other half
+
+Three things that were named as missing when the lock states were first
+reported, and are now done.
+
+**The lamps on the keyboard light.** A keyboard does not light its own caps,
+num and scroll lamps; the host sends it a report saying which are on, and this
+library now sends that report whenever a lock changes. It is submitted and not
+waited for: Circle's own `SetLEDs` builds the same request and then spins the
+core until it completes, or for three seconds if the keyboard has gone away,
+and that core is core 0 - the one that serves USB, the card, the sound and
+every other core's marshalled calls. **Not on the Pi 3**, where Circle drives
+USB through the DWHCI controller, which refuses an asynchronous control
+transfer outright; the lamps stay dark there rather than the machine stopping
+to light them, and nothing an application reads is different.
+
+**The keypad has two faces.** Num lock now chooses between them, as it does on
+a real keyboard: `7` `8` `9` are digits with the lock on and Home, Up and Page
+Up with it off, and so on down the keypad, with `5` meaning nothing and the
+four operators unaffected. Shift inverts the lock for one keystroke. The
+scancode never moves - keypad 8 is `SDL_SCANCODE_KP_8` either way - and the
+meaning is carried in the keycode, so an application that handles the arrow
+keys handles the keypad's arrows without knowing the keypad exists. A key that
+is navigating produces no `SDL_TEXTINPUT`.
+
+This is a deliberate difference from desktop SDL, which reports `SDLK_KP_8`
+whichever way the lock is set. Circle's layout tables hand back nothing for
+these keys while the lock is off, exactly because that is when they are not
+characters, and supplying the meaning is this library's half of that
+arrangement. See [The keypad has two faces](INPUT.md#the-keypad-has-two-faces).
+
+**`SDL_SetModState` reaches the layout.** Setting `KMOD_CAPS` now turns caps
+lock on for real - the layout's own lock, the case of the letters that follow,
+and the lamp. Upstream SDL cannot do this because the layout there belongs to
+the host operating system; both sides are ours, so they are kept in step.
+
 ### Caps lock and num lock reach the application
 
 `SDL_GetModState` and the `keysym.mod` of every key event now carry

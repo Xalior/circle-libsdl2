@@ -18,9 +18,9 @@ So on a board set to `UK`, shift-2 types `"`, shift-3 types `£` and the key bes
 
 **AltGr types; the other modifiers do not.** A key held with control, with the left alt, or with a GUI key is a command rather than text, and produces no `SDL_TEXTINPUT` - SDL's own behaviour. The right alt is AltGr, which on the European layouts is a third level holding characters of its own rather than a command modifier, so it produces text where the layout defines some. The US layout defines none, so on a US board AltGr types nothing.
 
-**The keycode (`keysym.sym`) does not follow the layout**, although desktop SDL's does. It stays what a US keyboard would report, for the same reason scancodes stay physical: applications bind their actions to keycodes, out of configuration files and out of compiled-in defaults, and a keycode that moved with `keymap=` would silently rebind a game's controls on any board not set to `us`. `SDL_GetKeyFromScancode` and `SDL_GetScancodeFromKey` answer accordingly, and remain each other's inverse.
+**The keycode (`keysym.sym`) does not follow the layout**, although desktop SDL's does. It stays what a US keyboard would report, for the same reason scancodes stay physical: applications bind their actions to keycodes, out of configuration files and out of compiled-in defaults, and a keycode that moved with `keymap=` would silently rebind a game's controls on any board not set to `us`. `SDL_GetKeyFromScancode` and `SDL_GetScancodeFromKey` answer accordingly, and remain each other's inverse. An event's `keysym.sym` is the same answer everywhere except the keypad, whose keys have two meanings - see [The keypad has two faces](#the-keypad-has-two-faces).
 
-**The keypad types its digits and operators whatever the layout says, and whatever num lock says.** Every layout prints the same characters on it, so the keypad is not routed through the layout at all. This is a real difference from a desk machine, and worth knowing: turning num lock off does not turn the keypad into a set of arrow keys, because Circle's tables gate the keypad digits behind num lock and num lock starts off - a board fresh from the boot would have a keypad that typed nothing until somebody found the key.
+**The keypad types the same characters whatever the layout says.** Every layout prints the same things on it, so the keypad is not routed through the layout. What it does depend on is num lock - see [The keypad has two faces](#the-keypad-has-two-faces).
 
 ## Lock keys
 
@@ -32,7 +32,34 @@ So on a board set to `UK`, shift-2 types `"`, shift-3 types `£` and the key bes
 
 **Caps lock is the layout's own state**, the same one that decides the case of the letters `SDL_TEXTINPUT` carries, so what an application reads from `KMOD_CAPS` and what it receives as text can never disagree. All three locks start off at boot.
 
-**The keyboard's own lamps are not lit.** This library never writes the LEDs on the USB keyboard, so the state is the application's to show on screen. `examples/keyecho` shows all three.
+**The lamps on the keyboard light.** A keyboard does not light its own caps, num and scroll lamps - the host sends it a report saying which of the three are on - and this library sends that report whenever a lock changes, so the keyboard agrees with what the machine thinks. The report is submitted and not waited for, because the core that would wait is the one core that cannot be stopped; the lamp changes a moment later, which is all a lamp needs.
+
+**On the Pi 3 the lamps stay dark.** Circle drives USB there through the DWHCI controller, which has no asynchronous control transfer to submit - it refuses one outright - and the only way left is to stop the core until the keyboard answers, up to three seconds if it never does. That is not a trade worth making for a lamp. Nothing an application reads changes: the lock states are the layout's, and they are reported identically on every board.
+
+**An application can set the locks, and it reaches all the way down.** `SDL_SetModState` with `KMOD_CAPS` in it turns caps lock on for real - the layout's own lock, the case of the letters that follow, and the lamp. Upstream SDL cannot do this, because there the layout belongs to the host operating system and SDL can only move its own idea of the lock; here both sides are ours, so they are kept in step. The rest of `SDL_SetModState` behaves as SDL defines it.
+
+## The keypad has two faces
+
+The keypad is what num lock is for. Every digit key on it carries a second meaning, printed on the same key cap, and the lock chooses between them - a digit with the lock on, a navigation key with it off:
+
+| Key | Lock on | Lock off |
+|---|---|---|
+| `7` `8` `9` | `7` `8` `9` | Home, Up, Page Up |
+| `4` `5` `6` | `4` `5` `6` | Left, nothing, Right |
+| `1` `2` `3` | `1` `2` `3` | End, Down, Page Down |
+| `0` `.` | `0` `.` | Insert, Delete |
+
+**Shift inverts the lock**, as it does on a real keyboard, so one digit can be typed without disturbing a keypad that is set to navigate, and one arrow pressed without disturbing a keypad that is set to type.
+
+**The four operators are not on the lock.** `/`, `*`, `-` and `+` type their character whichever way num lock is set, having no second meaning for it to choose between.
+
+**The scancode never moves.** SDL keeps the keypad's positions distinct from the arrow cluster's, and so does this library: keypad 8 is `SDL_SCANCODE_KP_8` whether it is typing an `8` or moving the cursor up, so an application that wants to know which physical key was struck always can.
+
+**The meaning is in the keycode.** The `keysym.sym` of a key event is `SDLK_KP_8` while the lock is on and `SDLK_UP` while it is off, so an application that handles the arrow keys handles the keypad's arrows without knowing the keypad exists. No `SDL_TEXTINPUT` follows a keypad key that is navigating, because a navigation key types nothing.
+
+This is the one place where an event's `keysym.sym` and `SDL_GetKeyFromScancode` differ, and deliberately. The query is a standing question about the keyboard - *where is the keypad's 8* - and its answer stays put, which is what keeps it and `SDL_GetScancodeFromKey` exact inverses and what lets an application find that key while the keypad is navigating. The event is a keystroke that happened, and what it meant is what the lock said at the time.
+
+**Desktop SDL does not do this**; there the keypad's keycode is `SDLK_KP_8` whichever way the lock is set, and an application that wants the navigation meaning works it out itself. The difference is deliberate. Circle's layout tables deliberately return nothing for these keys while the lock is off, precisely because that is when they are not characters, and supplying the meaning they hand back is this library's half of the arrangement - there is nowhere else for it to go.
 
 ## Key repeat
 
@@ -70,4 +97,4 @@ Also unimplemented, and reporting failure rather than pretending: controller LED
 
 ## Examples
 
-`examples/keyecho` displays scancode, modifier lights, lock lights and a grid of held keys. `examples/mouseview` shows the pointer on screen with buttons and motion. `examples/padview` counts every attached joystick, gamepad and wheel and logs them arriving and leaving; the first two get a panel each, with name, GUID, USB IDs, live axis bars and button lights, and anything beyond the second is reported as a count rather than drawn.
+`examples/keyecho` displays the last key event's scancode and keycode, modifier lights, lock lights and a grid of held keys. `examples/mouseview` shows the pointer on screen with buttons and motion. `examples/padview` counts every attached joystick, gamepad and wheel and logs them arriving and leaving; the first two get a panel each, with name, GUID, USB IDs, live axis bars and button lights, and anything beyond the second is reported as a count rather than drawn.

@@ -24,6 +24,9 @@
 #include <circle/usb/usbcontroller.h>
 #include <circle/usb/usbhcidevice.h>
 #include <circle/usb/usbkeyboard.h>
+#include <circle/usb/usbrequest.h>
+#include <circle/usb/usbhid.h>
+#include <circle/synchronize.h>
 #include <circle/input/mouse.h>
 #include <circle/input/keymap.h>
 #include <circle/input/keyboardbehaviour.h>
@@ -87,6 +90,55 @@ RawReport s_prev;                   // last report translated into events
 Uint16 s_modState = KMOD_NONE;
 Uint8 s_keyState[SDL_NUM_SCANCODES];
 
+// --- The lamps on the keyboard ----------------------------------------------
+//
+// A keyboard does not light its own caps, num and scroll lamps. The host owns
+// them: it sends the keyboard a one-byte output report saying which of the
+// three are lit, and the keyboard obeys. So the lamps stay dark until this
+// file says otherwise, the locks being this file's to know.
+//
+// The report is submitted and not waited for. Circle's CUSBKeyboardDevice has
+// SetLEDs, which builds this same request and then spins until it completes -
+// and the core it would spin is core 0, the one core that cannot be stopped,
+// because it serves USB, the card, the sound and every other core's marshalled
+// calls. The spin has no exit but completion or a three second timeout
+// (CXHCIEndpoint::Transfer), so a keyboard unplugged mid-transfer would stop
+// the machine for three seconds to light a lamp. Submitted asynchronously the
+// same request costs nothing and the lamp changes a moment later, which is all
+// a lamp has ever needed.
+//
+// NOT ON THE PI 3, where Circle drives USB through the DWHCI controller:
+// CDWHCIDevice::SubmitAsyncRequest asserts its endpoint is not a control
+// endpoint, so that controller has no asynchronous control transfer to use and
+// the only way left is the spin. The lamps stay dark on that board rather than
+// the machine stopping to light them. Nothing an application reads is
+// affected - the lock states are the layout's and are reported the same on
+// every board - and the Pi 4 and Pi 5 both use XHCI, which does have it.
+#if RASPPI <= 3
+const bool LAMPS_DRIVEN = false;
+#else
+const bool LAMPS_DRIVEN = true;
+#endif
+
+// One cache line of heap for the report byte. It has to be the heap and not a
+// static: XHCI requires a transfer buffer above MEM_KERNEL_END, which the heap
+// is and this file's own storage is not, and Circle's heap hands out blocks
+// aligned to a cache line (HEAP_BLOCK_ALIGN), which a buffer being cleaned out
+// to a device has to be so that cleaning it cannot take a neighbour with it.
+u8 *s_pLampBuffer = nullptr;
+TSetupData *s_pLampSetup = nullptr;
+
+// Written by the pump, cleared by the completion routine in IRQ context.
+volatile bool s_bLampInFlight = false;
+
+// What the lamps should show, and what they were last told. The sentinel is
+// not a lamp state: it means nothing has been sent to this keyboard yet, so
+// the first pass always speaks even if every lock is off, and a keyboard
+// plugged in while caps lock is on lights its lamp on arrival.
+const u8 LAMPS_UNKNOWN = 0xFF;
+u8 s_uchLampsWanted = 0;
+u8 s_uchLampsSent = LAMPS_UNKNOWN;
+
 void RawKeyHandler(unsigned char ucModifiers, const unsigned char RawKeys[6])
 {
     s_report.mods = ucModifiers;
@@ -97,6 +149,11 @@ void RawKeyHandler(unsigned char ucModifiers, const unsigned char RawKeys[6])
 void KeyboardRemovedHandler(CDevice *, void *)
 {
     s_keyboard = nullptr;
+
+    // The next keyboard is a different keyboard with its own dark lamps, and
+    // it has to be told the lock states even though they have not changed.
+    s_uchLampsSent = LAMPS_UNKNOWN;
+
     // release everything so no key stays stuck down
     s_report.mods = 0;
     memset((void *)s_report.keys, 0, 6);
@@ -198,13 +255,31 @@ bool IsLockScancode(SDL_Scancode sc)
         || sc == SDL_SCANCODE_SCROLLLOCK;
 }
 
-// Turn one press of a lock key into the new lock state, in the modifier word.
+// Publish the layout's lock state everywhere it is read from.
 //
 // The layout holds the locks, not this file. Circle's CKeyMap toggles them
 // inside Translate and reports all three through GetLEDStatus, and the same
 // state decides the case of the letters it hands back - so a second copy kept
 // here would be a second answer to the same question, and typed text and
-// KMOD_CAPS would disagree the first time the two drifted apart.
+// KMOD_CAPS would disagree the first time the two drifted apart. Everything
+// below is a view of that one state: the modifier word an application reads,
+// and the lamps on the keyboard.
+void SyncLockState(void)
+{
+    const u8 nLEDs = KeyMap()->GetLEDStatus();
+
+    s_modState &= ~(Uint16)(KMOD_NUM | KMOD_CAPS | KMOD_SCROLL);
+    if (nLEDs & KEYB_LED_NUM_LOCK)    s_modState |= KMOD_NUM;
+    if (nLEDs & KEYB_LED_CAPS_LOCK)   s_modState |= KMOD_CAPS;
+    if (nLEDs & KEYB_LED_SCROLL_LOCK) s_modState |= KMOD_SCROLL;
+
+    // The USB output report numbers its lamps exactly as Circle numbers them
+    // here - num, caps, scroll, in bits 0, 1 and 2 - so the byte the keymap
+    // reports is the byte the keyboard is sent.
+    s_uchLampsWanted = nLEDs;
+}
+
+// Turn one press of a lock key into the new lock state.
 //
 // Translate is asked with no modifiers held, because the lock keys are the
 // one thing on the keyboard that means the same whatever is held with it:
@@ -213,12 +288,86 @@ bool IsLockScancode(SDL_Scancode sc)
 void AdvanceLock(SDL_Scancode sc)
 {
     KeyMap()->Translate((u8)sc, 0);
+    SyncLockState();
+}
 
-    const u8 nLEDs = KeyMap()->GetLEDStatus();
-    s_modState &= ~(Uint16)(KMOD_NUM | KMOD_CAPS | KMOD_SCROLL);
-    if (nLEDs & KEYB_LED_NUM_LOCK)    s_modState |= KMOD_NUM;
-    if (nLEDs & KEYB_LED_CAPS_LOCK)   s_modState |= KMOD_CAPS;
-    if (nLEDs & KEYB_LED_SCROLL_LOCK) s_modState |= KMOD_SCROLL;
+// Put one lock where it is asked to be rather than where the next press would
+// take it. The layout offers no way to set a lock, only the press that flips
+// it, so this reads the state and presses the key exactly when the two differ.
+void ForceLock(SDL_Scancode sc, u8 nLampMask, bool bWanted)
+{
+    const bool bNow = (KeyMap()->GetLEDStatus() & nLampMask) != 0;
+    if (bNow != bWanted)
+        KeyMap()->Translate((u8)sc, 0);
+}
+
+// Whether num lock is in force for this keystroke. Shift inverts it, as it
+// does on a real keyboard: holding shift with the keypad gives the other
+// meaning of the key without touching the lock itself, which is how a person
+// types one digit while the keypad is set to navigate.
+bool NumLockInForce(Uint16 mod)
+{
+    const bool bLock  = (mod & KMOD_NUM) != 0;
+    const bool bShift = (mod & KMOD_SHIFT) != 0;
+    return bLock != bShift;
+}
+
+// The keypad's two faces, as they are printed on the key caps: a digit with
+// num lock in force, a navigation key without it. The middle key has nothing
+// on its second face, which is why 5 is the one that goes nowhere.
+//
+// The keypad is why num lock exists. Circle's layout tables know this and
+// deliberately hand back nothing for these keys while the lock is off, leaving
+// the navigation meaning to whoever is driving them - which is this file.
+struct KeypadFace
+{
+    SDL_Scancode sc;
+    char         chDigit;
+    SDL_Keycode  nav;
+};
+const KeypadFace s_KeypadFaces[] = {
+    {SDL_SCANCODE_KP_0,      '0', SDLK_INSERT},
+    {SDL_SCANCODE_KP_1,      '1', SDLK_END},
+    {SDL_SCANCODE_KP_2,      '2', SDLK_DOWN},
+    {SDL_SCANCODE_KP_3,      '3', SDLK_PAGEDOWN},
+    {SDL_SCANCODE_KP_4,      '4', SDLK_LEFT},
+    {SDL_SCANCODE_KP_5,      '5', SDLK_UNKNOWN},
+    {SDL_SCANCODE_KP_6,      '6', SDLK_RIGHT},
+    {SDL_SCANCODE_KP_7,      '7', SDLK_HOME},
+    {SDL_SCANCODE_KP_8,      '8', SDLK_UP},
+    {SDL_SCANCODE_KP_9,      '9', SDLK_PAGEUP},
+    {SDL_SCANCODE_KP_PERIOD, '.', SDLK_DELETE},
+};
+
+const KeypadFace *KeypadFaceFor(SDL_Scancode sc)
+{
+    for (const KeypadFace &Face : s_KeypadFaces)
+        if (Face.sc == sc)
+            return &Face;
+    return nullptr;
+}
+
+// The keycode a key EVENT carries, which is not always the one
+// SDL_GetKeyFromScancode answers with.
+//
+// They differ on the keypad and nowhere else. SDL_GetKeyFromScancode is a
+// standing question about the keyboard - where is the keypad's 8 - and its
+// answer has to stay put: it is what keeps it and SDL_GetScancodeFromKey exact
+// inverses, and an application may ask it at any time and in any number. An
+// event is a keystroke that happened, and what a keypad keystroke meant is
+// whatever the lock said at the moment it was struck.
+//
+// The scancode is untouched either way. SDL keeps the keypad's positions
+// distinct from the arrow cluster's, so an application that wants to know
+// which physical key was pressed still gets SDL_SCANCODE_KP_8, and one that
+// wants to know what it meant reads the keycode.
+SDL_Keycode EventKeycodeFor(SDL_Scancode sc, Uint16 mod)
+{
+    const KeypadFace *pFace = KeypadFaceFor(sc);
+    if (pFace && !NumLockInForce(mod) && pFace->nav != SDLK_UNKNOWN)
+        return pFace->nav;
+
+    return KeycodeFor(sc);
 }
 
 // SDL's modifier word in the form Circle's keymap expects. Circle separates
@@ -283,28 +432,34 @@ bool TypedText(SDL_Scancode sc, Uint16 mod, char *out)
 
     // The keypad is not routed through the layout. Its printable keys carry
     // the same characters in every layout Circle ships, so there is nothing
-    // for a layout to say about them; and Circle gates the digits on num
-    // lock, which starts off, so a board fresh from the boot would have a
-    // keypad that typed nothing until someone found the key. A keypad being
-    // navigated instead sends its own scancodes.
+    // for a layout to say about them.
     if (!altgr)
     {
+        // The four operators are not on the lock. They type their character
+        // whatever num lock says, as they do on a real keyboard, having no
+        // second meaning that num lock could be choosing between.
         switch (sc)
         {
         case SDL_SCANCODE_KP_DIVIDE:   out[0] = '/'; out[1] = 0; return true;
         case SDL_SCANCODE_KP_MULTIPLY: out[0] = '*'; out[1] = 0; return true;
         case SDL_SCANCODE_KP_MINUS:    out[0] = '-'; out[1] = 0; return true;
         case SDL_SCANCODE_KP_PLUS:     out[0] = '+'; out[1] = 0; return true;
-        case SDL_SCANCODE_KP_PERIOD:   out[0] = '.'; out[1] = 0; return true;
-        case SDL_SCANCODE_KP_0:        out[0] = '0'; out[1] = 0; return true;
-        case SDL_SCANCODE_KP_1: case SDL_SCANCODE_KP_2: case SDL_SCANCODE_KP_3:
-        case SDL_SCANCODE_KP_4: case SDL_SCANCODE_KP_5: case SDL_SCANCODE_KP_6:
-        case SDL_SCANCODE_KP_7: case SDL_SCANCODE_KP_8: case SDL_SCANCODE_KP_9:
-            out[0] = (char)('1' + (sc - SDL_SCANCODE_KP_1));
-            out[1] = 0;
-            return true;
         default:
             break;
+        }
+
+        // The digits and the decimal point are. With the lock in force they
+        // type; without it the same key is Home or Page Up or an arrow, and a
+        // navigation key types nothing at all.
+        const KeypadFace *pFace = KeypadFaceFor(sc);
+        if (pFace)
+        {
+            if (!NumLockInForce(mod))
+                return false;
+
+            out[0] = pFace->chDigit;
+            out[1] = 0;
+            return true;
         }
     }
 
@@ -417,6 +572,69 @@ bool RepeatEligible(SDL_Scancode sc)
     }
 }
 
+// The completion of a lamp report, called from the USB interrupt. It has one
+// job and does it in a few instructions, because everything else this file
+// wants to do about lamps can wait for the pump.
+void LampComplete(CUSBRequest *pURB, void *, void *)
+{
+    delete pURB;
+    s_bLampInFlight = false;
+}
+
+// Send the lamps their state if it has changed and the wire is free. Called
+// from the input pump, so it runs on core 0 where the USB stack lives, and one
+// report is in flight at a time - a second submitted to the same endpoint
+// behind the first would be a second answer to a question already asked.
+//
+// A change made while a report is in flight is not lost and does not queue:
+// s_uchLampsWanted simply holds the newest state and the next pass sends that.
+// Somebody holding caps lock down until it repeats - it does not repeat, but
+// somebody tapping it fast - gets the state it finished in, which is the only
+// state that was ever true for longer than a moment.
+void LampPump(void)
+{
+    if (!LAMPS_DRIVEN || !s_keyboard || s_bLampInFlight)
+        return;
+    if (s_uchLampsWanted == s_uchLampsSent)
+        return;
+
+    if (!s_pLampBuffer)
+    {
+        s_pLampBuffer = new u8[DATA_CACHE_LINE_LENGTH_MAX];
+        s_pLampSetup = new TSetupData;
+        if (!s_pLampBuffer || !s_pLampSetup)
+            return;
+    }
+
+    // The HID class request that owns the lamps: an output report, sent to the
+    // interface rather than the device, one byte long.
+    s_pLampSetup->bmRequestType = REQUEST_OUT | REQUEST_CLASS | REQUEST_TO_INTERFACE;
+    s_pLampSetup->bRequest      = SET_REPORT;
+    s_pLampSetup->wValue        = REPORT_TYPE_OUTPUT << 8;
+    s_pLampSetup->wIndex        = s_keyboard->GetInterfaceNumber();
+    s_pLampSetup->wLength       = 1;
+
+    s_pLampBuffer[0] = s_uchLampsWanted;
+
+    CUSBRequest *pURB = new CUSBRequest(s_keyboard->GetEndpoint0(),
+                                        s_pLampBuffer, 1, s_pLampSetup);
+    if (!pURB)
+        return;
+    pURB->SetCompletionRoutine(LampComplete, nullptr, nullptr);
+
+    // Recorded before the submission, not after: the completion routine can
+    // run before SubmitAsyncRequest has returned.
+    s_uchLampsSent = s_uchLampsWanted;
+    s_bLampInFlight = true;
+
+    if (!s_keyboard->GetHost()->SubmitAsyncRequest(pURB))
+    {
+        s_bLampInFlight = false;
+        s_uchLampsSent = LAMPS_UNKNOWN;   // never went out; try again next pass
+        delete pURB;
+    }
+}
+
 // `repeat` marks an event this file generated for a key that is already down,
 // rather than one a report asked for. It is the only difference between the
 // two: a repeat is a key press in every other respect, carries the same
@@ -465,7 +683,7 @@ void PushKeyEvent(SDL_Scancode sc, bool down, bool repeat = false)
     ev.key.state = down ? SDL_PRESSED : SDL_RELEASED;
     ev.key.repeat = repeat ? 1 : 0;
     ev.key.keysym.scancode = sc;
-    ev.key.keysym.sym = KeycodeFor(sc);
+    ev.key.keysym.sym = EventKeycodeFor(sc, s_modState);
     ev.key.keysym.mod = s_modState;
     SDL_PushEvent(&ev);
 
@@ -1196,6 +1414,10 @@ void SDL2Circle_InputPump(void)
     // After the reports, so a key that came up in this pass has already given
     // the repeat up and cannot produce one more character on its way out.
     KeyRepeatPump();
+
+    // After both, so a lock pressed in this pass reaches the lamp on the same
+    // pass its state reached the modifier word.
+    LampPump();
 }
 
 // An override, for a kernel that wants injection to read from a device other
@@ -1370,9 +1592,30 @@ extern "C" SDL_Keymod SDL_GetModState(void)
 // keyboard has nothing held, and the next SDL_GetModState must report what
 // was set. It stands until the next real modifier key changes it, which is
 // SDL's behaviour too.
+//
+// The three lock bits go further here than they can upstream, and set the
+// locks themselves. Upstream SDL cannot: there the keyboard layout belongs to
+// the host operating system, so setting KMOD_CAPS moves SDL's idea of the lock
+// and leaves the real one alone, and the letters that arrive afterwards are
+// still in the case the host thinks is right. Both sides are ours, so there is
+// nothing to stop them being kept in step - an application that turns caps lock
+// on gets capitals, and the lamp on the keyboard to go with them.
 extern "C" void SDL_SetModState(SDL_Keymod modstate)
 {
     s_modState = (Uint16)modstate;
+
+    ForceLock(SDL_SCANCODE_NUMLOCKCLEAR, KEYB_LED_NUM_LOCK,
+              (modstate & KMOD_NUM) != 0);
+    ForceLock(SDL_SCANCODE_CAPSLOCK, KEYB_LED_CAPS_LOCK,
+              (modstate & KMOD_CAPS) != 0);
+    ForceLock(SDL_SCANCODE_SCROLLLOCK, KEYB_LED_SCROLL_LOCK,
+              (modstate & KMOD_SCROLL) != 0);
+
+    // Republished from the layout rather than left as asked, so the lamps
+    // follow and the bits an application reads back are the ones that are
+    // really set underneath. They agree: the three calls above have just made
+    // them agree.
+    SyncLockState();
 }
 
 extern "C" SDL_Keycode SDL_GetKeyFromScancode(SDL_Scancode scancode)

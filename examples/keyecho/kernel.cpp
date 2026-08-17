@@ -5,6 +5,7 @@
 //   top edge      thin animated sweep = app alive
 //   center        last scancode as two big hex digits
 //                 (green while key held, dimmed red after release)
+//                 last keycode under it, small, as eight hex digits
 //   below         8 modifier lights (LCTRL LSHIFT LALT LGUI  RCTRL ...)
 //                 3 lock lights below them, green (CAPS NUM SCROLL)
 //   lower half    32x8 grid of scancodes 0..255 from SDL_GetKeyboardState
@@ -140,6 +141,7 @@ TShutdownMode CKernel::Run(void)
 
     int lastScancode = -1;
     bool lastDown = false;
+    Uint32 lastSym = 0;
     unsigned nEvents = 0;
 
     for (;;)
@@ -151,6 +153,7 @@ TShutdownMode CKernel::Run(void)
             {
                 lastScancode = ev.key.keysym.scancode;
                 lastDown = (ev.type == SDL_KEYDOWN);
+                lastSym = (Uint32)ev.key.keysym.sym;
                 nEvents++;
                 // A repeat is a key press with the repeat flag set, and it
                 // is named separately here because it is otherwise
@@ -189,6 +192,20 @@ TShutdownMode CKernel::Run(void)
             int x0 = W / 2 - gw - gap / 2, y0 = H / 6;
             glyph((lastScancode >> 4) & 15, x0, y0, scale, c);
             glyph(lastScancode & 15, x0 + gw + gap, y0, scale, c);
+
+            // The keycode of the same event, small, under the scancode. It is
+            // here because it is the only place the keypad's two faces show:
+            // the scancode of keypad 8 is 0x60 whatever num lock says, and the
+            // keycode is 0x40000060 with the lock on and 0x40000052 - the up
+            // arrow - with it off.
+            const int ks = 6, kgw = 5 * ks, kgap = ks;
+            int kx = W / 2 - (8 * (kgw + kgap) - kgap) / 2;
+            int ky = y0 + 7 * scale + scale;
+            for (int i = 7; i >= 0; i--)
+            {
+                glyph((int)((lastSym >> (i * 4)) & 15), kx, ky, ks, 0xFF80A0C0);
+                kx += kgw + kgap;
+            }
         }
 
         // modifier lights
