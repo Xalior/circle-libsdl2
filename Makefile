@@ -345,6 +345,10 @@ world-fetch:
 # for machines with megabytes of stack, which is most of them.
 CIRCLE_KERNEL_STACK_SIZE ?= 0x200000
 
+# _WANT_IO_C99_FORMATS: newlib's printf and scanf accept %zu, %jd, %td and %hh.
+# Omitted, those letters are copied to the output rather than consumed. -o
+# becomes a -D in the flags newlib is compiled with, which is why it is set here.
+#
 # COMPILE (isolated per world, safe to run in parallel across boards). Idempotent:
 # skips re-configure when Config.mk is already present.
 .PHONY: world-build
@@ -353,6 +357,7 @@ world-build:
 	@[ -f $(CIRCLE_STDLIB)/Config.mk ] || \
 		( cd $(CIRCLE_STDLIB) && bash ./configure -r $(RASPPI_$(BOARD)) -p aarch64-none-elf- \
 			--libcxx-repo --kernel-max-size 255 -o ARM_ALLOW_MULTI_CORE \
+			-o _WANT_IO_C99_FORMATS \
 			-o KERNEL_STACK_SIZE=$(CIRCLE_KERNEL_STACK_SIZE) && $(MAKE) MAKEINFO=true )
 
 # Convenience: fetch then build one board's world.
