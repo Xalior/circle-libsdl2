@@ -59,9 +59,11 @@ Building through Circle's `Rules.mk` - as the examples do - you get `ARM_ALLOW_M
 
 A world elsewhere on disk works with `make CIRCLESTDLIBHOME=/path/to/circle-stdlib`.
 
-## Required configuration: `USE_PHYSICAL_COUNTER`
+## `USE_PHYSICAL_COUNTER`, which nothing has to configure
 
-This library requires it, and `make deps` configures a world that has it.
+This library requires it, and every world it builds against already has it. Circle defines it in `sysconfig.h` for `RASPPI >= 2`, which is every board here, and only `NO_PHYSICAL_COUNTER` takes it away.
+
+So it appears in no world's `Config.mk`, and searching one for it proves nothing either way - the search comes back empty on a correctly configured world. What would break this library is a world built with `NO_PHYSICAL_COUNTER`, and that is the thing to look for.
 
 It decides what `CTimer::GetClockTicks64` compiles to. With the option, it is `mrs CNTPCT_EL0` - a CPU system register private to the core that reads it, needing no lock, no device and no other core. Without it, the same call reads the system timer's memory-mapped registers, which is a device, and a device belongs to core 0.
 

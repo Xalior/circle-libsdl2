@@ -117,7 +117,7 @@ Almost nothing. Call plain `SDL_*` and it works on whatever core you were placed
 
 If the application has its own file layer - many ports and emulators do - point it at these functions. These are then still the host kernel's:
 
-- **Initialise the C library's standard streams before the application opens anything.** A Circle kernel that calls `CGlueStdioInit` takes descriptors 0, 1 and 2 for the console. Without it the first file the application opens is handed descriptor 0, because the C library gives out the lowest free slot - and a runtime that reads 0, 1 and 2 as the console then sends every write meant for that file to the console instead, with nothing reporting a fault.
+- **Do not bind the standard descriptors; this library binds them.** `SDL2Circle_ArmCoreRuntime` takes 0, 1 and 2 for a console with a keyboard on it. The C library binds all three together and stops the board inside an assertion if they are bound twice, so a kernel carrying its own `CConsole` and `CGlueStdioInit` call halts before the application starts. Remove both - it needs neither. Holding all three is also what stops the first file the application opens being handed descriptor 0, which a language runtime reads as the console, quietly sending that file's writes there instead.
 - **Bring the card up before any other core starts asking for it**, which is step 1 above.
 
 If it does not, and it simply calls `fopen`, `std::ifstream` or `opendir` throughout its source, **redirect the C library underneath it** instead of editing the application. The linker's `--wrap` option does this without touching a single vendored file:
@@ -146,7 +146,12 @@ What makes this work, and all of it matters:
 - **`__real_*` is the mechanism, not a convenience.** The I/O service does its work by making these same calls once it has reached core 0. Without a route back to the original, the wrapper would call itself forever.
 - **The service names an offset on every read and write; the C library expects a file to remember where it is.** So your wrapper has to keep the position itself, one value per open descriptor, advancing it on each read and write and setting it on each seek. Seeking from the end needs the file's length, which `SDL2Circle_IOOpen` returns when you ask for it.
 
-Descriptors 0, 1 and 2 are the console rather than files, so they have no route through the I/O service. Send those to core 0 with `SDL2Circle_CallOn0` and let the original implementation run there.
+Descriptors 0, 1 and 2 are the console rather than files, so they have no route through the I/O service. They need no route: this library binds them and each half already crosses cores on its own.
+
+- **Writing to 1 or 2 needs no wrapper branch at all.** The console device this library binds hands the bytes to `SDL2Circle_WriteBytes`, which puts them in the calling core's own ring for core 0's servo to drain - the same path the log takes. A `__wrap__write` therefore passes a console descriptor to `__real__write` and is done.
+- **Reading 0 goes through `SDL2Circle_ReadStdin`**, which marshals to core 0 itself and beats the watchdog's heartbeat while it waits on a human. A `__wrap__read` calls it for descriptor 0 rather than reaching the C library's own blocking read from an application core.
+
+Neither needs `SDL2Circle_CallOn0`.
 
 ## Examples
 
