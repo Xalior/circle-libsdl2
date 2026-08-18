@@ -10,6 +10,28 @@ followed.
 
 ## vPoC3
 
+### The log reads as a log
+
+Every line the library writes is now a source, a state and its values, and
+nothing else. There is no prose on the wire: no second person, no suggested
+remedy, no multi-line explanation of what somebody should check next.
+
+The console is a fixed, slow width shared by every core, so a line costs time
+that the next line then waits for, and a chatty library pushes out the records
+it is competing with. A line that explains itself in three sentences spends
+that budget on the explanation.
+
+Nothing was dropped and nothing new is said - the same events are reported, at
+the same severities, at the same moments. What the lines used to explain now
+lives beside the call that makes them, or in the document that owns the
+subject. Two examples of the second: `docs/INPUT.md` gained the section on a
+board with no USB host controller, including why `--rapi-debug-uart` on such a
+board stops rather than runs; `docs/THREADING.md` carries what a starved
+cooperative thread means and what ends it.
+
+**A consumer that greps the serial log for a phrase must update the phrase.**
+Nothing else changes for a host kernel.
+
 ### The library's debug lines wait to be asked for
 
 `--rapi-debug-uart` now turns on the library's own debug output as well as

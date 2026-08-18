@@ -783,6 +783,10 @@ void ReapPending(CoreCoop &Core)
 // program, and an overrun found here has already happened - stopping the
 // board denies the application the chance to say anything about it, and
 // denies the operator the log line that names which thread did it.
+//
+// What the line does not say, because the log is not the place for it: the
+// memory below a context's stack belongs to whatever the allocator put
+// there, so an overrun has already corrupted something else on the heap.
 void CheckStackGuard(CoopContext *pContext)
 {
     if (pContext->m_pStack == nullptr || pContext->m_bGuardReported)
@@ -795,9 +799,8 @@ void CheckStackGuard(CoopContext *pContext)
 
         pContext->m_bGuardReported = true;
         SDL2Circle_Log(From, SDL2CIRCLE_LOG_ERROR,
-                       "std::thread %llu on core %u has written past the low "
-                       "end of its %lu byte stack; memory beyond it belongs to "
-                       "something else",
+                       "std::thread %llu on core %u overran its %lu byte "
+                       "stack",
                        (unsigned long long)pContext->m_nId,
                        SDL2Circle_ThisCore(),
                        (unsigned long)pContext->m_nStackBytes);
@@ -870,8 +873,8 @@ __attribute__((noreturn)) void CoopExit(void)
         // the alternative to saying it is a jump through whatever is in the
         // link register.
         SDL2Circle_Log(From, SDL2CIRCLE_LOG_ERROR,
-                       "std::thread %llu ended and core %u has no context left "
-                       "to give the core to; this core stops here",
+                       "std::thread %llu ended, core %u has no context left: "
+                       "core halted",
                        (unsigned long long)pMe->m_nId, SDL2Circle_ThisCore());
         for (;;)
             asm volatile("wfe" ::: "memory");
@@ -1048,19 +1051,18 @@ void SDL2Circle_ThreadStallCheck(void)
         if (nNow - nSince < CoopStallReportUS)
             continue;
 
+        // The state, not the remedy. This core schedules its own threads and
+        // nothing on it has waited, yielded or slept for the whole interval;
+        // what that means and what ends it are in docs/THREADING.md, under
+        // "What gives a thread its turn".
         Core.m_bStallReported = true;
         SDL2Circle_Log(From, SDL2CIRCLE_LOG_ERROR,
-                       "core %u has a runnable thread it has not given a turn "
-                       "in %us — thread %llu %s. This core schedules its own "
-                       "threads and nothing running on it has waited, yielded "
-                       "or slept since; a loop that polls without yielding "
-                       "starves them, and std::this_thread::yield() in it is "
-                       "the whole of the fix",
+                       "core %u gave no turn in %us: thread %llu %s",
                        SDL2Circle_ThisCore(),
                        (unsigned)(CoopStallReportUS / 1000000),
                        (unsigned long long)pContext->m_nId,
-                       bNeverRan ? "has never run at all"
-                                 : "has run before and is now waiting");
+                       bNeverRan ? "never ran"
+                                 : "waiting since its last turn");
         return;
     }
 }
@@ -1091,8 +1093,7 @@ extern "C" void sdl2circle_coop_start(void)
     catch (...)
     {
         SDL2Circle_Log(From, SDL2CIRCLE_LOG_ERROR,
-                       "thread %llu on core %u ended by an exception it did "
-                       "not catch",
+                       "thread %llu on core %u: uncaught exception",
                        (unsigned long long)pMe->m_nId, SDL2Circle_ThisCore());
     }
 
@@ -1279,8 +1280,11 @@ unsigned TakePin(void)
 // whole reason this exists: a port that was moved off core 0 on purpose,
 // creating a thread that lands back on core 0, has no way to find that out
 // from anything the board prints. One line per core, at that core's first
-// creation through either surface, says it and names the call that changes
-// it.
+// creation through either surface, says where they went.
+//
+// The line says the placement and nothing else. What core 0 is carrying
+// beside them, and SDL2Circle_ThreadsStayOnThisCore as the call that moves
+// them off it, are in docs/THREADING.md.
 static std::atomic<unsigned> s_nPlacementAnnounced{0};
 
 void SDL2Circle_ThreadAnnounceCore0(void)
@@ -1290,12 +1294,8 @@ void SDL2Circle_ThreadAnnounceCore0(void)
         return;
 
     SDL2Circle_Log(From, SDL2CIRCLE_LOG_NOTICE,
-                   "a thread created on core %u runs on core 0, as a "
-                   "cooperative Circle task, beside every device this board "
-                   "services; SDL2Circle_ThreadsStayOnThisCore keeps core %u's "
-                   "threads on core %u instead",
-                   SDL2Circle_ThisCore(), SDL2Circle_ThisCore(),
-                   SDL2Circle_ThisCore());
+                   "core %u: threads run on core 0 as cooperative Circle "
+                   "tasks", SDL2Circle_ThisCore());
 }
 
 // ---------------------------------------------------------------------------
@@ -1487,8 +1487,8 @@ int __libcpp_thread_create(__libcpp_thread_t *__t, void *(*__func)(void *),
         {
             delete pRecord;
             SDL2Circle_Log(From, SDL2CIRCLE_LOG_ERROR,
-                           "std::thread pinned to core %u: that core is already "
-                           "running one", nPin);
+                           "std::thread pin refused: core %u already runs "
+                           "one", nPin);
             return EAGAIN;
         }
 
@@ -1517,18 +1517,21 @@ int __libcpp_thread_create(__libcpp_thread_t *__t, void *(*__func)(void *),
         {
             delete pRecord;
             SDL2Circle_Log(From, SDL2CIRCLE_LOG_ERROR,
-                           "std::thread on core %u: no memory for its stack or "
-                           "its thread-local block", SDL2Circle_ThisCore());
+                           "std::thread on core %u: no memory for stack or "
+                           "thread-local block", SDL2Circle_ThisCore());
             return ENOMEM;
         }
         pRecord->m_nId = nId;
     }
     else if (!CScheduler::IsActive())
     {
+        // Threads for this core are built as Circle tasks on core 0, so with
+        // no scheduler there is nowhere for one to run. docs/THREADING.md
+        // has the placements; docs/CORE-SPLIT.md has who declares the
+        // scheduler.
         delete pRecord;
         SDL2Circle_Log(From, SDL2CIRCLE_LOG_ERROR,
-                       "std::thread: this system has no CScheduler, so there is "
-                       "nothing on core 0 for a thread to run on");
+                       "std::thread refused: no CScheduler");
         return EAGAIN;
     }
     else if (SDL2Circle_ThisCore() != 0)
@@ -1551,9 +1554,8 @@ int __libcpp_thread_create(__libcpp_thread_t *__t, void *(*__func)(void *),
         {
             delete pRecord;
             SDL2Circle_Log(From, SDL2CIRCLE_LOG_ERROR,
-                           "std::thread from core %u: the core-0 creator task is "
-                           "not running, so this kernel never armed core 0",
-                           SDL2Circle_ThisCore());
+                           "std::thread from core %u refused: core-0 creator "
+                           "task not running", SDL2Circle_ThisCore());
             return EAGAIN;
         }
     }
@@ -1801,9 +1803,7 @@ extern "C" int SDL2Circle_ThreadsStayOnThisCore(void)
     SDL2Circle_ClaimCore(nCore);
 
     SDL2Circle_Log(From, SDL2CIRCLE_LOG_NOTICE,
-                   "core %u schedules its own std::threads: each one is a "
-                   "cooperative context on this core, with a %lu byte stack, "
-                   "and none of them reaches core 0", nCore,
+                   "core %u schedules its own threads: %lu byte stacks", nCore,
                    (unsigned long)((size_t)TASK_STACK_SIZE * 4));
     return 0;
 }

@@ -47,7 +47,7 @@ void SDL2Circle_RunDeferredConstructors(void)
 
     const unsigned nCount = (unsigned)(pEnd - pStart);
     SDL2Circle_Log("sdl2init", SDL2CIRCLE_LOG_NOTICE,
-                   "running %u deferred static constructor(s)", nCount);
+                   "deferred static constructors: %u", nCount);
 
     for (void (**pFunc)(void) = pStart; pFunc < pEnd; pFunc++)
     {
@@ -61,5 +61,5 @@ void SDL2Circle_RunDeferredConstructors(void)
     }
 
     SDL2Circle_Log("sdl2init", SDL2CIRCLE_LOG_NOTICE,
-                   "deferred static constructors complete");
+                   "deferred static constructors done");
 }

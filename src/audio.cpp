@@ -375,9 +375,8 @@ extern "C" SDL_AudioDeviceID SDL_OpenAudioDevice(const char *, int iscapture,
 
     if (s_convert)
         SDL2Circle_Log("sdl2audio", SDL2CIRCLE_LOG_NOTICE,
-                       "application writes %d Hz format 0x%04x %d channel(s); "
-                       "device plays %d Hz format 0x%04x %d channel(s) — "
-                       "converting",
+                       "converting: app %d Hz format 0x%04x %d ch -> device "
+                       "%d Hz format 0x%04x %d ch",
                        s_spec.freq, (unsigned)s_spec.format, s_spec.channels,
                        s_dev.freq, (unsigned)s_dev.format, s_dev.channels);
 

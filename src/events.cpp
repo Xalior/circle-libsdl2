@@ -234,7 +234,7 @@ extern "C" void SDL_PumpEvents(void)
                 30 * HZ,
                 [](TKernelTimerHandle, void *, void *) {
                     SDL2Circle_Log("sdl2", SDL2CIRCLE_LOG_ERROR,
-                                          "PUMP STALLED 30s -- task dump:");
+                                          "pump stalled 30s, task dump:");
                     if (CScheduler::IsActive())
                         CScheduler::Get()->ListTasks(CLogger::Get()->GetTarget());
                 });
@@ -473,8 +473,8 @@ extern "C" void SDL_AddEventWatch(SDL_EventFilter filter, void *userdata)
     // would silently never fire. Say it on the log instead.
     if (!room)
         SDL2Circle_Log("sdl2", SDL2CIRCLE_LOG_ERROR,
-                       "SDL_AddEventWatch: all %u watch slots are in use; "
-                       "this watch will never be called", MAX_WATCHERS);
+                       "SDL_AddEventWatch: %u watch slots all in use: watch "
+                       "not installed", MAX_WATCHERS);
 }
 
 extern "C" void SDL_DelEventWatch(SDL_EventFilter filter, void *userdata)

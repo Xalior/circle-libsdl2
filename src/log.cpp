@@ -204,9 +204,8 @@ void ReportDrops(unsigned core, LogRing &ring)
         {
             g_dropping[core] = true;
             CLogger::Get()->Write("sdl2log", LogWarning,
-                                  "core %u: output ring full, records are "
-                                  "being dropped (the console cannot carry "
-                                  "them this fast)", core);
+                                  "core %u: output ring full, dropping "
+                                  "records", core);
         }
         return;
     }
@@ -215,9 +214,8 @@ void ReportDrops(unsigned core, LogRing &ring)
     {
         g_dropping[core] = false;
         CLogger::Get()->Write("sdl2log", LogWarning,
-                              "core %u: output ring keeping up again, %u "
-                              "record(s) lost in total", core,
-                              g_droppedTotal[core]);
+                              "core %u: output ring draining, %u records "
+                              "lost", core, g_droppedTotal[core]);
     }
 }
 

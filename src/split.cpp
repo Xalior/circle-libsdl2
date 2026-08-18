@@ -274,8 +274,8 @@ public:
 
         m_reported = true;
         SDL2Circle_Log("split", SDL2CIRCLE_LOG_ERROR,
-                       "core %u has waited %us for %s "
-                       "(servo laps %llu, calls started/served %llu/%llu) — %s",
+                       "core %u waited %us for %s: servo laps %llu, calls "
+                       "started/served %llu/%llu, %s",
                        SDL2Circle_ThisCore(),
                        (unsigned)(STALL_REPORT_US / 1000000), m_what,
                        (unsigned long long)g_servo_beats.load(std::memory_order_relaxed),
@@ -283,11 +283,10 @@ public:
                        (unsigned long long)g_calls_served.load(std::memory_order_relaxed),
                        g_calls_started.load(std::memory_order_relaxed)
                            != g_calls_served.load(std::memory_order_relaxed)
-                           ? "core 0 is INSIDE a marshalled call and has not "
-                             "returned from it"
+                           ? "core 0 inside a marshalled call"
                            : m_gate
-                             ? "core 0's servo has stopped completing laps"
-                             : "core 0 is not inside a marshalled call");
+                             ? "core 0 servo not completing laps"
+                             : "core 0 not in a marshalled call");
     }
 
 private:
@@ -1366,7 +1365,7 @@ public:
             {
                 dumped = true;
                 CLogger::Get()->Write(From, LogError,
-                                      "HEARTBEAT STALLED %us -- state dump:", (unsigned)quiet);
+                                      "heartbeat stalled %us, state dump:", (unsigned)quiet);
                 CLogger::Get()->Write(From, LogError,
                                       "beats=%llu servo=%llu calls start/served=%llu/%llu io=%llu frames post/ack=%llu/%llu ev push/drop=%llu/%llu",
                                       beat,
@@ -1452,7 +1451,7 @@ static void ensure_scheduler(void)
     s_bOwnScheduler = true;
 
     CLogger::Get()->Write(From, LogNotice,
-                          "no scheduler in the system: this library made one");
+                          "no scheduler in the system: one created");
 }
 
 extern "C" void SDL2Circle_SplitInit(void)
@@ -1482,6 +1481,6 @@ extern "C" void SDL2Circle_SplitInit(void)
                           "core split active: servo + watchdog + stdin on core 0");
 #else
     CLogger::Get()->Write(From, LogError,
-                          "core split requires the multicore world; staying single-core");
+                          "core split unavailable: single-core world");
 #endif
 }

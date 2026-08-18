@@ -71,9 +71,10 @@ const char *SettleBase(void)
     if (!s_declared && !s_warned)
     {
         s_warned = true;
+        // SDL2Circle_DeclareBasePath is what sets it; the log says what
+        // the answer is, not how to change it.
         SDL2Circle_Log("sdl2fs", SDL2CIRCLE_LOG_WARNING,
-                       "no base path declared; answering \"%s\" "
-                       "(SDL2Circle_DeclareBasePath)", s_base);
+                       "no base path declared: answering \"%s\"", s_base);
     }
     s_answered = true;
     return s_base;

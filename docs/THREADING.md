@@ -16,7 +16,13 @@ Such a thread runs when core 0 gives up control, which it does constantly - but 
 
 And it is on core 0 at all: an application that was moved to another core to get away from those devices creates a worker, and the worker lands back among them.
 
-The library says so once per core, the first time a core off core 0 creates a thread, and names the call below. Nothing else about the default placement is announced, because nothing else about it changed.
+The library says so once per core, the first time a core off core 0 creates a thread:
+
+```
+sdl2cxx: core 1: threads run on core 0 as cooperative Circle tasks
+```
+
+That is the placement and nothing more. What core 0 is carrying beside those threads is the paragraph above, and the call that keeps them where they were made is the section below. Nothing else about the default placement is announced, because nothing else about it changed.
 
 ## Keeping a thread on the core that made it
 
@@ -72,12 +78,12 @@ The cross-core waits are the ones worth knowing about, because they are where mo
 **A main loop that does none of these keeps its core, and its own threads never start.** That is not a defect in the loop - it is what cooperative means - but from outside it looks like a working board doing nothing: the window draws, the pointer moves, and no fault is reported anywhere. So the core says so. Once, after five seconds, naming the thread:
 
 ```
-sdl2cxx: core 1 has a runnable thread it has not given a turn in 5s — thread
-         2148340448 has never run at all. This core schedules its own threads
-         and nothing running on it has waited, yielded or slept since; a loop
-         that polls without yielding starves them, and std::this_thread::yield()
-         in it is the whole of the fix
+sdl2cxx: core 1 gave no turn in 5s: thread 2148340448 never ran
 ```
+
+The thread is reported as `never ran` when it has not had a single turn since it was created, and `waiting since its last turn` when it has run before and has not been back.
+
+**That line means one thing: nothing running on that core has waited, yielded or slept for five seconds.** The core schedules its own threads, so a loop that polls without ever reaching one of the places above starves every thread on it, however many there are and whatever they were made for. A single `std::this_thread::yield()` inside the loop is the whole of the remedy - it is a place that gives the core up, and that is all a context needs.
 
 The check is driven from the application's own per-frame beat, not from the scheduler, because the fault is precisely that the scheduler is never entered. It costs two loads and a compare per frame, and nothing at all on a core that schedules no threads.
 

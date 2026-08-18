@@ -95,6 +95,27 @@ Both layers deliver the SDL events an application expects - `SDL_JOYAXISMOTION`,
 
 Also unimplemented, and reporting failure rather than pretending: controller LEDs, trigger rumble, motion sensors, touchpads, and virtual joysticks.
 
+## When there is no USB host controller
+
+**This library builds and initialises the USB host controller itself**, inside `SDL2Circle_ArmCoreRuntime`. A host kernel constructs nothing for it. So a board that reaches `SDL_Init` with no working controller says so once, at warning, and carries on with no keyboard, mouse or pad:
+
+```
+input: no usb host controller: input off
+```
+
+Two things reach that state, and the log does not distinguish them because the board cannot:
+
+- **`SDL2Circle_ArmCoreRuntime` has not run**, or did not run on core 0, or ran after `SDL_Init`. This is a start-up ordering mistake in the host kernel rather than an absent controller. [CORE-SPLIT.md](CORE-SPLIT.md) has the order a kernel starts in.
+- **The board's own USB block did not come up.** The controller object exists, so Circle reports it as active, but no device it manages will ever be enumerated.
+
+### With `--rapi-debug-uart`, the board stops instead
+
+**Serial key injection does not go through USB.** It reads bytes off the serial device and puts events straight into the queue, so it works perfectly on a board where nothing was ever enumerated. An automated run therefore passes in full - keys arrive, menus move, screenshots come out right - and the first person to plug a real keyboard in finds nothing happens, with the warning above long since scrolled off the console.
+
+So the pair is refused rather than run. The application does not start, and the board says on the console that it stopped and that there is no input hardware.
+
+It is a halt, not a hang: core 0 keeps serving the console, the scheduler and the watchdog throughout, which is what lets the message keep arriving.
+
 ## Examples
 
 `examples/keyecho` displays the last key event's scancode and keycode, modifier lights, lock lights and a grid of held keys. `examples/mouseview` shows the pointer on screen with buttons and motion. `examples/padview` counts every attached joystick, gamepad and wheel and logs them arriving and leaving; the first two get a panel each, with name, GUID, USB IDs, live axis bars and button lights, and anything beyond the second is reported as a count rather than drawn.

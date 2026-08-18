@@ -436,7 +436,5 @@ void SDL2Circle_ConsoleGrantScreen(void)
     s_screenLive = true;
     s_lock.Release();
 
-    SDL2Circle_Log("sdl2console", SDL2CIRCLE_LOG_NOTICE,
-                   "the application has released the display; output is on "
-                   "the screen again");
+    SDL2Circle_Log("sdl2console", SDL2CIRCLE_LOG_NOTICE, "screen log on");
 }

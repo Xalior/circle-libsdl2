@@ -134,9 +134,10 @@ void SDL2Circle_StdioInit(void)
 
     CGlueStdioInit(*s_pConsole);
 
+    // Keyboard in, the logging destinations out - docs/LOGGING.md, "Raw
+    // output", carries what that means for a program that prints.
     SDL2Circle_Log("sdl2stdio", SDL2CIRCLE_LOG_NOTICE,
-                   "standard input, output and error are the console: "
-                   "keyboard in, whatever the logging destination is out");
+                   "stdin, stdout, stderr bound to the console");
 }
 
 // Called every input pump, which already walks the device name service for

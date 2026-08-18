@@ -69,11 +69,6 @@ alignas(CUSBHCIDevice) u8 s_UsbStore[sizeof(CUSBHCIDevice)];
 // on by the caller, off core 0. See SDL2Circle_InputInit.
 bool s_bNoInputFatal = false;
 
-// How often the refusal repeats itself. Long enough not to bury anything else
-// on the console, short enough that nobody attaching serial has to wait to
-// find out why the board is doing nothing.
-const unsigned SDL2CIRCLE_NOINPUT_REPEAT_SECONDS = 5;
-
 CUSBKeyboardDevice *s_keyboard = nullptr;
 
 // IRQ-side snapshot of the latest HID report
@@ -1248,15 +1243,12 @@ void SDL2Circle_InputInit(void)
     //    came up - rather than something to fix in a kernel.
     //
     // Either way, it is almost never intended, and the reason is not
-    // guessable from a game that simply never responds to a key, so it is
-    // said once and it names both possibilities.
+    // guessable from a game that simply never responds to a key, so the
+    // state is said once. Which of the two roads it was is not on the wire:
+    // it is the pair above, and it is in docs/INPUT.md.
     s_usb = USB_NONE;
     SDL2Circle_Log("input", SDL2CIRCLE_LOG_WARNING,
-                   "no working USB host controller on this board: input is "
-                   "off. This library builds and initialises the controller "
-                   "itself; reaching this state means either it has not run "
-                   "yet (SDL2Circle_ArmCoreRuntime, before SDL_Init) or the "
-                   "board's USB hardware failed to come up.");
+                   "no usb host controller: input off");
 
     // Fatal when injection is armed, because this exact pair hides itself.
     //
@@ -1298,43 +1290,30 @@ bool SDL2Circle_NoInputFatal(void)
 // print the second copy of its own message nowhere.
 void SDL2Circle_NoInputHalt(void)
 {
-    for (unsigned nSaid = 0;; nSaid++)
+    // Said once. Nothing here changes while the board sits in this loop, so
+    // repeating it says nothing a reader did not have the first time and
+    // spends a console that is scarce for as long as the machine is up.
+    //
+    // What neither line says, because it is not a fact about this board: the
+    // two roads that reach it are a start-up ordering mistake
+    // (SDL2Circle_ArmCoreRuntime, on core 0, before SDL_Init) and a USB
+    // block that did not come up. SDL2Circle_InputInit above holds that pair
+    // in full, and docs/INPUT.md carries it for a reader.
+    SDL2Circle_Log("input", SDL2CIRCLE_LOG_ERROR,
+                   "stopped: --rapi-debug-uart armed, no usb host controller");
+    SDL2Circle_Log("input", SDL2CIRCLE_LOG_ERROR,
+                   "no keyboard, mouse or pad on this board");
+
+    // Core 0 keeps yielding: the servo, the watchdog and the log drain are
+    // scheduler tasks, and the last of those is what puts the two lines
+    // above on the wire.
+    for (;;)
     {
-        // Said in pieces because the log carries at most LOG_LINE_MAX
-        // characters a line and drops the rest without a word. The most
-        // useful sentence here is the fix, and as one long line it was
-        // exactly the part that fell off the end.
-        SDL2Circle_Log("input", SDL2CIRCLE_LOG_ERROR,
-                       "STOPPED: robot hands are armed (--rapi-debug-uart) and "
-                       "there is no working USB host controller. No keyboard, "
-                       "mouse or pad can ever work on it.");
-
-        SDL2Circle_Log("input", SDL2CIRCLE_LOG_ERROR,
-                       "This library builds and initialises USB itself, so the "
-                       "fault is either a start-up ordering mistake or the "
-                       "board's own USB hardware — not a kernel that forgot to "
-                       "bring USB up.");
-
-        SDL2Circle_Log("input", SDL2CIRCLE_LOG_ERROR,
-                       "FIX: check that SDL2Circle_ArmCoreRuntime runs, on core "
-                       "0, before SDL_Init. If it does, this board's USB "
-                       "hardware itself is not coming up.");
-
-        SDL2Circle_Log("input", SDL2CIRCLE_LOG_ERROR,
-                       "Stopped rather than run because injection does not go "
-                       "through USB: it would have worked and every automated "
-                       "check would have passed. The application has not started "
-                       "and will not.");
-
-        const u64 nUntil = CTimer::GetClockTicks64()
-                           + (u64) SDL2CIRCLE_NOINPUT_REPEAT_SECONDS * CLOCKHZ;
-        while (CTimer::GetClockTicks64() < nUntil)
-        {
-            if (SDL2Circle_ThisCore() == 0 && CScheduler::IsActive())
-                CScheduler::Get()->Yield();
-        }
+        if (SDL2Circle_ThisCore() == 0 && CScheduler::IsActive())
+            CScheduler::Get()->Yield();
     }
 }
+
 
 void SDL2Circle_InputPump(void)
 {
@@ -1433,9 +1412,11 @@ void SDL2Circle_SetInjectSerial(CSerialDevice *pSerial)
 {
     s_injectSerial = pSerial;
     if (pSerial && !SDL2Circle_DebugUartArmed())
+        // Lent but not armed: the switch is what turns injection on, and
+        // this line is the only place the pairing shows.
         SDL2Circle_Log("input", SDL2CIRCLE_LOG_DEBUG,
-                       "serial lent for key injection; "
-                       "stamp --rapi-debug-uart to arm it");
+                       "serial lent for key injection, --rapi-debug-uart "
+                       "not set");
 }
 
 // Arms from the console's own device - the one SDL2Circle_ConsoleInit
@@ -1465,15 +1446,15 @@ void SDL2Circle_InjectArmFromConsole(void)
 
     if (s_injectSerial)
         SDL2Circle_Log("input", SDL2CIRCLE_LOG_NOTICE,
-                       "--rapi-debug-uart is armed; serial key injection "
-                       "reads the console's own serial device");
+                       "key injection armed on the console serial device");
     else
+        // Nothing to read from. The logger had no serial destination for
+        // SDL2Circle_ConsoleInit to hold on to, and no kernel lent one
+        // through SDL2Circle_SetInjectSerial either, so keystrokes sent at
+        // the console reach nothing.
         SDL2Circle_Log("input", SDL2CIRCLE_LOG_ERROR,
-                       "--rapi-debug-uart is armed but there is no serial "
-                       "device to read: the logger has no destination for "
-                       "SDL2Circle_ConsoleInit to hold, and no kernel lent "
-                       "one either, so nothing sent to the console can reach "
-                       "the application");
+                       "key injection armed, no serial device: console input "
+                       "unreachable");
 }
 
 void SDL2Circle_InjectPump(void)

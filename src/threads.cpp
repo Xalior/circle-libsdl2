@@ -825,8 +825,7 @@ public:
         catch (...)
         {
             SDL2Circle_Log("sdl2thread", SDL2CIRCLE_LOG_ERROR,
-                           "thread \"%s\" ended by an exception it did not "
-                           "catch; SDL_WaitThread will report -1",
+                           "thread \"%s\": uncaught exception, status -1",
                            pThread->name[0] ? pThread->name : "?");
             status = -1;
         }
@@ -871,8 +870,7 @@ void sdl_context_body(void *p)
     catch (...)
     {
         SDL2Circle_Log("sdl2thread", SDL2CIRCLE_LOG_ERROR,
-                       "thread \"%s\" ended by an exception it did not "
-                       "catch; SDL_WaitThread will report -1",
+                       "thread \"%s\": uncaught exception, status -1",
                        thread->name[0] ? thread->name : "?");
         status = -1;
     }
@@ -952,8 +950,8 @@ extern "C" SDL_Thread *SDL_CreateThreadWithStackSize(SDL_ThreadFunction fn,
     if (!bStaysHere && !CScheduler::IsActive())
     {
         SDL2Circle_Log(From, SDL2CIRCLE_LOG_ERROR,
-                       "SDL_CreateThread(\"%s\") refused: no CScheduler in "
-                       "this system", label);
+                       "SDL_CreateThread(\"%s\") refused: no CScheduler",
+                       label);
         SDL_SetError("SDL_CreateThread: this system has no CScheduler, so "
                      "there is nothing to run \"%s\" on; the host kernel "
                      "declares one, or SDL2Circle_SplitInit provides one",
@@ -1009,8 +1007,8 @@ extern "C" SDL_Thread *SDL_CreateThreadWithStackSize(SDL_ThreadFunction fn,
         {
             free(thread);
             SDL2Circle_Log(From, SDL2CIRCLE_LOG_ERROR,
-                           "SDL_CreateThread(\"%s\") on core %u: no memory for "
-                           "its stack or its thread-local block", label,
+                           "SDL_CreateThread(\"%s\") on core %u: no memory "
+                           "for stack or thread-local block", label,
                            SDL2Circle_ThisCore());
             SDL_SetError("Out of memory");
             return nullptr;
@@ -1036,9 +1034,9 @@ extern "C" SDL_Thread *SDL_CreateThreadWithStackSize(SDL_ThreadFunction fn,
     {
         free(thread);
         SDL2Circle_Log(From, SDL2CIRCLE_LOG_ERROR,
-                       "SDL_CreateThread(\"%s\") from core %u: the core-0 "
-                       "creator task is not running, so this kernel never "
-                       "armed core 0", label, SDL2Circle_ThisCore());
+                       "SDL_CreateThread(\"%s\") from core %u refused: "
+                       "core-0 creator task not running", label,
+                       SDL2Circle_ThisCore());
         SDL_SetError("SDL_CreateThread: \"%s\" was asked for from core %u and "
                      "the core-0 creator task that builds threads is not "
                      "running; the host kernel calls SDL2Circle_ArmCoreRuntime "
@@ -1085,9 +1083,8 @@ extern "C" void SDL_WaitThread(SDL_Thread *thread, int *status)
         {
             reported = true;
             SDL2Circle_Log("sdl2thread", SDL2CIRCLE_LOG_ERROR,
-                           "SDL_WaitThread(\"%s\") has waited 5s on core %u — "
-                           "that thread has not finished; if it threw, it "
-                           "never will",
+                           "SDL_WaitThread(\"%s\") waiting 5s on core %u: "
+                           "thread not finished",
                            thread->name[0] ? thread->name : "?",
                            SDL2Circle_ThisCore());
         }

@@ -210,7 +210,7 @@ void SDL2Circle_PerfTick(void)
         if (ticks)
             s_cpuHz = (unsigned)((__uint128_t)cycles * cntfrq() / ticks);
         SDL2Circle_Log("sdl2perf", SDL2CIRCLE_LOG_NOTICE,
-                       "processor clock measured at %u MHz", s_cpuHz / 1000000);
+                       "processor clock %u MHz", s_cpuHz / 1000000);
     }
 
     unsigned self = SDL2Circle_ThisCore() % PERF_MAX_CORES;
@@ -294,7 +294,7 @@ extern "C" void SDL2Circle_SetPerfInterval(unsigned nSeconds)
 {
     if (nSeconds)
         SDL2Circle_Log("sdl2perf", SDL2CIRCLE_LOG_WARNING,
-                              "performance reports unavailable: no cycle-counter backend for this architecture");
+                              "reports unavailable: no cycle counter on this architecture");
 }
 
 #endif
