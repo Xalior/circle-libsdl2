@@ -32,6 +32,12 @@ struct SDL_Window
     // applications read it for.
     int min_w, min_h;
     int max_w, max_h;
+
+    // The mode SDL_SetWindowDisplayMode named for this window. Kept because
+    // SDL_WINDOW_FULLSCREEN means "drive the display at that mode", so going
+    // fullscreen has to know it - and a program may set the mode first and go
+    // fullscreen after, or the other way about.
+    int mode_w, mode_h;
     SDL_bool grabbed;
     char title[128];
 
@@ -283,6 +289,14 @@ static SDL_Window *s_window = nullptr;
 // single resampling pass at present time.
 static int s_scanout_w = 0, s_scanout_h = 0;
 static int s_canvas_w = 0, s_canvas_h = 0;
+
+// The one path every size change takes: window creation against a canvas that
+// already exists, SDL_SetWindowSize, SDL_SetWindowDisplayMode, and going
+// exclusive-fullscreen at a mode. Every one of those is the same request -
+// the application wants to draw at a different size - so every one of them
+// arrives here, and the handover with the presentation core is paid once,
+// where it can be seen, rather than at each call site.
+static void canvas_set_size(SDL_Window *win, int w, int h);
 
 // render_target_w/h (declared above, by the struct they read): every
 // rectangle an application hands over is placed against the canvas, whatever
@@ -1216,7 +1230,7 @@ void SDL2Circle_VideoFlip(unsigned half)
                 {
                     s_dma_error_logged = true;
                     SDL2Circle_Log("sdl2video", SDL2CIRCLE_LOG_ERROR,
-                                          "present: DMA transfer reported an error");
+                                          "present: dma transfer error");
                 }
             }
 
@@ -1280,7 +1294,7 @@ void SDL2Circle_VideoFlip(unsigned half)
         s_flip_logged = true;
         SDL2Circle_Log("sdl2video", SDL2CIRCLE_LOG_NOTICE,
                               "first flip to half %u: SetVirtualOffset %s",
-                              half, ok ? "ok" : "REFUSED");
+                              half, ok ? "ok" : "refused");
     }
 }
 
@@ -1399,6 +1413,50 @@ static bool fill_mode(SDL_DisplayMode *mode)
     return true;
 }
 
+// The sizes this display can be asked for.
+//
+// The canvas is memory, not hardware: any size can be allocated and the
+// presentation core scales it onto the panel. So the only thing that cannot
+// be served is a size larger than the panel, because this library scales up
+// and never down - the picture would not fit on the glass.
+//
+// That is what an application is told. The list is the standard sizes that
+// fit inside the panel, largest first as SDL orders them, and a request for
+// anything else that fits is answered with itself rather than refused. An
+// application that enumerates finds what it is looking for; one that asks
+// for a particular size is not turned away from a size this library would
+// have honoured had it simply set it.
+//
+// Reporting one mode - the canvas - is what this did before the canvas
+// followed the application, and it made every consumer name a size in its
+// own kernel just to put that size in the list.
+struct ModeSize { int w, h; };
+
+static const ModeSize s_modes[] =
+{
+    { 1920, 1080 }, { 1600, 1200 }, { 1440, 1080 }, { 1400, 1050 },
+    { 1366,  768 }, { 1280, 1024 }, { 1280,  960 }, { 1280,  800 },
+    { 1280,  720 }, { 1152,  864 }, { 1024,  768 }, {  960,  720 },
+    {  856,  480 }, {  800,  600 }, {  720,  576 }, {  720,  480 },
+    {  720,  400 }, {  640,  480 }, {  640,  400 }, {  640,  350 },
+    {  512,  384 }, {  400,  300 }, {  360,  240 }, {  320,  240 },
+    {  320,  200 }, {  256,  240 }, {  256,  192 }, {  160,  120 },
+};
+
+// How many of them fit on this panel. The scanout has to be known first;
+// before it is, there is nothing to measure against and the answer is none.
+static int modes_available(void)
+{
+    if (!acquire_scanout() || s_scanout_w <= 0 || s_scanout_h <= 0)
+        return 0;
+
+    int n = 0;
+    for (const ModeSize &m : s_modes)
+        if (m.w <= s_scanout_w && m.h <= s_scanout_h)
+            n++;
+    return n;
+}
+
 // ---- display information ---------------------------------------------------
 
 extern "C" int SDL_GetNumVideoDisplays(void) { return 1; }
@@ -1430,11 +1488,30 @@ void SDL2Circle_PointerBounds(int *w, int *h)
     if (h) *h = s_canvas_h;
 }
 
-extern "C" int SDL_GetNumDisplayModes(int) { return 1; }
+extern "C" int SDL_GetNumDisplayModes(int) { return modes_available(); }
 
-extern "C" int SDL_GetDisplayMode(int, int, SDL_DisplayMode *mode)
+extern "C" int SDL_GetDisplayMode(int, int index, SDL_DisplayMode *mode)
 {
-    return fill_mode(mode) ? 0 : -1;
+    if (!mode)
+        return SDL_SetError("SDL_GetDisplayMode: nowhere to put the mode");
+    if (index < 0 || index >= modes_available())
+        return SDL_SetError("SDL_GetDisplayMode: no mode %d", index);
+
+    int n = 0;
+    for (const ModeSize &m : s_modes)
+    {
+        if (m.w > s_scanout_w || m.h > s_scanout_h)
+            continue;
+        if (n++ != index)
+            continue;
+        memset(mode, 0, sizeof(*mode));
+        mode->format = SDL_PIXELFORMAT_ARGB8888;
+        mode->w = m.w;
+        mode->h = m.h;
+        mode->refresh_rate = DEFAULT_HZ;
+        return 0;
+    }
+    return SDL_SetError("SDL_GetDisplayMode: no mode %d", index);
 }
 
 extern "C" int SDL_GetCurrentDisplayMode(int, SDL_DisplayMode *mode)
@@ -1533,7 +1610,7 @@ static void setup_shadow_present(void)
         delete s_dma;
         s_dma = nullptr;
         SDL2Circle_Log("sdl2video", SDL2CIRCLE_LOG_WARNING,
-                              "present: unbuffered, %u bytes of shadow could not be allocated",
+                              "present: %u byte shadow not allocated, unbuffered",
                               (unsigned)s_shadow_bytes);
         return;
     }
@@ -1629,6 +1706,7 @@ static void create_window_on0(void *p)
     win->flags |= SDL_WINDOW_FULLSCREEN | SDL_WINDOW_SHOWN | SDL_WINDOW_INPUT_FOCUS;
     win->min_w = win->min_h = 0;
     win->max_w = win->max_h = 0;
+    win->mode_w = win->mode_h = 0;
     win->grabbed = SDL_FALSE;
     win->title[0] = '\0';
     win->hit_test = nullptr;
@@ -1682,8 +1760,8 @@ static void create_window_on0(void *p)
             s_stage = (u8 *)calloc(s_stage_bytes, 1);
             if (!s_stage)
                 SDL2Circle_Log("sdl2video", SDL2CIRCLE_LOG_WARNING,
-                                      "present: composing straight into the framebuffer, "
-                                      "%u bytes of staging could not be allocated",
+                                      "present: %u byte staging not allocated, "
+                                      "composing into the framebuffer",
                                       (unsigned)s_stage_bytes);
         }
     }
@@ -1729,8 +1807,27 @@ static void create_window_on0(void *p)
 extern "C" SDL_Window *SDL_CreateWindow(const char *, int, int, int w, int h,
                                         Uint32 flags)
 {
+    // Whether a canvas already existed decides what this window means. The
+    // first window settles the canvas from its own size; a later one is a
+    // program asking for a different size, which is the same request
+    // SDL_SetWindowSize makes and takes the same path.
+    const bool had_canvas = s_canvas_w > 0 && s_canvas_h > 0;
+
     CreateWindowArgs a{w, h, flags, nullptr};
     SDL2Circle_CallOn0(create_window_on0, &a);
+    if (!a.result)
+        return nullptr;
+
+    // The switch is the one case where a window does not get what it asked
+    // for and that is deliberate: --rapi-vfb fixes the canvas and the window
+    // is answered honestly about its own size (see the switch's note in
+    // docs/DISPLAY.md).
+    if (had_canvas && !s_switch_set && w > 0 && h > 0)
+        canvas_set_size(a.result, w, h);
+
+    SDL2Circle_Log("sdl2video", SDL2CIRCLE_LOG_DEBUG,
+                   "window created: asked %dx%d, given %dx%d, canvas %dx%d",
+                   w, h, a.result->w, a.result->h, s_canvas_w, s_canvas_h);
     return a.result;
 }
 
@@ -1770,6 +1867,10 @@ extern "C" void SDL_DestroyWindow(SDL_Window *win)
 {
     if (!win)
         return;
+
+    SDL2Circle_Log("sdl2video", SDL2CIRCLE_LOG_DEBUG,
+                   "window destroyed: %dx%d, canvas %dx%d",
+                   win->w, win->h, s_canvas_w, s_canvas_h);
 
     // The presentation worker reaches the window through s_window on every
     // flip, so it has to be out of the frame before this object goes away.
@@ -1864,6 +1965,11 @@ extern "C" void SDL_ShowWindow(SDL_Window *) {}
 
 extern "C" int SDL_SetWindowFullscreen(SDL_Window *win, Uint32 flags)
 {
+    // Reported and then ignored: this display is only ever fullscreen, so the
+    // flag changes nothing. Worth seeing, because on a desktop it would.
+    SDL2Circle_Log("sdl2video", SDL2CIRCLE_LOG_DEBUG,
+                   "SetWindowFullscreen flags 0x%x, canvas %dx%d",
+                   (unsigned)flags, s_canvas_w, s_canvas_h);
     if (!win)
         return SDL_SetError("SDL_SetWindowFullscreen: no window");
 
@@ -1875,6 +1981,20 @@ extern "C" int SDL_SetWindowFullscreen(SDL_Window *win, Uint32 flags)
     const Uint32 kFullscreenBits = SDL_WINDOW_FULLSCREEN | SDL_WINDOW_FULLSCREEN_DESKTOP;
     win->flags &= ~kFullscreenBits;
     win->flags |= (flags & kFullscreenBits);
+
+    // SDL_WINDOW_FULLSCREEN means "drive the display at the mode set for this
+    // window", so it is a size change and takes the one path every size
+    // change takes. SDL_WINDOW_FULLSCREEN_DESKTOP means "cover the desktop at
+    // the size you have", which changes nothing here: this display is only
+    // ever fullscreen and the canvas already covers it.
+    //
+    // Which of the two a program uses decides whether its mode reaches the
+    // canvas, and the order it calls them in does not - the mode is applied
+    // here as well as at SDL_SetWindowDisplayMode.
+    if ((flags & SDL_WINDOW_FULLSCREEN_DESKTOP) != SDL_WINDOW_FULLSCREEN_DESKTOP
+        && (flags & SDL_WINDOW_FULLSCREEN) != 0
+        && win->mode_w > 0 && win->mode_h > 0)
+        canvas_set_size(win, win->mode_w, win->mode_h);
     return 0;
 }
 
@@ -1906,7 +2026,7 @@ static void clear_display(void);
 // afterwards reads old-sized rows with the new pitch.
 static SDL_Surface *s_window_surface;
 
-static void resize_canvas(SDL_Window *win, int w, int h)
+static void canvas_set_size(SDL_Window *win, int w, int h)
 {
     if (!win || w <= 0 || h <= 0)
         return;
@@ -1976,7 +2096,10 @@ static void resize_canvas(SDL_Window *win, int w, int h)
 
 extern "C" void SDL_SetWindowSize(SDL_Window *win, int w, int h)
 {
-    resize_canvas(win, w, h);
+    SDL2Circle_Log("sdl2video", SDL2CIRCLE_LOG_DEBUG,
+                   "SetWindowSize %dx%d, canvas %dx%d", w, h,
+                   s_canvas_w, s_canvas_h);
+    canvas_set_size(win, w, h);
 }
 
 extern "C" void SDL_SetWindowMinimumSize(SDL_Window *win, int w, int h)
@@ -2177,21 +2300,46 @@ extern "C" int SDL_GetWindowDisplayMode(SDL_Window *win, SDL_DisplayMode *mode)
 // application checks before it will draw.
 extern "C" int SDL_SetWindowDisplayMode(SDL_Window *win, const SDL_DisplayMode *mode)
 {
+    SDL2Circle_Log("sdl2video", SDL2CIRCLE_LOG_DEBUG,
+                   "SetWindowDisplayMode %dx%d, canvas %dx%d",
+                   mode ? mode->w : -1, mode ? mode->h : -1,
+                   s_canvas_w, s_canvas_h);
     if (!win)
         return SDL_SetError("SDL_SetWindowDisplayMode: no window");
     if (mode && mode->w > 0 && mode->h > 0)
-        resize_canvas(win, mode->w, mode->h);
+    {
+        // Recorded as well as applied, because SDL_WINDOW_FULLSCREEN means
+        // "drive the display at this mode" and may arrive afterwards.
+        win->mode_w = mode->w;
+        win->mode_h = mode->h;
+        canvas_set_size(win, mode->w, mode->h);
+    }
     return 0;
 }
 
 // SDL's contract is to return the closest mode it has, and there is exactly
 // one to be closest.
+// A size that fits the panel is answered with itself: this library would
+// allocate exactly that canvas if the application went on to set it, so
+// offering something else would refuse a mode that works. A size larger than
+// the panel cannot be scaled down onto the glass, and comes back as the panel.
 extern "C" SDL_DisplayMode *SDL_GetClosestDisplayMode(int displayIndex,
-                                                      const SDL_DisplayMode *,
+                                                      const SDL_DisplayMode *wanted,
                                                       SDL_DisplayMode *closest)
 {
-    if (!closest || SDL_GetCurrentDisplayMode(displayIndex, closest) < 0)
+    if (!closest)
         return nullptr;
+    if (!wanted || wanted->w <= 0 || wanted->h <= 0)
+        return SDL_GetCurrentDisplayMode(displayIndex, closest) < 0 ? nullptr : closest;
+    if (!acquire_scanout() || s_scanout_w <= 0 || s_scanout_h <= 0)
+        return nullptr;
+
+    memset(closest, 0, sizeof(*closest));
+    closest->format = SDL_PIXELFORMAT_ARGB8888;
+    closest->w = wanted->w <= s_scanout_w ? wanted->w : s_scanout_w;
+    closest->h = wanted->h <= s_scanout_h ? wanted->h : s_scanout_h;
+    closest->refresh_rate = wanted->refresh_rate > 0 ? wanted->refresh_rate
+                                                     : DEFAULT_HZ;
     return closest;
 }
 
@@ -2435,8 +2583,8 @@ extern "C" SDL_Renderer *SDL_CreateRenderer(SDL_Window *win, int, Uint32 flags)
     // resolved to, so a consumer's own fallback chain (retrying with fewer
     // flags after a failed create elsewhere) is visible rather than assumed.
     SDL2Circle_Log("sdl2video", SDL2CIRCLE_LOG_NOTICE,
-                  "SDL_CreateRenderer: flags 0x%x -> vsync %s",
-                  flags, ren->vsync ? "on" : "off");
+                  "renderer created: %dx%d, flags 0x%x, vsync %s",
+                  s_canvas_w, s_canvas_h, flags, ren->vsync ? "on" : "off");
     ren->r = ren->g = ren->b = 0;
     ren->a = 255;
     ren->ncmds = 0;
