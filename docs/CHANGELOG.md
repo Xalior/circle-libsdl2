@@ -10,6 +10,54 @@ followed.
 
 ## vPoC3
 
+### The display size follows the application
+
+An application can now change its display size while it runs, as often as it
+likes, and destroy and rebuild its window around the change. Four calls move
+it and all four take one path: `SDL_SetWindowSize`, `SDL_SetWindowDisplayMode`,
+`SDL_SetWindowFullscreen` for `SDL_WINDOW_FULLSCREEN`, and a later
+`SDL_CreateWindow`. The canvas is reallocated, the placement on the panel is
+worked out again, the letterbox the previous placement left behind is cleared,
+and an `SDL_WINDOWEVENT_SIZE_CHANGED` follows.
+
+**There is a list to choose from.** `SDL_GetNumDisplayModes` and
+`SDL_GetDisplayMode` enumerate the standard sizes that fit inside the panel,
+largest first, from 1920x1080 down to 160x120. `SDL_GetClosestDisplayMode`
+answers a request that fits with itself, because the library would allocate
+exactly that canvas if the application went on to set it. Before this the
+library reported one mode - the canvas - so every consumer had to name a size
+in its own kernel just to put that size in the list.
+
+**A surface handed out by `SDL_GetWindowSurface` survives the change.** Its
+pixels are replaced and its dimensions rewritten in place, so a program that
+keeps that pointer in a global - several do - still holds a valid surface
+afterwards. Freeing and replacing the object instead turned a resize into a
+fault elsewhere in the program, in code with nothing to do with the display.
+
+The framebuffer grant, the present path, its buffers and its DMA channel
+belong to the grant rather than to the window, so a rebuild allocates none of
+them again and strands nothing.
+
+This supersedes **Applications choose their own display size**, below, on two
+points. A size is no longer required: an application that states none gets its
+window's own size, and one that never states any gets the physical panel,
+read from the firmware. And the size an application states is no longer the
+only one it can have.
+
+### An undeclared base path answers with the working directory
+
+`SDL_GetBasePath` used to answer `/` when nothing declared a path, and
+`SDL_GetPrefPath` composes `<base><app>/`, so every program that wrote a
+setting or a saved game made a directory of its own at the root of the card.
+
+It now answers with the directory the program is running in, which a host
+kernel has already entered before starting the application. That is where the
+card keeps that program's files, and it is the one answer this library can
+establish for itself. `SDL2Circle_DeclareBasePath` is unchanged and still
+wins; it remains the only way to name somewhere other than where the program
+was started from.
+
+
 ### The log reads as a log
 
 Every line the library writes is now a source, a state and its values, and

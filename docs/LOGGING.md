@@ -50,11 +50,13 @@ sdl2console: screen log: 1920x1080 pixels, 4 bytes per pixel (pitch 7680), 240x6
 
 ### The display hand-off
 
-**The screen stops being drawn on when an application initialises SDL video**, because that is the moment the application takes the display. From then on output goes to the serial port alone, and the library says so before it stops.
+**The screen stops being drawn on when an application creates its window**, because that is the moment the application takes the display - not `SDL_Init`, which brings video up but does not yet take it. From then on output goes to the serial port alone, and the library says so before it stops.
 
 Nothing is attached, detached or moved to do that. The logger's destination is the same device before and after; all that changes is a boolean inside it. So "the console and the application writing the same framebuffer" has no mechanism at all, rather than being prevented by a rule somebody has to keep - there is only ever one destination object, and what it will do was settled before anything ran.
 
-The hand-off happens after `SDL_Init` has decided whether it will start at all, so a consumer turned away at the door - no virtual display device declared - still gets the line saying why, on the screen as well as on the wire.
+**Destroying that window gives the screen back**, and the console starts drawing again where it left off. It never stopped existing while the application held the display; it only stopped drawing. A program that destroys one window and creates another gives the screen up for the moment in between, and nothing is drawn in that moment, so the picture already on the glass stays there and the handover is invisible. The `screen log on` line that marks the return goes to the serial port alone for exactly that reason: drawn, it would put a page of text between two frames that should look continuous.
+
+Because the hand-off waits for a window rather than for `SDL_Init`, anything that goes wrong while video is coming up is still said on the screen as well as on the wire.
 
 ### Asking for it earlier
 

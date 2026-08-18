@@ -12,12 +12,14 @@ Resolutions are always involved on a bare-metal Pi, and the library names each o
 
 A Pi 3 or a Pi 4 applies the requested mode and reports it correctly, so neither has this problem.
 
-**The canvas is the virtual display** - the display area the application is given, and the relation between its shape and the scanout's decides the letterboxing. It is settled once, at the first of these moments to occur, in this order - see [Declaring the display](#declaring-the-display):
+**The canvas is the virtual display** - the display area the application is given, and the relation between its shape and the scanout's decides the letterboxing. It is **first** settled at the earliest of these moments to occur, in this order - see [Declaring the display](#declaring-the-display):
 
 1. The `--rapi-vfb=WxH` boot switch.
 2. `SDL2Circle_DeclareVirtualDevice`, called by the application before `SDL_Init`.
 3. The application's first `SDL_CreateWindow` - the window and the canvas are the same rectangle when neither of the above was used.
 4. The physical panel size, read from the firmware, when none of the above ever gave one. Last resort only: it is reached exclusively where the library would otherwise refuse to start.
+
+**After that the canvas follows the application.** It is memory rather than hardware, so any size the application sets becomes the canvas, and it may be set again as often as the application likes - see [Changing the canvas](#changing-the-canvas). The panel is the ceiling: the library scales the canvas up onto the glass, so the sizes it offers stop at the panel's own.
 
 **`width=`/`height=` and the canvas are settings doing different jobs, and they coexist.** Neither is a fallback for the other. One is asked of the firmware by the operator; the other is settled as above. `width=` and `height=` never set the virtual display, and nothing that sets the virtual display ever sets the physical one.
 
@@ -28,6 +30,7 @@ A frame therefore travels application → canvas → scanout, and **the library 
 - **`SDL_RenderCopy` honours its rectangles.** A destination the same size as the source, on a canvas that is the scanout, is still an unscaled blit - the same bytes, on the same path. Anything else resamples.
 - **Nearest neighbour, and only nearest neighbour.** Per-axis index tables are built once per geometry and reused; an exact integer ratio skips the tables and replicates. `SDL_HINT_RENDER_SCALE_QUALITY` is stored like any other hint and **has no effect** - `"linear"` is a later phase, not a silent fallback.
 - **Fit is the default placement.** The canvas is scaled up as far as it fits, centered, and the remainder of the scanout stays black. Put `canvas=stretch` in `cmdline.txt` to fill the scanout instead, without preserving the aspect ratio.
+- **A canvas the same size as the scanout is mapped through untouched.** The placement is then the identity, and a rectangle crosses to the panel with no arithmetic done to it at all. An application that takes the largest entry of [the mode list](#the-mode-list) gets exactly this, which is why the list is ordered largest first.
 - **A frame is composed in ordinary memory, never directly in the framebuffer.** The framebuffer is uncached, and a scaler writing it directly pays that cost once per pixel: on a Pi 4, 26.1 ms for a 1280x720 frame against 1.4 ms into ordinary memory. So a present is composed off-screen and the finished frame is copied to the framebuffer in whole rows - 6.0 ms for the same frame - which is also what keeps the picture whole, because the screen is written by that one copy and is never visible mid-composition.
 - **The copy to the screen runs on the DMA engine where it can.** When the firmware grants enough memory for two screens, presenting is a page flip and the copy goes to the half being panned to. When it grants only one - a Pi 5 does - the finished frame goes to the granted surface itself, which is the most expensive thing the presentation core does. So the library gives that copy to a DMA channel and returns without waiting for it, scaling the next frame into a second buffer while the transfer runs. One frame is in flight at a time. If no DMA channel is free, the CPU does the copy exactly as before.
 - **There is one framebuffer grant on the board, and everything that draws shares it.** Asking the firmware for it is what sets the display mode, so two askers with two different requests would be two modes. Output is on the screen from boot on every board ([LOGGING.md](LOGGING.md)), which makes that grant during the machine's own bring-up, with the same request an application's first window would have made; the window then adopts it. The console stops drawing the moment an application **creates its window** - not merely when it calls `SDL_Init`, which brings video up but does not yet take the display - so the console and the application never hold the framebuffer at the same time. Destroying that window gives the screen back.
@@ -46,6 +49,24 @@ sdl2video: copy src 320x224 -> canvas 720x504+0+36 -> scanout 1350x945+285+67 (n
 The `(declared virtual device)` on the first line names which of the four sources in [Declaring the display](#declaring-the-display) settled the canvas - `--rapi-vfb switch`, `declared virtual device`, `first window created` or `physical panel size`.
 
 The `present:` line names the path that is actually in use - `dma copy` or `cpu copy`, and the reason when it is the latter.
+
+**Making a renderer is logged too**, always, because which flags a caller asked for and what it was given is the first thing anyone asks when the picture is wrong:
+
+```
+sdl2video: renderer created: 1280x720, flags 0x6, vsync on
+```
+
+**Every window and mode call puts a line on the log at debug level**, so `--rapi-debug-uart` shows what an application asked for and what it got, in the order it asked:
+
+```
+sdl2video: window created: asked 1280x720, given 1280x720, canvas 1280x720
+sdl2video: SetWindowDisplayMode 640x480, canvas 1280x720
+sdl2video: SetWindowFullscreen flags 0x1, canvas 640x480
+sdl2video: SetWindowSize 800x600, canvas 640x480
+sdl2video: window destroyed: 800x600, canvas 800x600
+```
+
+Each line names the canvas **as it was when the call arrived**, so reading down the list shows the size the previous call left behind and the size this one is asking for.
 
 ### Window flags
 
@@ -94,20 +115,58 @@ These can override that default, and they are settled in this order - the first 
 
    This call is unchanged from before and remains entirely optional. It loses to the switch when both are present.
 
-Whichever of the four settles it, `SDL_GetCurrentDisplayMode`, `SDL_GetDesktopDisplayMode`, `SDL_GetDisplayMode` and `SDL_GetDisplayBounds` all answer with the canvas, and the library carries each frame from there to whatever the panel is really doing. **The application never learns the real output resolution.** It draws in the canvas, and the placement rules above put that onto the physical screen.
+Whichever of the four settles it, `SDL_GetCurrentDisplayMode`, `SDL_GetDesktopDisplayMode` and `SDL_GetDisplayBounds` answer with the canvas, and the library carries each frame from there to whatever the panel is really doing. **The application never learns the real output resolution.** It draws in the canvas, and the placement rules above put that onto the physical screen. What it does learn is the range of sizes it may ask for, which is [the mode list](#the-mode-list).
 
 **The switch and the window can disagree on purpose.** With `--rapi-vfb=WxH` set, `SDL_CreateWindow` still returns a window of the size the application asked for - `SDL_GetWindowSize` answers honestly - but the application draws into a canvas of the switch's size regardless, exactly as `SDL_GetRendererOutputSize` and `SDL_GetWindowSizeInPixels` report it. The two sizes are then deliberately different, and the scanout scaling above is what reconciles the canvas with the panel; nothing reconciles the window's reported size with the canvas, so a program meant to run under the switch should read its drawing size from the renderer or the display mode, not from `SDL_GetWindowSize`. Under a declaration, or with neither override, the window and the canvas are always the same rectangle, so this distinction does not arise.
 
-- **It is settled once, and thereafter it follows the application's video mode.** A second `SDL_CreateWindow` (without the switch) reports the *already-settled* canvas size, not its own arguments; only the switch case lets each window report what it actually asked for while the canvas stays put. A `SDL2Circle_DeclareVirtualDevice` call arriving after the canvas has settled is refused, and so is a second call.
-
-  What does move it is the application changing video mode - `SDL_SetWindowSize` or `SDL_SetWindowDisplayMode` - because the canvas is the application's drawing area and a program that changes resolution has changed exactly that. The canvas is reallocated at the new size, the placement on the scanout is worked out again, and an `SDL_WINDOWEVENT_SIZE_CHANGED` follows. An emulator whose guest changes mode - DOS going from text to VGA and back - is the case this exists for: the alternative is a canvas fixed at whatever the first mode happened to be, with every later mode letterboxed inside it.
-
-  **The change of size is a handover, and the library waits for it.** The canvas size and the placement are read by the presentation core as it executes a frame, and `SDL2Circle_PresentPost` returns as soon as the command list has been copied out - not when the frame has been drawn. So the resize quiesces the present path first. Without that wait a frame authored under the old canvas is mapped under the new placement, putting the picture on the glass at a size neither geometry asked for, and the canvas buffers it reads from are freed under it.
-
-  **What the previous placement left outside the new one is cleared.** The letterbox is outside the canvas, so no rectangle an application draws can ever reach it, and the borders of the mode before last would otherwise stay on the screen. The library paints the whole display black across every back buffer as part of the change.
+- **A declaration is settled once; the canvas is not.** A `SDL2Circle_DeclareVirtualDevice` call arriving after the canvas has settled is refused, and so is a second call. The canvas itself goes on following the application for as long as it runs - see [Changing the canvas](#changing-the-canvas).
 - **32 bits per pixel, and nothing else.** The framebuffer is allocated at 32 bits and streaming ARGB8888 is the only texture format, so another depth is refused rather than quietly rounded to this one. Width and height must both be above zero, for the switch as well as for the declaration.
 - **`SDL2Circle_DeclareVirtualDevice`'s return value reports the outcome.** Zero means accepted; -1 means refused, with `SDL_GetError` saying which of the above was not met. A refused declaration changes nothing, and an earlier accepted one still stands.
 - **Either states the virtual display, not the physical one.** The mode the panel is driven at remains the operator's decision, asked for in `config.txt` and `cmdline.txt` and granted, or not, by the firmware. Neither the switch nor the declaration asks the firmware for anything; each says what the application is to be shown, and the library scales.
+
+### The mode list
+
+**The canvas is memory, not hardware.** Any size can be allocated, and the presentation core scales whatever it is handed onto the panel. The panel is where the list stops, because this library is built to scale a canvas **up** onto the glass and a canvas larger than the glass is being scaled the other way - nearest neighbour then discards source pixels rather than resampling them, which is not a picture worth offering.
+
+That is what an application is told:
+
+- **`SDL_GetNumDisplayModes` and `SDL_GetDisplayMode` enumerate the standard sizes that fit inside the panel**, largest first as SDL orders them. The table runs from 1920x1080 down to 160x120 and carries the sizes a game is likely to look for - 1280x720, 1024x768, 800x600, 720x576, 640x480, 320x240, 320x200 and the rest. Every one is reported at 32 bits per pixel in `SDL_PIXELFORMAT_ARGB8888`, which is the only format there is.
+- **The list is filtered against the scanout**, so a panel running at 1280x720 does not offer 1920x1080. Until the scanout is known there is nothing to measure against and the count is zero.
+- **`SDL_GetClosestDisplayMode` answers a request that fits with itself.** The library would allocate exactly that canvas if the application went on to set it, so offering something else would refuse a mode that works. A request larger than the panel comes back as the panel.
+- **A size that fits but is not in the table is still honoured if the application simply sets it.** The table is what an application finds when it enumerates; it is not a list of the only sizes that work.
+- **Nothing refuses a canvas larger than the panel** if an application sets one directly rather than choosing from the list. The placement arithmetic handles it - the canvas is scaled down and centred, exactly as a smaller one is scaled up - so the picture reaches the glass. It is kept off the list rather than blocked, because the list is what an application is offered and this is not offered.
+
+This replaces reporting one mode - the canvas - which is what the library did before the canvas followed the application. That made every consumer name a size in its own kernel just to put that size in the list.
+
+### Changing the canvas
+
+**The canvas is the application's drawing area, so a program that changes resolution has changed exactly that.** Four calls move it, and all four take the same path:
+
+| call | what moves the canvas |
+|---|---|
+| `SDL_SetWindowSize` | the size passed |
+| `SDL_SetWindowDisplayMode` | the mode's size, which is also recorded against the window |
+| `SDL_SetWindowFullscreen` | the recorded mode, for `SDL_WINDOW_FULLSCREEN` only |
+| `SDL_CreateWindow` | the new window's own size, when a canvas already exists |
+
+`SDL_WINDOW_FULLSCREEN` means "drive the display at the mode set for this window", so it is a size change. `SDL_WINDOW_FULLSCREEN_DESKTOP` means "cover the desktop at the size you have", which changes nothing here, because this display is only ever fullscreen and the canvas already covers it. The mode is applied at `SDL_SetWindowFullscreen` as well as at `SDL_SetWindowDisplayMode`, so the order a program calls them in does not matter.
+
+An emulator whose guest changes mode - DOS going from text to VGA and back - is the case this exists for. The alternative is a canvas fixed at whatever the first mode happened to be, with every later mode letterboxed inside it.
+
+**A program may destroy the window and build another.** The canvas then takes the new window's size, which is what a settings menu does when a video option changes: destroy the renderer, the textures and the window, and create them again at the new resolution. The framebuffer grant, the present path, its buffers and its DMA channel all belong to the grant rather than to the window, so none of it is allocated again and nothing is stranded.
+
+**Under `--rapi-vfb` a later `SDL_CreateWindow` does not move the canvas.** The switch fixes it, and the window is answered honestly about its own size instead. The other three calls in the table are not guarded that way, so a program running under the switch can still move the canvas by setting a size or a mode.
+
+What a change of size does, in order:
+
+1. **It waits for the presentation core.** The canvas size and the placement are read by that core as it executes a frame, and `SDL2Circle_PresentPost` returns as soon as the command list has been copied out - not when the frame has been drawn. So the change quiesces the present path first. Without that wait a frame authored under the old canvas is mapped under the new placement, putting the picture on the glass at a size neither geometry asked for, and the canvas buffers it reads from are freed under it.
+2. **It allocates before it releases.** Both new canvas buffers are taken first, so a failure leaves the window at the size it had rather than half resized, and says so on the log.
+3. **It refits the window surface in place.** A program is entitled to keep what `SDL_GetWindowSurface` handed it, and several do, in a global they set once. So the surface object survives: its pixels are replaced and its dimensions rewritten, and a pointer taken before the change still describes the surface after it. Freeing that object instead would leave a program reading through freed memory, which turns a resize into a fault somewhere else entirely.
+4. **It works out the placement again**, from the new canvas against the same scanout. The panel is untouched; only the source size and the rectangle it is placed in change.
+5. **It clears the whole display.** The letterbox is outside the canvas, so no rectangle an application draws can ever reach it, and the borders of the previous placement would otherwise stay on the screen. Every back buffer is painted black.
+6. **It pushes `SDL_WINDOWEVENT_SIZE_CHANGED`** carrying the new width and height.
+
+The change costs one frame's wait, and a mode change is rare.
 
 ### Matching the virtual display to the physical one
 
@@ -148,7 +207,11 @@ SDL2Circle_DeclareBasePath("/games/example");
 
 The declaration is fixed, on the same terms as the virtual display: accepted once, before anything has asked for a path, and refused afterwards. Both functions return a string the caller releases with `SDL_free`, and both end in a separator, because that is SDL's contract and applications append to the result without checking.
 
-**Not declaring one is not an error.** It answers `/`, with one warning on the log: a board has exactly one filesystem and `/` is a real directory an application can read and write. SDL returns a non-null path on every desktop platform, so a great many applications dereference the answer without looking - refusing would turn a missing declaration into a crash inside the application rather than a message from here.
+**Not declaring one is not an error.** The answer is then the directory the program is running in, which a host kernel has already entered before starting the application - that is where the card keeps that program's files, so it is the right answer and the one thing this library can establish for itself. It is stated once on the log.
+
+Declaring one is still worth doing, because it is the only way to name somewhere other than where the program was started from.
+
+This used to answer `/`, and that is worth knowing if you meet an older image: `SDL_GetPrefPath` composes `<base><app>/`, so an undeclared base made `/<app>/` and every setting and saved game a program wrote landed in a directory of its own at the root of the card - one per program, none of them beside that program's files.
 
 ## Boot switches
 
