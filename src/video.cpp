@@ -1878,11 +1878,105 @@ extern "C" int SDL_SetWindowFullscreen(SDL_Window *win, Uint32 flags)
     return 0;
 }
 
-extern "C" void SDL_SetWindowSize(SDL_Window *, int, int)
+// The canvas follows the window. An application that changes video mode says
+// so here, and the present path is re-pointed at the new size: the canvas
+// buffers, the placement the executor maps through, and the surface the
+// application draws into.
+//
+// The scanout is untouched. Only the source size and the rectangle it is
+// placed in change, so the presentation core carries on scaling whatever
+// canvas it is handed onto the same panel.
+//
+// The geometry this writes - the canvas size and the placement - is read by
+// the presentation core, in map_onto_scanout, as it executes a frame. So the
+// change of geometry is a handover, and it waits below for the presentation
+// core to finish with the frame it already has. SDL2Circle_PresentPost is no
+// help here: it returns as soon as the command list has been copied out, by
+// design, and the copy that survives it is mapped afterwards. Without the
+// wait, a frame authored under the old canvas is mapped under the new
+// placement - which puts the picture on the glass at a size neither geometry
+// ever asked for - and the canvas buffers it reads from are freed under it.
+// Paint the whole display black, both framebuffer halves. Defined with the
+// rest of the present path, below, and declared here because a resize is
+// what needs it.
+static void clear_display(void);
+
+// The surface the application draws into. Declared here because a resize has
+// to release it: it belongs to the old canvas size, and presenting from it
+// afterwards reads old-sized rows with the new pitch.
+static SDL_Surface *s_window_surface;
+
+static void resize_canvas(SDL_Window *win, int w, int h)
 {
-    // The canvas size is fixed at the first window and the present path is
-    // built around it. Nothing to do, and no SDL_WINDOWEVENT_SIZE_CHANGED,
-    // because the size did not change.
+    if (!win || w <= 0 || h <= 0)
+        return;
+    if (w == s_canvas_w && h == s_canvas_h)
+        return;
+
+    // The handover. Everything below - the buffers freed, the canvas size,
+    // the placement - belongs to the presentation core until the frame it
+    // holds has been through the executor. A mode change is rare and this
+    // costs one frame's wait when it happens.
+    SDL2Circle_PresentQuiesce();
+
+    // Allocated before anything is released, so a failure leaves the window
+    // as it was rather than half resized.
+    const unsigned pitch = (unsigned)w * 4;
+    u8 *b0 = (u8 *)calloc((size_t)pitch, (size_t)h);
+    u8 *b1 = (u8 *)calloc((size_t)pitch, (size_t)h);
+    if (!b0 || !b1)
+    {
+        free(b0);
+        free(b1);
+        SDL2Circle_Log("sdl2video", SDL2CIRCLE_LOG_WARNING,
+                       "no memory for a %dx%d canvas: staying at %dx%d",
+                       w, h, s_canvas_w, s_canvas_h);
+        return;
+    }
+
+    free(s_canvas_surface_buf[0]);
+    free(s_canvas_surface_buf[1]);
+    s_canvas_surface_buf[0] = b0;
+    s_canvas_surface_buf[1] = b1;
+    s_canvas_surface_pitch  = pitch;
+    s_canvas_surface_idx    = 0;
+    s_canvas_surface        = s_canvas_surface_buf[0];
+
+    s_canvas_w = w;
+    s_canvas_h = h;
+    win->w = w;
+    win->h = h;
+
+    // The old surface is the old size. SDL_GetWindowSurface rebuilds it on
+    // the next call, and until then there is nothing to present from - which
+    // is correct: a frame drawn before the resize does not belong on the new
+    // canvas.
+    SDL_FreeSurface(s_window_surface);
+    s_window_surface = nullptr;
+
+    resolve_placement();
+
+    // The canvas lands on a different rectangle, so whatever the last
+    // placement painted outside the new one is still on the glass. Nothing
+    // the application draws from here on can reach it - the letterbox is
+    // outside the canvas, so no canvas rectangle names it - which is why the
+    // library clears it rather than leaving it to the application.
+    clear_display();
+
+    SDL_Event ev;
+    memset(&ev, 0, sizeof(ev));
+    ev.type = SDL_WINDOWEVENT;
+    ev.window.timestamp = SDL_GetTicks();
+    ev.window.windowID = 1;
+    ev.window.event = SDL_WINDOWEVENT_SIZE_CHANGED;
+    ev.window.data1 = w;
+    ev.window.data2 = h;
+    SDL_PushEvent(&ev);
+}
+
+extern "C" void SDL_SetWindowSize(SDL_Window *win, int w, int h)
+{
+    resize_canvas(win, w, h);
 }
 
 extern "C" void SDL_SetWindowMinimumSize(SDL_Window *win, int w, int h)
@@ -2076,10 +2170,17 @@ extern "C" int SDL_GetWindowDisplayMode(SDL_Window *win, SDL_DisplayMode *mode)
     return SDL_GetCurrentDisplayMode(0, mode);
 }
 
-extern "C" int SDL_SetWindowDisplayMode(SDL_Window *win, const SDL_DisplayMode *)
+// A fullscreen application states the size it wants here rather than through
+// SDL_SetWindowSize, so this resizes the canvas too. Both routes lead to the
+// same place: SDL_GetWindowSize then reports the new size and
+// SDL_GetWindowSurface hands back a surface of it, which is what an
+// application checks before it will draw.
+extern "C" int SDL_SetWindowDisplayMode(SDL_Window *win, const SDL_DisplayMode *mode)
 {
     if (!win)
         return SDL_SetError("SDL_SetWindowDisplayMode: no window");
+    if (mode && mode->w > 0 && mode->h > 0)
+        resize_canvas(win, mode->w, mode->h);
     return 0;
 }
 
@@ -2165,7 +2266,6 @@ extern "C" SDL_bool SDL_GetWindowWMInfo(SDL_Window *, SDL_SysWMinfo *)
 // because that is the pointer applications hold on to across frames.
 // ---------------------------------------------------------------------------
 
-static SDL_Surface *s_window_surface = nullptr;
 
 extern "C" SDL_Surface *SDL_GetWindowSurface(SDL_Window *win)
 {
@@ -2195,6 +2295,50 @@ static void flip_on0(void *p)
 // and ignore the half entirely, and naming half 1 there would address memory
 // past the grant.
 static unsigned s_window_surface_back = 0;
+
+// A fill of the whole canvas is the one command the executor widens to the
+// whole display, letterbox included (see map_onto_scanout).
+//
+// Twice, because the present path always draws into a back buffer and there
+// are two of them: the two framebuffer halves when the grant allowed
+// panning, and the two shadows otherwise. A back buffer this misses keeps
+// the old borders and is shown next, which reads on the glass as the borders
+// flashing rather than as a clear that did nothing. Two covers both schemes,
+// and covers a single-buffered one harmlessly, so this does not have to know
+// which is in use.
+//
+// Each fill is posted as a frame of its own, because the frame record
+// carries a single command, and the two are separated by a quiesce, because
+// the back buffer only changes when the present that used it completes.
+static void clear_display(void)
+{
+    if (s_canvas_w <= 0 || s_canvas_h <= 0)
+        return;
+
+    SDL2CirclePresentCmd clear;
+    memset(&clear, 0, sizeof(clear));
+    clear.op = SDL2CirclePresentCmd::FILL;
+    clear.dx = 0; clear.dy = 0;
+    clear.w = s_canvas_w; clear.h = s_canvas_h;
+    clear.color = 0xFF000000;
+    clear.alphamod = 255;
+
+    const bool split = SDL2Circle_SplitActive() && SDL2Circle_ThisCore() != 0;
+    for (unsigned i = 0; i < 2; i++)
+    {
+        if (split)
+        {
+            SDL2Circle_PresentPost(&clear, 1, s_window_surface_back);
+            SDL2Circle_PresentQuiesce();
+        }
+        else
+        {
+            SDL2Circle_VideoExecCmd(&clear, s_window_surface_back);
+        }
+        if (s_fb_halves == 2)
+            s_window_surface_back ^= 1;
+    }
+}
 
 extern "C" int SDL_UpdateWindowSurfaceRects(SDL_Window *win,
                                             const SDL_Rect *rects, int numrects)
@@ -2230,6 +2374,7 @@ extern "C" int SDL_UpdateWindowSurfaceRects(SDL_Window *win,
     memset(&frame, 0, sizeof(frame));
     frame.op = SDL2CirclePresentCmd::COPY;
     frame.alphamod = 255;
+
 
     SDL2CirclePresentCmd in = frame;
     in.dx = 0; in.dy = 0;
@@ -4005,7 +4150,7 @@ extern "C" void SDL_RenderPresent(SDL_Renderer *ren)
         // to the glass is squeezed against the raster instead of started
         // into a clear frame.
         if (ren->vsync)
-            SDL2Circle_PresentWaitDone(SDL2Circle_PresentPostedSeq());
+            SDL2Circle_PresentQuiesce();
         return;
     }
 
