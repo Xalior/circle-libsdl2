@@ -432,9 +432,17 @@ void SDL2Circle_ConsoleGrantScreen(void)
     if (!s_started || s_base == nullptr || s_screenLive)
         return;
 
+    // Said before the screen is taken, so it goes to the serial port alone.
+    //
+    // An application that destroys one window and creates another gives the
+    // screen up for the moment in between. Nothing is drawn in that moment,
+    // so the picture already on the glass stays there and the handover is
+    // invisible - unless this line is written onto the screen it has just
+    // reclaimed, which is a page of text between two frames that should look
+    // continuous. The line is worth having; drawing it is not.
+    SDL2Circle_Log("sdl2console", SDL2CIRCLE_LOG_NOTICE, "screen log on");
+
     s_lock.Acquire();
     s_screenLive = true;
     s_lock.Release();
-
-    SDL2Circle_Log("sdl2console", SDL2CIRCLE_LOG_NOTICE, "screen log on");
 }
