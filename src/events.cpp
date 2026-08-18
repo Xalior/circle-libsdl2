@@ -182,8 +182,9 @@ extern "C" void SDL_PumpEvents(void)
             if (now - lastBeat > 10000000)
             {
                 lastBeat = now;
-                SDL2Circle_Log("sdl2", SDL2CIRCLE_LOG_DEBUG, "pump alive t=%us",
-                               (unsigned)(now / 1000000));
+                if (SDL2Circle_DebugUartArmed())
+                    SDL2Circle_Log("sdl2", SDL2CIRCLE_LOG_DEBUG, "pump alive t=%us",
+                                   (unsigned)(now / 1000000));
             }
         }
         return;
@@ -209,8 +210,11 @@ extern "C" void SDL_PumpEvents(void)
         CScheduler::Get()->Yield();
     }
 
-    // Liveness beacon + deadman: a debug line every 10 s proves the app's
-    // main loop is still pumping. A kernel timer re-armed on every beat
+    // Liveness beacon + deadman. The beacon is a debug line every 10 s
+    // proving the application's main loop is still pumping, and it is printed
+    // only where --rapi-debug-uart asked for it: it says the machine is well,
+    // on a timer, for as long as the machine is up. The deadman below is not
+    // conditional - it is what reports a main loop that stopped. A kernel timer re-armed on every beat
     // fires from IRQ context if the pump goes silent for 30 s and dumps
     // the scheduler's task list - the wedged system's own post-mortem.
     {
@@ -220,8 +224,9 @@ extern "C" void SDL_PumpEvents(void)
         if (now - lastBeat > 10000000)
         {
             lastBeat = now;
-            SDL2Circle_Log("sdl2", SDL2CIRCLE_LOG_DEBUG, "pump alive t=%us",
-                                  (unsigned)(now / 1000000));
+            if (SDL2Circle_DebugUartArmed())
+                SDL2Circle_Log("sdl2", SDL2CIRCLE_LOG_DEBUG, "pump alive t=%us",
+                                      (unsigned)(now / 1000000));
 
             if (deadman != 0)
                 CTimer::Get()->CancelKernelTimer(deadman);

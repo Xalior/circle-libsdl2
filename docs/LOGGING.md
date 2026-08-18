@@ -74,6 +74,25 @@ It is the same build through a second door, not a second mechanism. Calling it t
 
 The character shapes come from Circle's character generator, which turns a character into a bitmap and knows nothing about the screen, the depth or the pitch - none of what is wrong next door reaches it. The cell size is whatever font that world was configured with.
 
+## The library's own debug lines
+
+**The library prints nothing at debug severity unless `--rapi-debug-uart` is
+set.** They describe the library working normally rather than anything going
+wrong - the liveness beacon the event pump writes every ten seconds is the one
+to know about, because it is the line that says the application's main loop is
+still running.
+
+That is why the switch is worth knowing about even where nobody is typing at
+the serial port: without it a working board says nothing at all between one
+event and the next, and a board that has genuinely stopped says exactly the
+same. With it, the beacon distinguishes them.
+
+**What reports a stopped main loop is not on the switch.** The pump arms a
+kernel timer on every beat, and a pump that goes silent for thirty seconds
+leaves it to fire and dump the scheduler's task list. That happens whether or
+not the switch is set, because it is a fault rather than a description, and it
+is the one thing a silent board still has to be able to say.
+
 ## Raw output
 
 `SDL2Circle_WriteBytes` is the channel for a program's own output. It reaches the destinations above and **adds nothing**: no source, no severity, no timestamp, and no line discipline. Half a line is output. A byte that is not text is output. Nothing waits for an end of line.

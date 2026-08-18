@@ -10,6 +10,23 @@ followed.
 
 ## vPoC3
 
+### The library's debug lines wait to be asked for
+
+`--rapi-debug-uart` now turns on the library's own debug output as well as
+serial key injection, and nothing at debug severity prints without it. The
+event pump's liveness beacon is the line this is really about: it says the
+application's main loop is still running, once every ten seconds, for as long
+as the board is up.
+
+A line on a timer describing a machine that is well belongs to whoever is
+watching the machine being built, not to the machine. Without the switch a
+working board is now silent between one event and the next - which is worth
+knowing before a quiet console is read as a library that has stopped.
+
+What reports a main loop that has genuinely stopped is not on the switch and
+never was: the pump arms a kernel timer on every beat, and thirty seconds of
+silence lets it fire and dump the scheduler's task list.
+
 ### The locks reach the keyboard, and the keypad gets its other half
 
 Three things that were named as missing when the lock states were first
