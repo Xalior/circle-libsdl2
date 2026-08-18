@@ -188,8 +188,11 @@
 // benefit of recency while leaving enough noise to break a cycle.
 #define DISKCACHE_LRU_SAMPLE        5
 
-// How often a report reaches the log, in seconds.
-#define DISKCACHE_REPORT_SECONDS    5
+// How often a report reaches the log, in seconds. Zero, the default, reports
+// nothing: the report is an instrument, and a cache that is working has
+// nothing to say that is worth a console the rest of the machine competes
+// for. Build with a number to watch one.
+#define DISKCACHE_REPORT_SECONDS    0
 
 // Request sizes and seek distances are each counted into a small set of
 // power-of-two buckets rather than kept individually.

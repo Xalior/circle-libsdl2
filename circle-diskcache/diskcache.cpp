@@ -1103,6 +1103,11 @@ void CDiskCacheDevice::Poll (void)
 		return;
 	}
 
+	if (DISKCACHE_REPORT_SECONDS == 0)
+	{
+		return;
+	}
+
 	u64 ullNow = CTimer::GetClockTicks64 ();
 	if (ullNow - m_ullLastReportTicks < (u64) DISKCACHE_REPORT_SECONDS * CLOCKHZ)
 	{

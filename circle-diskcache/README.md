@@ -190,9 +190,16 @@ while (bRunning)
 }
 ```
 
-`Poll` writes the summary when the interval has passed, and otherwise reads
-the clock and returns. Call it from a place that is allowed to write to the
-log. Do not call it from inside a call another processor core is waiting for.
+**Nothing is reported unless you ask for it.** `DISKCACHE_REPORT_SECONDS` is
+zero, and at zero `Poll` returns without writing anything - the summary is an
+instrument, and a cache that is working has nothing to say worth a console the
+rest of the machine is competing for. Build with a number of seconds to watch
+one, and put it back to zero afterwards.
+
+With an interval set, `Poll` writes the summary when that interval has passed
+and otherwise reads the clock and returns. Call it from a place that is
+allowed to write to the log. Do not call it from inside a call another
+processor core is waiting for.
 
 `Report` writes the summary immediately, which is useful once more before the
 board stops.
