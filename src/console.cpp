@@ -419,9 +419,7 @@ void SDL2Circle_ConsoleReleaseScreen(void)
     s_screenLive = false;
     s_lock.Release();
 
-    SDL2Circle_Log("sdl2console", SDL2CIRCLE_LOG_NOTICE,
-                   "the application has the display; output is on the serial "
-                   "port alone from here");
+    SDL2Circle_Log("sdl2console", SDL2CIRCLE_LOG_NOTICE, "screen log off");
 }
 
 // The reverse of the above, for a window that goes away: the console did not
