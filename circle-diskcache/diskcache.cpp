@@ -100,7 +100,6 @@ CDiskCacheDevice::CDiskCacheDevice (const char *pDeviceName)
 	m_ullLastReportTicks (0),
 	m_ullFirstTicks (0),
 	m_bStarted (FALSE),
-	m_bLegendPrinted (FALSE),
 	m_nPrevReadRequests (0),
 	m_nPrevReadSectors (0),
 	m_nPrevWriteRequests (0),
@@ -1113,43 +1112,6 @@ void CDiskCacheDevice::Poll (void)
 	Report ();
 }
 
-void CDiskCacheDevice::ReportLegend (void)
-{
-	CLogger *pLog = CLogger::Get ();
-
-	pLog->Write (From, LogNotice,
-		     "what the card was asked for, and what this cache did with it. Writes are "
-		     "never held back: the card has every one of them before the call returns");
-	pLog->Write (From, LogNotice,
-		     "one sector is %u bytes, and every size and distance below is in sectors",
-		     (unsigned) DISKCACHE_SECTOR_SIZE);
-	pLog->Write (From, LogNotice,
-		     "sizes  = how many requests were 1 sector long, how many were 2-3, and so on");
-	pLog->Write (From, LogNotice,
-		     "seq    = reads beginning exactly where the previous read ended; jump = the "
-		     "rest, and how far from that point they began");
-	pLog->Write (From, LogNotice,
-		     "cache  = the pool, and the most of it ever in use. If that high-water mark "
-		     "stays well under the pool, a bigger pool cannot help this program");
-	pLog->Write (From, LogNotice,
-		     "hits   = requests answered entirely from memory, with no card transaction "
-		     "at all");
-	pLog->Write (From, LogNotice,
-		     "admit  = a block enters the pool only when asked for a second time, so a "
-		     "file read once from end to end never displaces one being read in a loop");
-	pLog->Write (From, LogNotice,
-		     "curve  = the share of reads a smaller pool would still have caught, judged "
-		     "by how long each hit block had gone untouched. A floor, not an exact "
-		     "figure: the real rate at a size is this or better");
-	pLog->Write (From, LogNotice,
-		     "ahead  = runs fetched because a read carried on from the last one, and "
-		     "how much of each run something went on to ask for. A low share means the "
-		     "card is being asked for sectors nobody wants");
-	pLog->Write (From, LogNotice,
-		     "card   = time inside the card driver per request, and the time the cache "
-		     "meant nobody had to spend");
-}
-
 void CDiskCacheDevice::Report (void)
 {
 	CLogger *pLog = CLogger::Get ();
@@ -1180,26 +1142,10 @@ void CDiskCacheDevice::Report (void)
 	m_nPrevWriteRequests = m_Write.nRequests;
 	m_nPrevWriteSectors = m_Write.nSectors;
 
-	// A quiet interval gets one line. There is nothing new to describe, and
-	// the report is polled serial output: printing the whole thing at an idle
-	// card would cost the machine more than the information is worth.
+	// Nothing happened, so nothing is reported.
 	if (nNewReads == 0 && nNewWrites == 0)
 	{
-		pLog->Write (From, LogNotice,
-			     "t+%us  idle, no disk traffic  (so far: %llu reads / %llu KB, "
-			     "%llu writes / %llu KB)",
-			     nUptimeSeconds,
-			     (unsigned long long) m_Read.nRequests,
-			     (unsigned long long) (m_Read.nSectors * DISKCACHE_SECTOR_SIZE / 1024),
-			     (unsigned long long) m_Write.nRequests,
-			     (unsigned long long) (m_Write.nSectors * DISKCACHE_SECTOR_SIZE / 1024));
 		return;
-	}
-
-	if (!m_bLegendPrinted)
-	{
-		ReportLegend ();
-		m_bLegendPrinted = TRUE;
 	}
 
 	// Reads. Everything is a running total since boot except the bracket,

@@ -314,7 +314,6 @@ private:
 	void RecordRequest (TDirStats *pDir, u32 nSectors);
 	void RecordTiming (TDirStats *pDir, unsigned nMicros, boolean bOK);
 	void RecordSequence (u64 nStartSector, u32 nSectors);
-	void ReportLegend (void);
 
 	static unsigned SizeBucket (u32 nSectors);
 	static unsigned JumpBucket (u64 nDistanceSectors);
@@ -393,7 +392,6 @@ private:
 	u64 m_ullLastReportTicks;
 	u64 m_ullFirstTicks;
 	boolean m_bStarted;
-	boolean m_bLegendPrinted;
 	u64 m_nPrevReadRequests;
 	u64 m_nPrevReadSectors;
 	u64 m_nPrevWriteRequests;
