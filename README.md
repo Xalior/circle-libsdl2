@@ -10,6 +10,10 @@ It also lets your application **run somewhere other than core 0** and still call
 
 [`circle-diskcache/`](circle-diskcache/) is a read cache for a Circle block device. It uses Circle and nothing else - not this library, not SDL - and any Circle project can copy its two files and use it. It is kept here because that is a convenient place for it today, and it may move.
 
+[`circle-syscallwrap/`](circle-syscallwrap/) redirects the C library's file syscalls onto this library's I/O service, so an application that opens files with plain `fopen` and `opendir` keeps working when it runs on a core that is not allowed to touch the card. One line in a makefile installs it.
+
+[`circle-posix/`](circle-posix/) holds the POSIX functions a bare-metal program is missing - the user database, other processes, dynamic loading, terminals - each answered the way the platform can honestly answer it. Every port meets the same absences, and this is them written once.
+
 [`tools/`](tools/) holds build-time scripts that work on this library's own on-disk formats rather than on running code. `tools/stamp-bootargs` writes the boot argument block (see [Boot switches](docs/DISPLAY.md#boot-switches)) into an already-built kernel image, so a consumer can bake a switch - a virtual display size, say - into an image with nothing passed at boot time.
 
 Proven in real use by [pi-mame](https://github.com/Xalior/pi-mame), which runs MAME's emulation core on bare metal through this library - a full application using the whole API surface at once: fullscreen software rendering, USB HID keyboards, HDMI audio, files off the SD card, and its emulation running on a core that never touches a device.
