@@ -49,7 +49,6 @@ const size_t BASE_PATH_MAX = 256;
 char s_base[BASE_PATH_MAX] = "/";
 bool s_declared = false;
 bool s_answered = false;      // a path has been handed out; the base is fixed
-bool s_warned = false;        // the undeclared warning has been given
 
 // SDL hands the caller memory it releases with SDL_free.
 char *DuplicatePath(const char *path)
@@ -66,15 +65,43 @@ char *DuplicatePath(const char *path)
 }
 
 // The base, and the note that it can no longer change.
+//
+// Undeclared, the answer is the directory the program is running in. A host
+// kernel enters its own directory before starting the application - that is
+// where the card keeps that program's files - so the working directory is
+// already the right answer and is the one thing this library can find out for
+// itself.
+//
+// Answering "/" instead, which this did, is how a game ends up creating a
+// directory of its own at the root of the card: SDL_GetPrefPath composes
+// <base><app>/, so an undeclared base makes /<app>/ and every write lands
+// there. Several of them, one per program, none of them where the card keeps
+// that program's files.
+//
+// A declaration still wins, and is still worth making: it is the only way to
+// name somewhere other than where the program was started from.
 const char *SettleBase(void)
 {
-    if (!s_declared && !s_warned)
+    if (!s_declared && !s_answered)
     {
-        s_warned = true;
-        // SDL2Circle_DeclareBasePath is what sets it; the log says what
-        // the answer is, not how to change it.
-        SDL2Circle_Log("sdl2fs", SDL2CIRCLE_LOG_WARNING,
-                       "no base path declared: answering \"%s\"", s_base);
+        char cwd[BASE_PATH_MAX];
+        if (SDL2Circle_IOGetCwd(cwd, sizeof(cwd)) == 0 && cwd[0] == '/')
+        {
+            const size_t len = strlen(cwd);
+            if (len + 2 <= BASE_PATH_MAX)
+            {
+                memcpy(s_base, cwd, len + 1);
+                if (s_base[len - 1] != '/')
+                {
+                    s_base[len] = '/';
+                    s_base[len + 1] = '\0';
+                }
+            }
+        }
+        // Said once, at notice rather than warning: this is the ordinary
+        // case and it is now a working answer rather than a fallback.
+        SDL2Circle_Log("sdl2fs", SDL2CIRCLE_LOG_NOTICE,
+                       "base path %s (working directory)", s_base);
     }
     s_answered = true;
     return s_base;
