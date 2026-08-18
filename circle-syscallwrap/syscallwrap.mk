@@ -56,7 +56,11 @@ OBJS    += $(SYSCALLWRAP_OBJ)
 INCLUDE += -I $(SYSCALLWRAP_DIR)
 LDFLAGS += $(addprefix --wrap=,$(SYSCALLWRAP_SYMS))
 
-$(SYSCALLWRAP_OBJ): $(SYSCALLWRAP_DIR)/syscallwrap.cpp
+# The headers are prerequisites as well as the source. Without them a
+# change to one rebuilds nothing: the object is newer than the .cpp and
+# make has no other reason to look. That is silent - the build succeeds
+# and links the object compiled before the header changed.
+$(SYSCALLWRAP_OBJ): $(SYSCALLWRAP_DIR)/syscallwrap.cpp $(wildcard $(SYSCALLWRAP_DIR)/*.h) $(wildcard $(SYSCALLWRAP_DIR)/sys/*.h)
 	@mkdir -p $(dir $@)
 	@echo "  CPP   $@"
 	@$(CPP) $(CPPFLAGS) $(DEPFLAGS) -c -o $@ $<

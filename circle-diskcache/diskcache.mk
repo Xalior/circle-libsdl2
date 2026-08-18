@@ -37,7 +37,11 @@ DISKCACHE_OBJ := $(DISKCACHE_OBJDIR)/diskcache.o
 OBJS    += $(DISKCACHE_OBJ)
 INCLUDE += -I $(DISKCACHE_DIR)
 
-$(DISKCACHE_OBJ): $(DISKCACHE_DIR)/diskcache.cpp
+# The headers are prerequisites as well as the source. Without them a
+# change to one rebuilds nothing: the object is newer than the .cpp and
+# make has no other reason to look. That is silent - the build succeeds
+# and links the object compiled before the header changed.
+$(DISKCACHE_OBJ): $(DISKCACHE_DIR)/diskcache.cpp $(wildcard $(DISKCACHE_DIR)/*.h) $(wildcard $(DISKCACHE_DIR)/sys/*.h)
 	@mkdir -p $(dir $@)
 	@echo "  CPP   $@"
 	@$(CPP) $(CPPFLAGS) $(DEPFLAGS) -c -o $@ $<

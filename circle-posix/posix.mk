@@ -44,7 +44,11 @@ POSIX_OBJ := $(POSIX_OBJDIR)/posix.o
 OBJS    += $(POSIX_OBJ)
 INCLUDE += -I $(POSIX_DIR)
 
-$(POSIX_OBJ): $(POSIX_DIR)/posix.cpp
+# The headers are prerequisites as well as the source. Without them a
+# change to one rebuilds nothing: the object is newer than the .cpp and
+# make has no other reason to look. That is silent - the build succeeds
+# and links the object compiled before the header changed.
+$(POSIX_OBJ): $(POSIX_DIR)/posix.cpp $(wildcard $(POSIX_DIR)/*.h) $(wildcard $(POSIX_DIR)/sys/*.h)
 	@mkdir -p $(dir $@)
 	@echo "  CPP   $@"
 	@$(CPP) $(CPPFLAGS) $(DEPFLAGS) -c -o $@ $<

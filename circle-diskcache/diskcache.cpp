@@ -218,7 +218,7 @@ boolean CDiskCacheDevice::Configure (unsigned nKilobytes, unsigned nReadAheadKB)
 	if (nKilobytes == 0 && nReadAheadKB == 0 && pLog != 0)
 	{
 		pLog->Write (From, LogNotice,
-			     "cache off and no read-ahead — every read reaches the card "
+			     "cache off and no read-ahead -- every read reaches the card "
 			     "exactly as it was asked for, and only the counting is running");
 	}
 
@@ -267,7 +267,7 @@ boolean CDiskCacheDevice::ConfigureReadAhead (unsigned nReadAheadKB)
 		if (pLog != 0)
 		{
 			pLog->Write (From, LogError,
-				     "%u KB read-ahead window refused by the low heap — "
+				     "%u KB read-ahead window refused by the low heap -- "
 				     "read-ahead off", nReadAheadKB);
 		}
 		return FALSE;
@@ -282,15 +282,13 @@ boolean CDiskCacheDevice::ConfigureReadAhead (unsigned nReadAheadKB)
 		if (nReadAheadKB != nAsked)
 		{
 			pLog->Write (From, LogNotice,
-				     "read-ahead on: %u KB window in %u sectors, cut down from "
-				     "the %u KB asked for to stay in proportion to the pool",
+				     "read-ahead on: %uKB, %u sectors, cut down from %uKB",
 				     nReadAheadKB, nDepth, nAsked);
 		}
 		else
 		{
 			pLog->Write (From, LogNotice,
-				     "read-ahead on: %u KB window in %u sectors, fetched when a "
-				     "read carries on from the last one",
+				     "read-ahead on: %uKB, %u sectors",
 				     nReadAheadKB, nDepth);
 		}
 	}
@@ -312,7 +310,7 @@ boolean CDiskCacheDevice::ConfigurePool (unsigned nKilobytes)
 		if (pLog != 0)
 		{
 			pLog->Write (From, LogError,
-				     "%u KB asked for, which is past the %u KB limit — cache off",
+				     "%u KB asked for, which is past the %u KB limit -- cache off",
 				     nKilobytes, (unsigned) DISKCACHE_MAX_KB);
 		}
 		return FALSE;
@@ -341,7 +339,7 @@ boolean CDiskCacheDevice::ConfigurePool (unsigned nKilobytes)
 		{
 			pLog->Write (From, LogError,
 				     "%u KB pool needs %u KB in total and only %u KB of low heap "
-				     "is free — cache off, ask for less",
+				     "is free -- cache off, ask for less",
 				     nKilobytes,
 				     (unsigned) ((nData + nOverhead) / 1024),
 				     (unsigned) (nFree / 1024));
@@ -363,7 +361,7 @@ boolean CDiskCacheDevice::ConfigurePool (unsigned nKilobytes)
 		if (pLog != 0)
 		{
 			pLog->Write (From, LogError,
-				     "%u KB pool refused by the low heap — cache off", nKilobytes);
+				     "%u KB pool refused by the low heap -- cache off", nKilobytes);
 		}
 		return FALSE;
 	}
@@ -392,8 +390,7 @@ boolean CDiskCacheDevice::ConfigurePool (unsigned nKilobytes)
 	if (pLog != 0)
 	{
 		pLog->Write (From, LogNotice,
-			     "pool on: %u KB in %u blocks of %u bytes, %u KB of "
-			     "bookkeeping, write-through",
+			     "pool on: %uKB, %u blocks of %u bytes, +%uKB meta, write-through",
 			     nKilobytes, nSlots, (unsigned) DISKCACHE_SECTOR_SIZE,
 			     m_nOverheadKB);
 	}
@@ -1165,8 +1162,8 @@ void CDiskCacheDevice::Report (void)
 	unsigned nReadMeanTenths = MeanTenths (m_Read.nSectors, m_Read.nRequests);
 
 	pLog->Write (From, LogNotice,
-		     "t+%us  reads %llu / %llu KB, mean %u.%u sectors  "
-		     "(last %us: %llu reqs, %llu KB, %u KB/s)",
+		     "t+%us reads %llu %lluKB mean %u.%u sec "
+		     "last %us %llu %lluKB %uKB/s",
 		     nUptimeSeconds,
 		     (unsigned long long) m_Read.nRequests,
 		     (unsigned long long) (m_Read.nSectors * DISKCACHE_SECTOR_SIZE / 1024),
@@ -1177,8 +1174,7 @@ void CDiskCacheDevice::Report (void)
 		     nReadRateKB);
 
 	pLog->Write (From, LogNotice,
-		     "  sizes  1:%llu  2-3:%llu  4-7:%llu  8-15:%llu  16-31:%llu  "
-		     "32-63:%llu  64-127:%llu  128+:%llu",
+		     "  size 1:%llu 2:%llu 4:%llu 8:%llu 16:%llu 32:%llu 64:%llu 128+:%llu",
 		     (unsigned long long) m_Read.nSizeBucket[0],
 		     (unsigned long long) m_Read.nSizeBucket[1],
 		     (unsigned long long) m_Read.nSizeBucket[2],
@@ -1194,7 +1190,7 @@ void CDiskCacheDevice::Report (void)
 	u64 nJumped = m_nJumpForward + m_nJumpBackward;
 	unsigned nSeqTenths = PercentTenths (m_nSequential, nJudged);
 	pLog->Write (From, LogNotice,
-		     "  seq    %llu of %llu (%u.%u%%)   jump %llu (%llu on, %llu back)  "
+		     "  seq %llu/%llu %u.%u%% jump %llu (%llu fwd %llu back) "
 		     "<8:%llu <64:%llu <512:%llu <4K:%llu <32K:%llu 32K+:%llu",
 		     (unsigned long long) m_nSequential,
 		     (unsigned long long) nJudged,
@@ -1212,7 +1208,7 @@ void CDiskCacheDevice::Report (void)
 	if (m_nSlots == 0)
 	{
 		pLog->Write (From, LogNotice,
-			     "  cache  off — every one of those reads reached the card");
+			     "  cache off");
 	}
 	else
 	{
@@ -1224,22 +1220,20 @@ void CDiskCacheDevice::Report (void)
 					       * DISKCACHE_SECTOR_SIZE / 1024);
 		unsigned nUsedTenths = PercentTenths (m_nSlotsUsed, m_nSlots);
 		pLog->Write (From, LogNotice,
-			     "  cache  %u KB pool in %u blocks (+%u KB bookkeeping), "
-			     "high-water %u KB used (%u.%u%%)",
+			     "  cache %uKB %u blocks +%uKB meta, peak %uKB %u.%u%%",
 			     m_nPoolKB, m_nSlots, m_nOverheadKB,
 			     nUsedKB, nUsedTenths / 10, nUsedTenths % 10);
 
 		unsigned nHitTenths = PercentTenths (m_nCacheHits, m_Read.nRequests);
 		pLog->Write (From, LogNotice,
-			     "  hits   %llu of %llu (%u.%u%%), %llu KB never asked of the card",
+			     "  hits %llu/%llu %u.%u%% %lluKB spared",
 			     (unsigned long long) m_nCacheHits,
 			     (unsigned long long) m_Read.nRequests,
 			     nHitTenths / 10, nHitTenths % 10,
 			     (unsigned long long) (m_nHitSectors * DISKCACHE_SECTOR_SIZE / 1024));
 
 		pLog->Write (From, LogNotice,
-			     "  admit  %llu admitted on a second sighting, %llu evicted, "
-			     "%llu seen once and not kept, %llu refreshed by a write",
+			     "  admit %llu evict %llu once %llu rewrite %llu",
 			     (unsigned long long) m_nAdmissions,
 			     (unsigned long long) m_nEvictions,
 			     (unsigned long long) m_nFirstSightings,
@@ -1266,8 +1260,8 @@ void CDiskCacheDevice::Report (void)
 		unsigned nAheadTenths = PercentTenths (m_nAheadHits, m_Read.nRequests);
 		unsigned nUsedTenths = PercentTenths (m_nAheadUsed, m_nAheadFetched);
 		pLog->Write (From, LogNotice,
-			     "  ahead  %u KB window, %llu runs, %llu sectors fetched and "
-			     "%llu wanted (%u.%u%%) — %llu reads (%u.%u%%) came out of it",
+			     "  ahead %uKB %llu runs %llu fetched %llu used %u.%u%% "
+			     "hit %llu %u.%u%%",
 			     (unsigned) ((u64) m_nAheadDepth * DISKCACHE_SECTOR_SIZE / 1024),
 			     (unsigned long long) m_nAheadFetches,
 			     (unsigned long long) m_nAheadFetched,
@@ -1279,7 +1273,7 @@ void CDiskCacheDevice::Report (void)
 	else
 	{
 		pLog->Write (From, LogNotice,
-			     "  ahead  off — the card is asked for exactly what was requested");
+			     "  ahead off");
 	}
 
 	// Everything that never reached the card, whichever of the two answered
@@ -1289,7 +1283,7 @@ void CDiskCacheDevice::Report (void)
 	{
 		unsigned nSparedTenths = PercentTenths (nSpared, m_Read.nRequests);
 		pLog->Write (From, LogNotice,
-			     "  spared %llu of %llu reads (%u.%u%%) never reached the card",
+			     "  spared %llu/%llu %u.%u%%",
 			     (unsigned long long) nSpared,
 			     (unsigned long long) m_Read.nRequests,
 			     nSparedTenths / 10, nSparedTenths % 10);
@@ -1302,8 +1296,8 @@ void CDiskCacheDevice::Report (void)
 		// what a read from it actually costs on this board.
 		u64 nMeanMicros = m_Read.nTotalMicros / m_Read.nTimedRequests;
 		pLog->Write (From, LogNotice,
-			     "  card   %llu reads reached it: min %uus, mean %lluus, max %uus; "
-			     "%llu ms spent, about %llu ms not spent",
+			     "  card %llu reads min %uus mean %lluus max %uus "
+			     "%llums spent %llums saved",
 			     (unsigned long long) m_Read.nTimedRequests,
 			     m_Read.nMinMicros,
 			     (unsigned long long) nMeanMicros,
