@@ -2067,12 +2067,42 @@ static void canvas_set_size(SDL_Window *win, int w, int h)
     win->w = w;
     win->h = h;
 
-    // The old surface is the old size. SDL_GetWindowSurface rebuilds it on
-    // the next call, and until then there is nothing to present from - which
-    // is correct: a frame drawn before the resize does not belong on the new
-    // canvas.
-    SDL_FreeSurface(s_window_surface);
-    s_window_surface = nullptr;
+    // The surface is refitted rather than replaced, and the object it is
+    // held in outlives the change.
+    //
+    // A program is entitled to keep what SDL_GetWindowSurface handed it -
+    // several do, in a global they set once - and freeing that object here
+    // leaves them holding freed memory. What they then read through it is
+    // whatever the allocator has since put there, which is how a resize
+    // turns into a fault somewhere else entirely, in code that has nothing
+    // to do with the display.
+    //
+    // So the pixels are replaced and the dimensions rewritten in place. A
+    // pointer taken before the change still describes the surface after it.
+    if (s_window_surface)
+    {
+        const int surf_pitch = w * 4;
+        void *px = calloc((size_t)surf_pitch, (size_t)h);
+        if (px)
+        {
+            if (!(s_window_surface->flags & SDL_PREALLOC))
+                free(s_window_surface->pixels);
+            s_window_surface->pixels = px;
+            s_window_surface->w = w;
+            s_window_surface->h = h;
+            s_window_surface->pitch = surf_pitch;
+            s_window_surface->clip_rect = SDL_Rect{ 0, 0, w, h };
+        }
+        else
+        {
+            // Nothing to hand back is better than a surface whose size and
+            // storage disagree; the next SDL_GetWindowSurface builds a new
+            // one, and a program that kept the old pointer was going to be
+            // wrong either way.
+            SDL_FreeSurface(s_window_surface);
+            s_window_surface = nullptr;
+        }
+    }
 
     resolve_placement();
 
