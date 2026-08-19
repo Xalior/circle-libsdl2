@@ -145,6 +145,10 @@ extern "C" void SDL2Circle_ArmCoreRuntime(void)
         // of them.
         SDL2Circle_StdioInit();
 
+        // circle-newlib's other prerequisite (src/network.cpp), here for the
+        // same reason USB is: before the servo exists, so it blocks nothing.
+        SDL2Circle_NetworkInit();
+
         // The application's own static constructors, held back by
         // sdl-app-init.ld until the kernel exists. Core 0 only, and after
         // the runtime above rather than before it: a deferred constructor

@@ -94,6 +94,18 @@ void SDL2Circle_ConsoleGrantScreen(void);
 // and takes the lowest free slots.
 void SDL2Circle_StdioInit(void);
 
+// Build the one CNetSubSystem and hand it to CGlueNetworkInit, so that a
+// network call is answered instead of halting the board (src/network.cpp).
+// Core 0 only, once, from SDL2Circle_ArmCoreRuntime. A host kernel that
+// builds a CNetSubSystem of its own halts inside its constructor, as it would
+// with a second CCPUThrottle.
+void SDL2Circle_NetworkInit(void);
+
+// Make a Circle scheduler where the system has none (src/split.cpp), so that
+// a CTask can be constructed. Idempotent, and a host kernel's own scheduler
+// is found through CScheduler::IsActive() and left alone.
+void SDL2Circle_EnsureScheduler(void);
+
 // Let the console's own USB plug-and-play catch up: called from
 // SDL2Circle_InputPump (src/input.cpp), which already finds the keyboard by
 // name every pass, so the console's search costs nothing extra once a

@@ -1421,8 +1421,9 @@ public:
 // Circle's CTask registers itself with the scheduler while it is being
 // constructed, and it reaches it through CScheduler::Get(), which stops the
 // machine rather than reporting an absence. So the servo and the watchdog
-// below cannot be created without one - and a host that had not declared a
-// CScheduler took that fault here, in a constructor, with nothing said.
+// below cannot be created without one, nor can the network subsystem's own
+// task (src/network.cpp) - and a host that had not declared a CScheduler took
+// that fault in a constructor, with nothing said.
 //
 // Unlike CCPUThrottle, which this library owns for much the same reason,
 // this one can be asked: CScheduler::IsActive() is a safe question and
@@ -1442,7 +1443,7 @@ public:
 static bool s_bOwnScheduler = false;
 alignas(CScheduler) static u8 s_SchedulerStore[sizeof(CScheduler)];
 
-static void ensure_scheduler(void)
+void SDL2Circle_EnsureScheduler(void)
 {
     if (s_bOwnScheduler || CScheduler::IsActive())
         return;
@@ -1462,7 +1463,7 @@ extern "C" void SDL2Circle_SplitInit(void)
 
     // Before the tasks, not after: constructing one is what reaches for the
     // scheduler, and reaching for a scheduler that is not there is fatal.
-    ensure_scheduler();
+    SDL2Circle_EnsureScheduler();
 
     new CSplitServoTask;      // CTask registers itself with the scheduler
     new CSplitWatchdogTask;
