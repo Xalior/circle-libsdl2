@@ -20,6 +20,7 @@
 //
 #include <SDL2/SDL.h>
 #include "sdl2circle.h"
+#include "shim_internal.h"
 #include "threads.h"
 #include <circle/sched/scheduler.h>
 #include <circle/timer.h>
@@ -91,6 +92,71 @@ unsigned QueueCount(void)
     return count;
 }
 
+// The pointer, brought into the space the application draws in.
+//
+// Core 0 produces every mouse event in canvas coordinates, because that is
+// the only space it can know - it has no renderer and may not read one. An
+// application that has set a logical size is not working in those, so the
+// coordinates are translated here, where the event enters the application's
+// own queue on the application's own core, which is where the renderer's
+// state may be read. SDL2 does the same translation from a watch its renderer
+// installs, and that watch runs at this same point.
+//
+// It is done before the filter and the watchers rather than between them, so
+// that every piece of application code sees the one space. SDL2's ordering -
+// the filter first, then its own translating watch, then any watch registered
+// after it - is an artifact of the translation being a watch there; it is not
+// one here, and there is nothing to be gained from reproducing an order that
+// depends on when a program happened to register.
+//
+// Every one of these is a no-op unless a logical size is set, which is what
+// keeps an application that never sets one exactly as it was.
+void PointerToLogical(SDL_Event *event)
+{
+    int x, y;
+
+    switch (event->type)
+    {
+    case SDL_MOUSEMOTION:
+        x = event->motion.x;
+        y = event->motion.y;
+        SDL2Circle_PointerToLogical(&x, &y);
+        event->motion.x = x;
+        event->motion.y = y;
+
+        // The movement is scaled with the position, so that a program
+        // steering by it moves at the same rate as the arrow does.
+        x = event->motion.xrel;
+        y = event->motion.yrel;
+        SDL2Circle_PointerRelToLogical(&x, &y);
+        event->motion.xrel = x;
+        event->motion.yrel = y;
+        break;
+
+    case SDL_MOUSEBUTTONDOWN:
+    case SDL_MOUSEBUTTONUP:
+        x = event->button.x;
+        y = event->button.y;
+        SDL2Circle_PointerToLogical(&x, &y);
+        event->button.x = x;
+        event->button.y = y;
+        break;
+
+    case SDL_MOUSEWHEEL:
+        // Where the pointer was when the wheel turned - the same question
+        // the events above answer, so the same space.
+        x = event->wheel.mouseX;
+        y = event->wheel.mouseY;
+        SDL2Circle_PointerToLogical(&x, &y);
+        event->wheel.mouseX = x;
+        event->wheel.mouseY = y;
+        break;
+
+    default:
+        break;
+    }
+}
+
 // Offer an event to the filter and the watchers, then queue it. Returns 1 if
 // it was queued, 0 if the filter refused it, -1 if the queue is full.
 //
@@ -98,6 +164,8 @@ unsigned QueueCount(void)
 // filter that pushes an event of its own does not meet its own lock.
 int Deliver(SDL_Event *event)
 {
+    PointerToLogical(event);
+
     SDL_AtomicLock(&s_watchLock);
     SDL_EventFilter filter     = s_filter;
     void           *filterData = s_filterData;

@@ -145,6 +145,20 @@ struct SDL_Renderer
     size_t scratch_bytes[2];
     size_t scratch_used;
     u8     scratch_idx;
+
+    // Mouse coordinates are reported in this renderer's logical space, so a
+    // relative movement is divided by the same factor the position is. That
+    // division has a remainder, and throwing it away would lose slow movement
+    // entirely: at a scale of 2, a stream of one-pixel reports would every
+    // one of them truncate to zero and the pointer would never move at all.
+    // So the fraction is carried to the next event. SDL2 keeps exactly this
+    // pair on the renderer, for exactly this reason.
+    float rel_frac_x, rel_frac_y;
+
+    // SDL_HINT_MOUSE_RELATIVE_SCALING, read once when the renderer is made,
+    // as SDL2 reads it. It decides whether the relative movement above is
+    // scaled with the position or left in window pixels.
+    bool relative_scaling;
 };
 
 // The virtual framebuffer: the one framebuffer SDL has, at canvas
@@ -1223,7 +1237,11 @@ void SDL2Circle_VideoExecCmd(const SDL2CirclePresentCmd *cmd, unsigned half)
     if (!map_onto_scanout(&placed))
         return;
 
-    if (placed.op == SDL2CirclePresentCmd::COPY)
+    // The pointer is not part of the picture's geometry chain and is kept out
+    // of the line that describes it: it has a chain of its own, and the memo
+    // in log_copy_geometry holds one, so the two would alternate and put a
+    // line on the console every frame.
+    if (placed.op == SDL2CirclePresentCmd::COPY && !placed.pointer)
         log_copy_geometry(*cmd, placed,
                           cmd->sw > 0 ? cmd->sw : cmd->w,
                           cmd->sh > 0 ? cmd->sh : cmd->h);
@@ -1362,6 +1380,114 @@ static bool canvas_surface_alloc(void)
     return true;
 }
 
+// ---- the pointer -----------------------------------------------------------
+//
+// The mouse pointer is composed onto a frame at present, as one more command
+// laid over the picture in canvas coordinates. It goes through the same
+// executor as everything else, so it is placed onto the scanout by the same
+// arithmetic and lands correctly at every canvas size and every placement,
+// letterbox included.
+//
+// It is not drawn into the canvas surface. That surface is the application's
+// frame, and the pointer is not part of what the application drew: painting
+// it in would leave it behind in a buffer the application draws into again
+// two frames later.
+//
+// Its pixels are copied here first, into a buffer of this library's own,
+// because the cursor object belongs to the application. SDL_FreeCursor may
+// release it and SDL_SetCursor may point somewhere else the moment present
+// returns, while a presentation core is still reading the frame - and
+// CORE-SPLIT.md's rule is that no memory the other side may still write is
+// ever handed across. Two buffers, alternating, exactly as the canvas surface
+// has two: the copy the presentation core is reading is never the one the
+// next frame's pointer is written into.
+static u8     *s_cursor_stage[2] = { nullptr, nullptr };
+static size_t  s_cursor_stage_bytes[2] = { 0, 0 };
+static unsigned s_cursor_stage_idx = 0;
+
+// The frame each staging buffer was last handed over with, so the one about
+// to be written can be waited on. This is the same acknowledgement a texture
+// store waits for and it means the same thing: the presentation core has
+// finished reading that frame's pixels. Two frames have normally passed by
+// the time a buffer comes round again, so the wait costs a load and a
+// compare; it is here because "normally" is not a guarantee.
+static u64 s_cursor_stage_seq[2] = { 0, 0 };
+
+// Build the command that draws the pointer, or answer that there is none.
+// Runs on the application's own core, from present, which is the only core
+// that may look at a cursor object at all.
+static bool cursor_command(SDL2CirclePresentCmd *cmd)
+{
+    if (s_canvas_w <= 0 || s_canvas_h <= 0)
+        return false;
+
+    SDL2CircleCursorImage img;
+    if (!SDL2Circle_CursorImage(&img))
+        return false;
+
+    // Clip against the canvas, moving the source origin with the destination.
+    // A pointer at the right or bottom edge is half off the screen, and a hot
+    // spot inside the image puts it off the top or the left just as easily.
+    int sx = 0, sy = 0;
+    int dx = img.x, dy = img.y;
+    int w = img.w, h = img.h;
+
+    if (dx < 0) { sx = -dx; w += dx; dx = 0; }
+    if (dy < 0) { sy = -dy; h += dy; dy = 0; }
+    if (dx + w > s_canvas_w) w = s_canvas_w - dx;
+    if (dy + h > s_canvas_h) h = s_canvas_h - dy;
+    if (w <= 0 || h <= 0)
+        return false;
+
+    const size_t pitch = (size_t)w * 4;
+    const size_t need  = pitch * (size_t)h;
+    const unsigned i   = s_cursor_stage_idx;
+
+    SDL2Circle_PresentWaitAck(s_cursor_stage_seq[i]);
+
+    if (s_cursor_stage_bytes[i] < need)
+    {
+        u8 *grown = (u8 *)realloc(s_cursor_stage[i], need);
+        if (!grown)
+            return false;
+        s_cursor_stage[i] = grown;
+        s_cursor_stage_bytes[i] = need;
+    }
+
+    const u8 *src = img.pixels + (size_t)sy * img.pitch + (size_t)sx * 4;
+    u8 *dst = s_cursor_stage[i];
+    for (int row = 0; row < h; row++, src += img.pitch, dst += pitch)
+        memcpy(dst, src, pitch);
+
+    memset(cmd, 0, sizeof(*cmd));
+    cmd->op = SDL2CirclePresentCmd::COPY;
+    cmd->dx = dx;
+    cmd->dy = dy;
+    cmd->w = w;
+    cmd->h = h;
+    cmd->src = s_cursor_stage[i];
+    cmd->srcpitch = (int)pitch;
+    cmd->sw = w;
+    cmd->sh = h;
+    cmd->blend = 1;            // the cursor's own alpha is its shape
+    cmd->alphamod = 255;
+    cmd->pointer = 1;
+
+    // The frame this buffer is about to be part of, and the other buffer for
+    // the frame after it.
+    //
+    // Only a frame that is going to cross has a sequence to wait for. A
+    // present that executes in band - no split, or the caller is core 0 -
+    // reads this buffer before it returns and posts nothing, so naming a
+    // sequence there would leave the next pass waiting on a frame that is
+    // never sent.
+    const bool crossing =
+        SDL2Circle_SplitActive() && SDL2Circle_ThisCore() != 0;
+    s_cursor_stage_seq[i] = crossing ? SDL2Circle_PresentPostedSeq() + 1 : 0;
+    s_cursor_stage_idx ^= 1;
+    return true;
+}
+
 // The store of a texture the application may write, declared here because
 // drawing into a render target needs it and is defined long before it. Its
 // own definition carries the rule it enforces.
@@ -1483,16 +1609,44 @@ static const ModeSize s_modes[] =
     {  320,  200 }, {  256,  240 }, {  256,  192 }, {  160,  120 },
 };
 
-// How many of them fit on this panel. The scanout has to be known first;
-// before it is, there is nothing to measure against and the answer is none.
+// Is this size the panel's own?
+static inline bool is_scanout(int w, int h)
+{
+    return w == s_scanout_w && h == s_scanout_h;
+}
+
+// Does the table already carry the panel's own mode?
+static bool scanout_in_table(void)
+{
+    for (const ModeSize &m : s_modes)
+        if (is_scanout(m.w, m.h))
+            return true;
+    return false;
+}
+
+// How many modes this panel has. The scanout has to be known first; before it
+// is, there is nothing to measure against and the answer is none.
+//
+// The panel's own mode is always index 0, whether or not the table names it.
+// The table is a list of sizes that were standard on desktop hardware, and a
+// panel that is not one of them - 800x480 is the common case, and there are
+// plenty of others on small displays - would otherwise never be offered its
+// own resolution at all: on 800x480 the widest entry that fits is 720x480,
+// because 856x480 is too wide and 800x600 too tall. An application choosing
+// the top of the list would then pick a mode that has to be scaled, when the
+// one size needing no scaling at all was the panel's and was never shown.
+//
+// Nothing above the panel is ever listed. This library scales a canvas up
+// onto the glass, so a larger canvas is being scaled the other way, and
+// nearest neighbour discards source pixels rather than resampling them.
 static int modes_available(void)
 {
     if (!acquire_scanout() || s_scanout_w <= 0 || s_scanout_h <= 0)
         return 0;
 
-    int n = 0;
+    int n = 1;                        // index 0 is always the panel
     for (const ModeSize &m : s_modes)
-        if (m.w <= s_scanout_w && m.h <= s_scanout_h)
+        if (m.w <= s_scanout_w && m.h <= s_scanout_h && !is_scanout(m.w, m.h))
             n++;
     return n;
 }
@@ -1583,11 +1737,26 @@ extern "C" int SDL_GetDisplayMode(int, int index, SDL_DisplayMode *mode)
     if (index < 0 || index >= modes_available())
         return SDL_SetError("SDL_GetDisplayMode: no mode %d", index);
 
-    int n = 0;
+    // Index 0 is the panel itself, listed whether or not the table names it.
+    if (index == 0)
+    {
+        memset(mode, 0, sizeof(*mode));
+        mode->format = SDL_PIXELFORMAT_ARGB8888;
+        mode->w = s_scanout_w;
+        mode->h = s_scanout_h;
+        mode->refresh_rate = DEFAULT_HZ;
+        METER("mode", mode->w, mode->h,
+              "GetDisplayMode[0] -> %dx%d (the panel)", mode->w, mode->h);
+        return 0;
+    }
+
+    int n = 1;
     for (const ModeSize &m : s_modes)
     {
         if (m.w > s_scanout_w || m.h > s_scanout_h)
             continue;
+        if (is_scanout(m.w, m.h))
+            continue;             // already given as index 0
         if (n++ != index)
             continue;
         memset(mode, 0, sizeof(*mode));
@@ -2129,6 +2298,32 @@ static void canvas_set_size(SDL_Window *win, int w, int h)
 {
     if (!win || w <= 0 || h <= 0)
         return;
+
+    // The panel is the ceiling, and it is enforced here rather than only
+    // being absent from the list. This library scales a canvas UP onto the
+    // glass: a canvas larger than the panel is scaled the other way, and
+    // nearest neighbour then throws source pixels away rather than resampling
+    // them. It also costs the application core a frame it cannot see - the
+    // canvas-sized copy every frame is C1's bill, and pixels beyond the
+    // panel's are paid for and then discarded.
+    //
+    // Clamped rather than refused, because SDL_SetWindowSize returns nothing
+    // and an application cannot be told. It reads the size back through
+    // SDL_GetWindowSize, SDL_GetRendererOutputSize or the current display
+    // mode, all of which report what it actually got - which is what SDL does
+    // on a desktop when a mode is not available.
+    if (acquire_scanout() && s_scanout_w > 0 && s_scanout_h > 0
+        && (w > s_scanout_w || h > s_scanout_h))
+    {
+        const int cw = w > s_scanout_w ? s_scanout_w : w;
+        const int ch = h > s_scanout_h ? s_scanout_h : h;
+        SDL2Circle_Log("sdl2video", SDL2CIRCLE_LOG_NOTICE,
+                       "canvas %dx%d exceeds panel %dx%d: clamped to %dx%d",
+                       w, h, s_scanout_w, s_scanout_h, cw, ch);
+        w = cw;
+        h = ch;
+    }
+
     if (w == s_canvas_w && h == s_canvas_h)
         return;
 
@@ -2204,6 +2399,16 @@ static void canvas_set_size(SDL_Window *win, int w, int h)
     }
 
     resolve_placement();
+
+    // The pointer is in canvas coordinates, so it means something different
+    // now: the panel has not moved and the canvas still covers all of it, so
+    // the point of glass the pointer is on is a different canvas coordinate
+    // by exactly the ratio the canvas changed by. This converts it in that
+    // ratio, on core 0, which is the only core that may write it - see the
+    // record in src/mouse.cpp. It is done here, before the size-changed event
+    // below, so an application handling that event reads a position that is
+    // already in the canvas the event is telling it about.
+    SDL2Circle_PointerCanvasChanged();
 
     // The canvas lands on a different rectangle, so whatever the last
     // placement painted outside the new one is still on the glass. Nothing
@@ -2664,13 +2869,13 @@ extern "C" int SDL_UpdateWindowSurfaceRects(SDL_Window *win,
                             "%dx%d and the canvas is %dx%d",
                             win->w, win->h, s_canvas_w, s_canvas_h);
 
-    SDL2CirclePresentCmd frame;
-    memset(&frame, 0, sizeof(frame));
-    frame.op = SDL2CirclePresentCmd::COPY;
-    frame.alphamod = 255;
+    SDL2CirclePresentCmd frame[2];
+    memset(&frame[0], 0, sizeof(frame[0]));
+    frame[0].op = SDL2CirclePresentCmd::COPY;
+    frame[0].alphamod = 255;
 
 
-    SDL2CirclePresentCmd in = frame;
+    SDL2CirclePresentCmd in = frame[0];
     in.dx = 0; in.dy = 0;
     in.w = win->w; in.h = win->h;
     in.sw = win->w; in.sh = win->h;
@@ -2678,15 +2883,21 @@ extern "C" int SDL_UpdateWindowSurfaceRects(SDL_Window *win,
     in.srcpitch = s_window_surface->pitch;
     exec_into(&in, s_canvas_surface, s_canvas_surface_pitch);
 
-    frame.src = s_canvas_surface;
-    frame.srcpitch = (int)s_canvas_surface_pitch;
-    frame.dx = 0; frame.dy = 0;
-    frame.w = win->w; frame.h = win->h;
-    frame.sw = win->w; frame.sh = win->h;
+    frame[0].src = s_canvas_surface;
+    frame[0].srcpitch = (int)s_canvas_surface_pitch;
+    frame[0].dx = 0; frame[0].dy = 0;
+    frame[0].w = win->w; frame[0].h = win->h;
+    frame[0].sw = win->w; frame[0].sh = win->h;
+
+    // The pointer, over the frame, exactly as the renderer's present puts it
+    // there: this path is a frame reaching the glass like any other.
+    unsigned nout = 1;
+    if (cursor_command(&frame[1]))
+        nout = 2;
 
     if (SDL2Circle_SplitActive() && SDL2Circle_ThisCore() != 0)
     {
-        SDL2Circle_PresentPost(&frame, 1, s_window_surface_back);
+        SDL2Circle_PresentPost(frame, nout, s_window_surface_back);
         s_canvas_surface_idx ^= 1;
         s_canvas_surface = s_canvas_surface_buf[s_canvas_surface_idx];
         if (s_fb_halves == 2)
@@ -2694,7 +2905,8 @@ extern "C" int SDL_UpdateWindowSurfaceRects(SDL_Window *win,
         return 0;
     }
 
-    SDL2Circle_VideoExecCmd(&frame, s_window_surface_back);
+    for (unsigned i = 0; i < nout; i++)
+        SDL2Circle_VideoExecCmd(&frame[i], s_window_surface_back);
 
     // The flip asks the firmware, through the VideoCore mailbox, and this
     // function runs on whichever core the application is on. The mailbox is
@@ -2751,6 +2963,10 @@ extern "C" SDL_Renderer *SDL_CreateRenderer(SDL_Window *win, int, Uint32 flags)
     ren->scratch_bytes[0] = ren->scratch_bytes[1] = 0;
     ren->scratch_used = 0;
     ren->scratch_idx = 0;
+    ren->rel_frac_x = 0.0f;
+    ren->rel_frac_y = 0.0f;
+    ren->relative_scaling =
+        SDL_GetHintBoolean(SDL_HINT_MOUSE_RELATIVE_SCALING, SDL_TRUE) == SDL_TRUE;
     s_renderer = ren;
     return ren;
 }
@@ -2802,18 +3018,25 @@ struct LogicalMap
     int   ox, oy;     // where the application's origin sits in the window
 };
 
-LogicalMap logical_map(const SDL_Renderer *ren)
+// The mapping, from the coordinate state and the extent it is being applied
+// to, rather than from a renderer. The renderer's live block is one caller;
+// the block belonging to the window while a render target is set is the other
+// - see pointer_map, further down. One implementation, because a pointer
+// translated by anything other than the arithmetic that placed the picture
+// would report the arrow somewhere it is not drawn.
+LogicalMap logical_map_from(int logical_w, int logical_h, bool integer_scale,
+                            float scale_x, float scale_y,
+                            const SDL_Rect *viewport, bool viewport_set,
+                            int ow, int oh)
 {
-    LogicalMap m = { ren->scale_x, ren->scale_y, 0, 0 };
+    LogicalMap m = { scale_x, scale_y, 0, 0 };
 
-    if (ren->logical_w > 0 && ren->logical_h > 0)
+    if (logical_w > 0 && logical_h > 0)
     {
-        const int ow = render_target_w(ren);
-        const int oh = render_target_h(ren);
-        float sx = (float)ow / (float)ren->logical_w;
-        float sy = (float)oh / (float)ren->logical_h;
+        float sx = (float)ow / (float)logical_w;
+        float sy = (float)oh / (float)logical_h;
 
-        if (ren->integer_scale)
+        if (integer_scale)
         {
             // Whole pixels only: what a pixel-art game asks for so that
             // every source pixel is the same size on screen. Below 1:1
@@ -2831,21 +3054,29 @@ LogicalMap logical_map(const SDL_Renderer *ren)
             sx = sy = s;
         }
 
-        m.sx = sx * ren->scale_x;
-        m.sy = sy * ren->scale_y;
-        m.ox = (int)((ow - ren->logical_w * m.sx) / 2.0f);
-        m.oy = (int)((oh - ren->logical_h * m.sy) / 2.0f);
+        m.sx = sx * scale_x;
+        m.sy = sy * scale_y;
+        m.ox = (int)((ow - logical_w * m.sx) / 2.0f);
+        m.oy = (int)((oh - logical_h * m.sy) / 2.0f);
     }
 
     // The viewport is given in the application's coordinates, like every
     // other rectangle it hands over, so its origin is scaled by the same
     // factors before it moves the origin.
-    if (ren->viewport_set)
+    if (viewport_set)
     {
-        m.ox += (int)(ren->viewport.x * m.sx);
-        m.oy += (int)(ren->viewport.y * m.sy);
+        m.ox += (int)(viewport->x * m.sx);
+        m.oy += (int)(viewport->y * m.sy);
     }
     return m;
+}
+
+LogicalMap logical_map(const SDL_Renderer *ren)
+{
+    return logical_map_from(ren->logical_w, ren->logical_h, ren->integer_scale,
+                            ren->scale_x, ren->scale_y,
+                            &ren->viewport, ren->viewport_set,
+                            render_target_w(ren), render_target_h(ren));
 }
 
 // The window-pixel rectangle drawing is confined to. It is the viewport
@@ -2910,7 +3141,128 @@ bool map_dst(const SDL_Renderer *ren, int &x, int &y, int &w, int &h)
     h = y2 - y1;
     return (w > 0 && h > 0);
 }
+
+// ---------------------------------------------------------------------------
+// The pointer's own mapping
+//
+// The mouse position is kept, clamped and drawn in canvas coordinates, and an
+// application that has set a logical size is not working in those: it draws
+// 640x480 into a 1280x960 window and tests every click against the 640x480.
+// So the position is reported through the inverse of the mapping that placed
+// the picture - the same function, run backwards - and not through a divide
+// of its own, because a pointer translated by anything else would be reported
+// somewhere other than where the arrow was drawn.
+//
+// It is the WINDOW's coordinate state, never a render target's. An event is
+// delivered whenever the application polls, which may be while it has a
+// texture set as its target, and the pointer is on the window whatever the
+// renderer is aimed at meanwhile. SDL2 keeps the window's block for exactly
+// this and reads that copy in its own event watch. Here the live block IS the
+// window's until a target is set, and window_view holds it while one is.
+//
+// The application's core owns all of it: the renderer is that core's object,
+// that core aims the target, and both callers - the event queue's delivery
+// point and SDL_GetMouseState - run there as well. Nothing crosses a core, so
+// nothing here is locked. Core 0 goes on holding the position in canvas
+// coordinates, which is the only space core 0 can know: it has no renderer
+// and may not read one.
+// ---------------------------------------------------------------------------
+
+// False when there is nothing to translate - no renderer, or no logical size.
+// That is nearly every application, and it is what makes this cost one
+// comparison and change nothing for them.
+bool pointer_map(LogicalMap *out)
+{
+    const SDL_Renderer *ren = s_renderer;
+    if (!ren)
+        return false;
+
+    const bool        targeted = ren->target != nullptr;
+    const RenderView &v        = ren->window_view;
+
+    const int lw = targeted ? v.logical_w : ren->logical_w;
+    const int lh = targeted ? v.logical_h : ren->logical_h;
+    if (lw <= 0 || lh <= 0)
+        return false;
+
+    *out = logical_map_from(lw, lh,
+                            targeted ? v.integer_scale : ren->integer_scale,
+                            targeted ? v.scale_x       : ren->scale_x,
+                            targeted ? v.scale_y       : ren->scale_y,
+                            targeted ? &v.viewport     : &ren->viewport,
+                            targeted ? v.viewport_set  : ren->viewport_set,
+                            s_canvas_w, s_canvas_h);
+    return true;
+}
 } // namespace
+
+// Canvas coordinates - what core 0 holds, and where the arrow is composed -
+// into the space the application draws in. Answers false, having changed
+// nothing, when the application has no logical size and the two spaces are
+// therefore the same one.
+//
+// Nothing is clamped to the logical rectangle. A logical size whose aspect
+// ratio differs from the window's letterboxes inside it, and a pointer parked
+// in the letterbox is genuinely outside the picture: the coordinate comes
+// back negative above or to the left of it, and past the logical width or
+// height below or to the right. That is what upstream SDL2 reports, and it is
+// what lets an application tell "outside my picture" from "on its edge".
+bool SDL2Circle_PointerToLogical(int *x, int *y)
+{
+    LogicalMap m;
+    if (!pointer_map(&m))
+        return false;
+
+    if (x && m.sx != 0.0f) *x = (int)((float)(*x - m.ox) / m.sx);
+    if (y && m.sy != 0.0f) *y = (int)((float)(*y - m.oy) / m.sy);
+    return true;
+}
+
+// The other direction, for a coordinate the application names: a warp says
+// where the pointer is to go, in the space the application reads it back in.
+bool SDL2Circle_PointerFromLogical(int *x, int *y)
+{
+    LogicalMap m;
+    if (!pointer_map(&m))
+        return false;
+
+    if (x) *x = m.ox + (int)((float)*x * m.sx);
+    if (y) *y = m.oy + (int)((float)*y * m.sy);
+    return true;
+}
+
+// A movement, rather than a place: no origin to take off, only the scale.
+//
+// The division has a remainder and throwing it away would lose slow movement
+// outright - at a scale of two, a stream of one-pixel reports would every one
+// of them truncate to zero and the pointer would never move at all - so the
+// fraction is carried on the renderer to the next event, as SDL2 carries it.
+// SDL_HINT_MOUSE_RELATIVE_SCALING is what an application sets to say it wants
+// the device's own movement instead, and it is read when the renderer is made.
+void SDL2Circle_PointerRelToLogical(int *dx, int *dy)
+{
+    SDL_Renderer *ren = s_renderer;
+    LogicalMap m;
+    if (!ren || !ren->relative_scaling || !pointer_map(&m))
+        return;
+
+    // A mouse report's displacement divided by a scale factor is a small
+    // number, so truncating through int is exact here.
+    if (dx && *dx != 0 && m.sx != 0.0f)
+    {
+        const float rel  = ren->rel_frac_x + (float)*dx / m.sx;
+        const float whole = (float)(int)rel;
+        ren->rel_frac_x = rel - whole;
+        *dx = (int)whole;
+    }
+    if (dy && *dy != 0 && m.sy != 0.0f)
+    {
+        const float rel  = ren->rel_frac_y + (float)*dy / m.sy;
+        const float whole = (float)(int)rel;
+        ren->rel_frac_y = rel - whole;
+        *dy = (int)whole;
+    }
+}
 
 extern "C" void SDL_DestroyRenderer(SDL_Renderer *ren)
 {
@@ -2994,6 +3346,7 @@ extern "C" int SDL_RenderClear(SDL_Renderer *ren)
     cmd.sh = 0;
     cmd.color = ((u32)ren->a << 24) | ((u32)ren->r << 16) |
                 ((u32)ren->g << 8) | ren->b;
+    cmd.pointer = 0;
     emit_cmd(ren, cmd);
     return 0;
 }
@@ -3494,6 +3847,7 @@ extern "C" int SDL_RenderCopy(SDL_Renderer *ren, SDL_Texture *tex,
     cmd.sh = sh;
     cmd.blend = (tex->blend == SDL_BLENDMODE_BLEND) ? 1 : 0;
     cmd.alphamod = tex->alphamod;
+    cmd.pointer = 0;
     emit_cmd(ren, cmd);
 
     // A command the renderer drew has already read this store, here, on this
@@ -3614,6 +3968,7 @@ extern "C" int SDL_RenderCopyEx(SDL_Renderer *ren, SDL_Texture *tex,
     cmd.sh = msh;
     cmd.blend = (tex->blend == SDL_BLENDMODE_BLEND) ? 1 : 0;
     cmd.alphamod = tex->alphamod;
+    cmd.pointer = 0;
     emit_cmd(ren, cmd);
     return 0;
 }
@@ -4250,6 +4605,7 @@ extern "C" int SDL_RenderFillRect(SDL_Renderer *ren, const SDL_Rect *rect)
     cmd.sh = 0;
     cmd.color = ((u32)ren->a << 24) | ((u32)ren->r << 16) |
                 ((u32)ren->g << 8) | ren->b;
+    cmd.pointer = 0;
     emit_cmd(ren, cmd);
     return 0;
 }
@@ -4385,15 +4741,23 @@ extern "C" void SDL_RenderPresent(SDL_Renderer *ren)
     SDL2CirclePerfScope perf(SDL2CIRCLE_PERF_RENDER);
     g_SDL2CirclePresents++;
 
+    // The pointer, worked out before the frame's shape is decided because it
+    // is one of the commands that has to fit. It goes on last, over
+    // everything the application drew.
+    SDL2CirclePresentCmd cursor;
+    const bool has_cursor = cursor_command(&cursor);
+    const unsigned extra = has_cursor ? 1u : 0u;
+
     // A frame still short enough to cross as a list has not been composed
     // anywhere, and crosses as it was recorded. The grant does not enter into
     // it: both endings reach the same executor, which writes into the shadow
     // or the staging frame according to what was granted, and the flip is the
     // grant's business either way.
     const bool as_list =
-        !ren->rasterizing && ren->ncmds <= (unsigned)SDL2CIRCLE_PRESENT_MAX_CMDS;
+        !ren->rasterizing
+        && ren->ncmds + extra <= (unsigned)SDL2CIRCLE_PRESENT_MAX_CMDS;
 
-    SDL2CirclePresentCmd frame;
+    SDL2CirclePresentCmd frame[2];
     const SDL2CirclePresentCmd *out;
     unsigned nout;
 
@@ -4409,21 +4773,33 @@ extern "C" void SDL_RenderPresent(SDL_Renderer *ren)
         // and at the canvas origin: placing it on the panel is the executor's
         // job and not this one's.
         start_rasterizing(ren);
-        memset(&frame, 0, sizeof(frame));
-        frame.op = SDL2CirclePresentCmd::COPY;
-        frame.src = s_canvas_surface;
-        frame.srcpitch = (int)s_canvas_surface_pitch;
-        frame.sw = s_canvas_w; frame.sh = s_canvas_h;
-        frame.dx = 0; frame.dy = 0;
-        frame.w = s_canvas_w; frame.h = s_canvas_h;
-        frame.alphamod = 255;
-        out = &frame;
+        memset(&frame[0], 0, sizeof(frame[0]));
+        frame[0].op = SDL2CirclePresentCmd::COPY;
+        frame[0].src = s_canvas_surface;
+        frame[0].srcpitch = (int)s_canvas_surface_pitch;
+        frame[0].sw = s_canvas_w; frame[0].sh = s_canvas_h;
+        frame[0].dx = 0; frame[0].dy = 0;
+        frame[0].w = s_canvas_w; frame[0].h = s_canvas_h;
+        frame[0].alphamod = 255;
+        out = frame;
         nout = 1;
 
         // The buffer just handed over belongs to the frame in flight; the
         // next frame is drawn into the other one.
         s_canvas_surface_idx ^= 1;
         s_canvas_surface = s_canvas_surface_buf[s_canvas_surface_idx];
+    }
+
+    // The pointer rides with the frame either way. There is room for it in
+    // both endings by construction: a list was only chosen if it fits with
+    // this command counted, and a picture is one command with a slot beside
+    // it.
+    if (has_cursor)
+    {
+        if (as_list)
+            ren->cmds[nout++] = cursor;
+        else
+            frame[nout++] = cursor;
     }
 
     ren->ncmds = 0;

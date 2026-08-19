@@ -348,6 +348,15 @@ struct SDL2CirclePresentCmd
                                   // scanout) into one pass.
     u8 blend;                     // COPY: straight-alpha blend requested
     u8 alphamod;
+    u8 pointer;                   // COPY: the mouse pointer rather than a
+                                  // piece of the picture. It is composed last,
+                                  // over everything the application drew, and
+                                  // it is kept out of the executor's geometry
+                                  // log: that line describes one chain, source
+                                  // through canvas to scanout, and the pointer
+                                  // is a second chain that would otherwise
+                                  // alternate with the picture's and write a
+                                  // line on every frame.
 };
 
 // Post a frame; blocks (WFE) until the worker has accepted the previous
