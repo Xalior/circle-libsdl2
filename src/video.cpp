@@ -5,6 +5,7 @@
 // Scope matches MAME's drawsdl.cpp software path: one fullscreen window,
 // an SDL_Renderer, streaming ARGB8888 textures.
 //
+#include <limits.h>
 #include <SDL2/SDL.h>
 #include "sdl2circle.h"
 #include "shim_internal.h"
@@ -289,6 +290,36 @@ static SDL_Window *s_window = nullptr;
 // single resampling pass at present time.
 static int s_scanout_w = 0, s_scanout_h = 0;
 static int s_canvas_w = 0, s_canvas_h = 0;
+
+// The virtual display this machine gave the application, recorded once and
+// never written again.
+//
+// SDL keeps two display sizes apart on every platform. The DESKTOP mode is
+// the display an application was given, and a fullscreen program changing
+// mode does not move it - a monitor does not shrink because a game asked for
+// 640x400 on it. The CURRENT mode is the mode in effect, and that does move.
+// Applications are written against the difference: read the desktop to find
+// out how much room there is, set a mode inside it, read the desktop again
+// later and expect the same answer.
+//
+// Here the display an application is given is the vFB, so the vFB is its
+// desktop. It is settled once, by settle_canvas, from the --rapi-vfb switch,
+// SDL2Circle_DeclareVirtualDevice, the first window's own size or the panel,
+// and that decision is the machine's statement of what this program gets.
+//
+// s_canvas_w/h used to serve both roles, which was correct while a canvas
+// could not move. Now that it follows the application, an application that
+// set a small mode was afterwards told its desktop was that small, and could
+// never ask for anything larger for the rest of the run - a one-way ratchet
+// with no way back, in a library whose job is that any SDL program works.
+// ScummVM found it by leaving Myst: Myst set 544x332, and the launcher's own
+// 640x400 was then clipped to a screen that had shrunk underneath it.
+//
+// This is not the scanout and never becomes it except on the rung where
+// nothing else named a size at all. An application still never learns the
+// panel's resolution from the desktop, so the canvas stays small, C1 pays
+// only for what it drew, and C2 does the upscaling.
+static int s_vfb_w = 0, s_vfb_h = 0;
 
 // The one path every size change takes: window creation against a canvas that
 // already exists, SDL_SetWindowSize, SDL_SetWindowDisplayMode, and going
@@ -720,6 +751,11 @@ static bool resolve_display_size(int fallback_w = 0, int fallback_h = 0)
 
     s_canvas_w = w;
     s_canvas_h = h;
+
+    // The settled size is also the desktop, and this is the only place it is
+    // written. canvas_set_size moves the canvas afterwards and never this.
+    s_vfb_w = w;
+    s_vfb_h = h;
 
     SDL2Circle_Log("sdl2video", SDL2CIRCLE_LOG_NOTICE,
                           "scanout %dx%d (%s), canvas %dx%d (%s)",
@@ -1401,14 +1437,18 @@ static void emit_cmd(SDL_Renderer *ren, const SDL2CirclePresentCmd &cmd)
 // yet, or a board with no scanout to read. Zeroed first, so a consumer that
 // also ignores this return reads an obviously empty mode rather than whatever
 // its stack held.
-static bool fill_mode(SDL_DisplayMode *mode)
+// desktop says which of SDL's two display sizes is being asked for. The
+// desktop mode is the vFB, settled once and never moved; the current mode is
+// the canvas, which is the mode actually in effect. See s_vfb_w/h above for
+// why they are not the same variable any more.
+static bool fill_mode(SDL_DisplayMode *mode, bool desktop)
 {
     memset(mode, 0, sizeof(*mode));
     if (!resolve_display_size())
         return false;
     mode->format = SDL_PIXELFORMAT_ARGB8888;
-    mode->w = s_canvas_w;
-    mode->h = s_canvas_h;
+    mode->w = desktop ? s_vfb_w : s_canvas_w;
+    mode->h = desktop ? s_vfb_h : s_canvas_h;
     mode->refresh_rate = DEFAULT_HZ;
     return true;
 }
@@ -1459,6 +1499,35 @@ static int modes_available(void)
 
 // ---- display information ---------------------------------------------------
 
+// ---- metering the answers ---------------------------------------------------
+//
+// The setters each put a line on the log, so what an application asks the
+// display to become is visible. What it is TOLD, and therefore why it asked
+// for that, was not - and a program that sizes itself from an answer is doing
+// the arithmetic somewhere this library cannot see.
+//
+// A getter is called many times a frame, so a line per call would fill the
+// console and push out everything competing with it (LOGGING.md). Each site
+// remembers what it last answered and writes only when the answer changes,
+// which is the rule log_copy_geometry already follows for the present path.
+// The statics are per call site and are read and written on one core.
+static bool answer_moved(int &was_a, int &was_b, int a, int b)
+{
+    if (was_a == a && was_b == b)
+        return false;
+    was_a = a;
+    was_b = b;
+    return true;
+}
+
+#define METER(tag, a, b, fmt, ...)                                            \
+    do {                                                                      \
+        static int was_a__ = INT_MIN, was_b__ = INT_MIN;                      \
+        if (answer_moved(was_a__, was_b__, (a), (b)))                         \
+            SDL2Circle_Log("sdl2video", SDL2CIRCLE_LOG_DEBUG, fmt,            \
+                           ##__VA_ARGS__);                                    \
+    } while (0)
+
 extern "C" int SDL_GetNumVideoDisplays(void) { return 1; }
 
 extern "C" const char *SDL_GetDisplayName(int) { return "HDMI0"; }
@@ -1470,9 +1539,20 @@ extern "C" int SDL_GetDisplayBounds(int, SDL_Rect *rect)
     rect->w = 0;
     rect->h = 0;
     if (!resolve_display_size())
+    {
+        METER("bounds", -1, -1, "GetDisplayBounds -> refused");
         return -1;
-    rect->w = s_canvas_w;
-    rect->h = s_canvas_h;
+    }
+    // The display's own rectangle in desktop coordinates, which is SDL's
+    // other spelling of the desktop mode - so it is the vFB, not the canvas.
+    // A program reads this to find out how much room it has before choosing a
+    // size, and answering with the canvas told it the room was whatever it
+    // had last asked for.
+    rect->w = s_vfb_w;
+    rect->h = s_vfb_h;
+    METER("bounds", rect->w, rect->h,
+          "GetDisplayBounds -> %dx%d (canvas %dx%d)",
+          rect->w, rect->h, s_canvas_w, s_canvas_h);
     return 0;
 }
 
@@ -1488,7 +1568,13 @@ void SDL2Circle_PointerBounds(int *w, int *h)
     if (h) *h = s_canvas_h;
 }
 
-extern "C" int SDL_GetNumDisplayModes(int) { return modes_available(); }
+extern "C" int SDL_GetNumDisplayModes(int)
+{
+    const int n = modes_available();
+    METER("nmodes", n, 0, "GetNumDisplayModes -> %d (scanout %dx%d)",
+          n, s_scanout_w, s_scanout_h);
+    return n;
+}
 
 extern "C" int SDL_GetDisplayMode(int, int index, SDL_DisplayMode *mode)
 {
@@ -1509,6 +1595,8 @@ extern "C" int SDL_GetDisplayMode(int, int index, SDL_DisplayMode *mode)
         mode->w = m.w;
         mode->h = m.h;
         mode->refresh_rate = DEFAULT_HZ;
+        METER("mode", mode->w, mode->h,
+              "GetDisplayMode[%d] -> %dx%d", index, mode->w, mode->h);
         return 0;
     }
     return SDL_SetError("SDL_GetDisplayMode: no mode %d", index);
@@ -1516,12 +1604,20 @@ extern "C" int SDL_GetDisplayMode(int, int index, SDL_DisplayMode *mode)
 
 extern "C" int SDL_GetCurrentDisplayMode(int, SDL_DisplayMode *mode)
 {
-    return fill_mode(mode) ? 0 : -1;
+    const bool ok = fill_mode(mode, /* desktop */ false);
+    METER("current", ok ? mode->w : -1, ok ? mode->h : -1,
+          "GetCurrentDisplayMode -> %dx%d", ok ? mode->w : -1,
+          ok ? mode->h : -1);
+    return ok ? 0 : -1;
 }
 
 extern "C" int SDL_GetDesktopDisplayMode(int, SDL_DisplayMode *mode)
 {
-    return fill_mode(mode) ? 0 : -1;
+    const bool ok = fill_mode(mode, /* desktop */ true);
+    METER("desktop", ok ? mode->w : -1, ok ? mode->h : -1,
+          "GetDesktopDisplayMode -> %dx%d", ok ? mode->w : -1,
+          ok ? mode->h : -1);
+    return ok ? 0 : -1;
 }
 
 extern "C" int SDL_GetNumVideoDrivers(void) { return 1; }
@@ -1901,6 +1997,9 @@ extern "C" void SDL_DestroyWindow(SDL_Window *win)
 
 extern "C" void SDL_GetWindowSize(SDL_Window *win, int *w, int *h)
 {
+    METER("winsize", win ? win->w : 0, win ? win->h : 0,
+          "GetWindowSize -> %dx%d (canvas %dx%d)",
+          win ? win->w : 0, win ? win->h : 0, s_canvas_w, s_canvas_h);
     if (w) *w = win ? win->w : 0;
     if (h) *h = win ? win->h : 0;
 }
@@ -2210,8 +2309,12 @@ extern "C" int SDL_GetWindowOpacity(SDL_Window *win, float *out_opacity)
 
 // There is nothing to grab away from and nowhere for a pointer to leave to,
 // so the grab is recorded and the input path is unaffected.
+// Recorded and reported back. A program reads this to decide whether the
+// pointer is its to move, so it is metered beside the rectangle above.
 extern "C" void SDL_SetWindowGrab(SDL_Window *win, SDL_bool grabbed)
 {
+    METER("grab", grabbed ? 1 : 0, 0, "SetWindowGrab %s",
+          grabbed ? "on" : "off");
     if (win)
     {
         win->grabbed = grabbed;
@@ -2250,9 +2353,19 @@ extern "C" SDL_Window *SDL_GetGrabbedWindow(void)
     return (s_window && s_window->grabbed) ? s_window : nullptr;
 }
 
-extern "C" int SDL_SetWindowMouseRect(SDL_Window *, const SDL_Rect *)
+// Accepted and not acted on: the pointer is already confined to the one
+// screen. What a caller asks for is metered, because a program that sets this
+// believes the pointer cannot leave the rectangle, and when the rectangle is
+// not the whole canvas the two sides disagree about where the pointer is.
+extern "C" int SDL_SetWindowMouseRect(SDL_Window *, const SDL_Rect *rect)
 {
-    return 0;   // the pointer is already confined to the one screen
+    if (rect)
+        METER("mouserect", rect->w, rect->h,
+              "SetWindowMouseRect %dx%d+%d+%d, canvas %dx%d (not applied)",
+              rect->w, rect->h, rect->x, rect->y, s_canvas_w, s_canvas_h);
+    else
+        METER("mouserect", -1, -1, "SetWindowMouseRect cleared");
+    return 0;
 }
 
 extern "C" const SDL_Rect *SDL_GetWindowMouseRect(SDL_Window *)
@@ -2370,6 +2483,9 @@ extern "C" SDL_DisplayMode *SDL_GetClosestDisplayMode(int displayIndex,
     closest->h = wanted->h <= s_scanout_h ? wanted->h : s_scanout_h;
     closest->refresh_rate = wanted->refresh_rate > 0 ? wanted->refresh_rate
                                                      : DEFAULT_HZ;
+    METER("closest", closest->w, closest->h,
+          "GetClosestDisplayMode %dx%d -> %dx%d",
+          wanted->w, wanted->h, closest->w, closest->h);
     return closest;
 }
 
@@ -2849,8 +2965,11 @@ extern "C" int SDL_GetRendererOutputSize(SDL_Renderer *ren, int *w, int *h)
 {
     if (ren && ren->target)
         return SDL_QueryTexture(ren->target, nullptr, nullptr, w, h);
-    if (w) *w = ren ? render_target_w(ren) : 0;
-    if (h) *h = ren ? render_target_h(ren) : 0;
+    const int ow = ren ? render_target_w(ren) : 0;
+    const int oh = ren ? render_target_h(ren) : 0;
+    METER("rendout", ow, oh, "GetRendererOutputSize -> %dx%d", ow, oh);
+    if (w) *w = ow;
+    if (h) *h = oh;
     return 0;
 }
 

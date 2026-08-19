@@ -68,6 +68,23 @@ sdl2video: window destroyed: 800x600, canvas 800x600
 
 Each line names the canvas **as it was when the call arrived**, so reading down the list shows the size the previous call left behind and the size this one is asking for.
 
+**The answers are metered too**, on the same switch. What an application is told is what it sizes itself from, so a program that asks for a strange size is usually answering one of these:
+
+```
+sdl2video: GetDesktopDisplayMode -> 640x480
+sdl2video: GetCurrentDisplayMode -> 640x400
+sdl2video: GetDisplayBounds -> 640x480 (canvas 640x400)
+sdl2video: GetNumDisplayModes -> 24 (scanout 1920x1080)
+sdl2video: GetDisplayMode[0] -> 1920x1080
+sdl2video: GetClosestDisplayMode 800x600 -> 800x600
+sdl2video: GetWindowSize -> 640x400 (canvas 640x400)
+sdl2video: GetRendererOutputSize -> 640x400
+sdl2video: SetWindowMouseRect 544x332+0+0, canvas 640x400 (not applied)
+sdl2video: SetWindowGrab on
+```
+
+A query is asked many times a frame, so each site remembers what it last answered and writes only when the answer changes. `SDL_SetWindowMouseRect` is in the list although it is not a query: it is accepted and not acted on, because the pointer is already confined to the one screen, and the line is what makes visible that a program believes the pointer is confined to something smaller.
+
 ### Window flags
 
 `SDL_GetWindowFlags` describes **the machine, not the request**. A flag an application passed to `SDL_CreateWindow` is reported back only where this window can honour it; reporting it otherwise tells the asker its own question back, and a game branches on the answer.
@@ -115,7 +132,19 @@ These can override that default, and they are settled in this order - the first 
 
    This call is unchanged from before and remains entirely optional. It loses to the switch when both are present.
 
-Whichever of the four settles it, `SDL_GetCurrentDisplayMode`, `SDL_GetDesktopDisplayMode` and `SDL_GetDisplayBounds` answer with the canvas, and the library carries each frame from there to whatever the panel is really doing. **The application never learns the real output resolution.** It draws in the canvas, and the placement rules above put that onto the physical screen. What it does learn is the range of sizes it may ask for, which is [the mode list](#the-mode-list).
+Whichever of the four settles it, that size is the **vFB**: the virtual display this machine gave the application. It is recorded once and never moves again, whatever the application later does to its canvas.
+
+SDL keeps two display sizes apart on every platform, and so does this library:
+
+| call | answers with | because |
+|---|---|---|
+| `SDL_GetDesktopDisplayMode` | the vFB | the desktop is the display an application was given, and a game going fullscreen at 640x400 does not shrink the monitor it did it on |
+| `SDL_GetDisplayBounds` | the vFB | SDL's other spelling of the same question |
+| `SDL_GetCurrentDisplayMode` | the canvas | that genuinely is the mode in effect |
+
+**Neither is the panel.** The application never learns the real output resolution from either of them - it draws in the canvas, and the placement rules above put that onto the physical screen. What it does learn is the range of sizes it may ask for, which is [the mode list](#the-mode-list).
+
+**Answering the desktop with the canvas is a ratchet, and it is why these are two numbers.** An application that sets a small mode would afterwards be told its desktop was that small, so it could never ask for anything larger again for the rest of the run. A program that reads the desktop, sets a mode inside it, and reads the desktop again later - which is ordinary SDL - would find the screen had shrunk underneath it every time.
 
 **The switch and the window can disagree on purpose.** With `--rapi-vfb=WxH` set, `SDL_CreateWindow` still returns a window of the size the application asked for - `SDL_GetWindowSize` answers honestly - but the application draws into a canvas of the switch's size regardless, exactly as `SDL_GetRendererOutputSize` and `SDL_GetWindowSizeInPixels` report it. The two sizes are then deliberately different, and the scanout scaling above is what reconciles the canvas with the panel; nothing reconciles the window's reported size with the canvas, so a program meant to run under the switch should read its drawing size from the renderer or the display mode, not from `SDL_GetWindowSize`. Under a declaration, or with neither override, the window and the canvas are always the same rectangle, so this distinction does not arise.
 
