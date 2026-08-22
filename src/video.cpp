@@ -438,9 +438,18 @@ static void read_physical_display(void)
     TPropertyTagDisplayDimensions dim;
     memset(&dim, 0, sizeof(dim));
     if (!tags.GetTag(PROPTAG_GET_DISPLAY_DIMENSIONS, &dim, sizeof(dim)))
+    {
+        SDL2Circle_Log("sdl2video", SDL2CIRCLE_LOG_WARNING,
+                       "the firmware refused PROPTAG_GET_DISPLAY_DIMENSIONS");
         return;
+    }
     if (dim.nWidth == 0 || dim.nHeight == 0)
+    {
+        SDL2Circle_Log("sdl2video", SDL2CIRCLE_LOG_WARNING,
+                       "the firmware reported a %ux%u display",
+                       dim.nWidth, dim.nHeight);
         return;
+    }
     s_phys_w = (int)dim.nWidth;
     s_phys_h = (int)dim.nHeight;
 }
@@ -453,16 +462,44 @@ static void acquire_fb_on0(void *p)
     if (s_fb0)
         return;
     auto *a = (AcquireFbArgs *)p;
+
+    // TWO SCREENS ARE ASKED FOR, ONE IS ENOUGH.
+    //
+    // Double buffering is what makes a present a page flip, so it is worth
+    // asking for. A firmware that will not allocate two screens refuses the
+    // whole allocation rather than granting one, and that refusal used to end
+    // here with no display at all - on a Pi 5, which is exactly the board the
+    // present path already expects to grant a single screen to.
+    //
+    // So a refusal is retried with one screen. Everything downstream reads the
+    // grant rather than the request (see the row count in the present path),
+    // so a single-buffered grant needs nothing else told to it: the frame is
+    // copied into the granted surface instead of panned to.
     CBcmFrameBuffer *fb =
         new CBcmFrameBuffer(a->w, a->h, 32, 0, 0, 0, TRUE /*double buffered*/);
     if (!fb->Initialize())
     {
         delete fb;
-        return;
+        SDL2Circle_Log("sdl2video", SDL2CIRCLE_LOG_NOTICE,
+                       "the firmware refused two %dx%d 32bpp screens; "
+                       "asking for one", a->w, a->h);
+
+        fb = new CBcmFrameBuffer(a->w, a->h, 32, 0, 0, 0, FALSE /*single*/);
+        if (!fb->Initialize())
+        {
+            SDL2Circle_Log("sdl2video", SDL2CIRCLE_LOG_ERROR,
+                           "the firmware refused a %dx%d 32bpp framebuffer "
+                           "(0x0 asks for the panel's own mode)", a->w, a->h);
+            delete fb;
+            return;
+        }
     }
     s_fb0 = fb;
     s_grant_w = (int)fb->GetWidth();
     s_grant_h = (int)fb->GetHeight();
+    SDL2Circle_Log("sdl2video", SDL2CIRCLE_LOG_NOTICE,
+                   "framebuffer granted: asked %dx%d, got %ux%u",
+                   a->w, a->h, fb->GetWidth(), fb->GetHeight());
 
     // Read the mode back on this same trip to core 0, now that setting it
     // has happened.
