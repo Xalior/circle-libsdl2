@@ -9,6 +9,37 @@ existing kernel will not build or run until it is followed.
 
 ## vPoC3
 
+### A refused framebuffer says which request was refused
+
+The allocation used to fail in silence. `acquire_fb_on0` deleted the object
+and returned, and every caller above it reported "no display yet" in its own
+words - none of which is the reason, and one of which is
+`SDL_CreateWindow` failing with "the display size cannot be determined".
+A board with no picture and nothing on the wire is the same board whether the
+firmware declined the grant, the panel is asleep, or the cable is out.
+
+Three lines now say which:
+
+```
+sdl2video: framebuffer granted: asked 0x0, got 1920x1080
+sdl2video: the firmware refused two 0x0 32bpp screens; asking for one
+sdl2video: the firmware refused a 0x0 32bpp framebuffer (0x0 asks for the panel's own mode)
+```
+
+`read_physical_display` says when the firmware declines to report the display
+at all, for the same reason: it is the other half of what an absent scanout
+means.
+
+**The refusal is retried with a single buffer.** Double buffering is what
+makes a present a page flip, so it is worth asking for, but a firmware that
+will not allocate two screens refuses the whole allocation rather than
+granting one. Everything downstream already reads the grant rather than the
+request - the present path counts its rows from `GetSize()` - so one screen
+needs nothing else told to it, and the frame is copied into the granted
+surface instead of panned to.
+
+Nothing a consumer calls changed.
+
 ### The desktop stops shrinking under the application
 
 `SDL_GetDesktopDisplayMode` and `SDL_GetDisplayBounds` answered with the
