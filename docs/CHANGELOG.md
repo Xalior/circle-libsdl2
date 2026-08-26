@@ -9,6 +9,23 @@ existing kernel will not build or run until it is followed.
 
 ## vPoC3
 
+### The usable desktop area is answered
+
+`SDL_GetDisplayUsableBounds` was declared in `SDL_video.h` and implemented
+nowhere, so a program that called it did not fail at run time - it failed to
+link, with an undefined symbol naming neither the library nor what to do
+about it. Any program written for a desktop may call it: it is the ordinary
+way to ask how much room a non-fullscreen window has.
+
+It now answers the display's own bounds. The usable area is the display minus
+whatever the system reserves - a menu bar, a dock, a taskbar - and there is no
+window manager here, so nothing reserves any part of the panel. That is the
+same answer SDL gives on a desktop with nothing docked, rather than a refusal
+every caller would have to work around.
+
+`rect` may be NULL, which SDL documents for this call and not for
+`SDL_GetDisplayBounds`.
+
 ### A refused framebuffer says which request was refused
 
 The allocation used to fail in silence. `acquire_fb_on0` deleted the object

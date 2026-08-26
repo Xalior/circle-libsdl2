@@ -140,6 +140,7 @@ SDL keeps two display sizes apart on every platform, and so does this library:
 |---|---|---|
 | `SDL_GetDesktopDisplayMode` | the vFB | the desktop is the display an application was given, and a game going fullscreen at 640x400 does not shrink the monitor it did it on |
 | `SDL_GetDisplayBounds` | the vFB | SDL's other spelling of the same question |
+| `SDL_GetDisplayUsableBounds` | the vFB | the usable area is the display minus what the system reserves - a menu bar, a dock, a taskbar. There is no window manager here and nothing reserves any of the panel, so it is the whole of it |
 | `SDL_GetCurrentDisplayMode` | the canvas | that genuinely is the mode in effect |
 
 **Neither is the panel.** The application never learns the real output resolution from either of them - it draws in the canvas, and the placement rules above put that onto the physical screen. What it does learn is the range of sizes it may ask for, which is [the mode list](#the-mode-list).

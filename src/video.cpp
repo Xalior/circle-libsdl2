@@ -1747,6 +1747,33 @@ extern "C" int SDL_GetDisplayBounds(int, SDL_Rect *rect)
     return 0;
 }
 
+// The usable area is the display minus whatever the system keeps for itself:
+// on a desktop, a menu bar, a dock or a taskbar. There is no window manager
+// here and nothing reserves any part of the panel, so the usable bounds are
+// the display's bounds - the same answer SDL gives on a desktop with nothing
+// docked, rather than a refusal every caller has to work around.
+//
+// SDL documents `rect' as optional for this call, unlike SDL_GetDisplayBounds,
+// so a caller that only wants the return value is answered rather than
+// dereferenced.
+extern "C" int SDL_GetDisplayUsableBounds(int displayIndex, SDL_Rect *rect)
+{
+    SDL_Rect ignored;
+    if (!rect)
+        rect = &ignored;
+
+    if (SDL_GetDisplayBounds(displayIndex, rect) != 0)
+    {
+        METER("usable", -1, -1, "GetDisplayUsableBounds -> refused");
+        return -1;
+    }
+
+    METER("usable", rect->w, rect->h,
+          "GetDisplayUsableBounds -> %dx%d (the whole panel)",
+          rect->w, rect->h);
+    return 0;
+}
+
 // Where the mouse pointer is allowed to be (src/mouse.cpp): the canvas,
 // which is the same rectangle SDL_GetDisplayBounds answers with and the same
 // one render_target_w/h draws into - on one screen with no window manager,
