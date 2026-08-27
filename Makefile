@@ -345,6 +345,21 @@ world-fetch:
 # for machines with megabytes of stack, which is most of them.
 CIRCLE_KERNEL_STACK_SIZE ?= 0x200000
 
+# Circle matches a freed block to a bucket by its exact size, and a block
+# bigger than the largest bucket matches none, so it is dropped on free.
+# sysconfig.h says as much: "the memory space is lost, if the block will be
+# freed later". The stock list stops at half a megabyte, and one 1920x1080
+# 32-bit surface is 8 MB, so any program that resizes a canvas bleeds the
+# board dry. The program is not leaking. Its own allocator counts the block
+# back and only Circle's free memory falls.
+#
+# Continuing to 256 MB covers the tens of megabytes a Pascal program holds in
+# dynamic arrays. Sizes must be multiples of 64, twenty at most. The price is
+# rounding up: a 66 MB block sits in the 128 MB bucket for its whole life,
+# which is why this is a stop-gap. The standing fix is an allocator of our own
+# in circle-libfpc's RTL that can hand back a block of any size.
+CIRCLE_HEAP_BUCKETS ?= 0x40,0x400,0x1000,0x4000,0x10000,0x40000,0x80000,0x100000,0x200000,0x400000,0x800000,0x1000000,0x2000000,0x4000000,0x8000000,0x10000000
+
 # _WANT_IO_C99_FORMATS: newlib's printf and scanf accept %zu, %jd, %td and %hh.
 # Omitted, those letters are copied to the output rather than consumed. -o
 # becomes a -D in the flags newlib is compiled with, which is why it is set here.
@@ -358,7 +373,9 @@ world-build:
 		( cd $(CIRCLE_STDLIB) && bash ./configure -r $(RASPPI_$(BOARD)) -p aarch64-none-elf- \
 			--libcxx-repo --kernel-max-size 255 -o ARM_ALLOW_MULTI_CORE \
 			-o _WANT_IO_C99_FORMATS \
-			-o KERNEL_STACK_SIZE=$(CIRCLE_KERNEL_STACK_SIZE) && $(MAKE) MAKEINFO=true )
+			-o KERNEL_STACK_SIZE=$(CIRCLE_KERNEL_STACK_SIZE) \
+			-o 'HEAP_BLOCK_BUCKET_SIZES=$(CIRCLE_HEAP_BUCKETS)' \
+			&& $(MAKE) MAKEINFO=true )
 
 # Convenience: fetch then build one board's world.
 .PHONY: world
