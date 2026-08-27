@@ -1999,8 +1999,11 @@ static void create_window_on0(void *p)
     // where that is settled, and it never reads this field.
     SDL_Window *win = new SDL_Window;
     win->fb = fb;
-    win->w = s_switch_set ? a->w : s_canvas_w;
-    win->h = s_switch_set ? a->h : s_canvas_h;
+    // A request of 0x0 is not a size, it is "you choose", so the switch does
+    // not honour it. Handed back as-is it makes a window no renderer accepts,
+    // and the error names neither the switch nor the request.
+    win->w = (s_switch_set && a->w > 0) ? a->w : s_canvas_w;
+    win->h = (s_switch_set && a->h > 0) ? a->h : s_canvas_h;
     // The window's state, and the flags a game branches on.
     //
     // This window always has input focus. There is one window and no window
