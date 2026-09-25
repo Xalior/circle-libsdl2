@@ -33,6 +33,14 @@
 // set again when that window is destroyed. Both are one boolean, flipped in
 // place; no device is built, moved or torn down either time.
 //
+// Whether a line is drawn is settled when the line is written. Core 0 writes
+// through the tee at once, so the flag it sees is the flag at that moment. A
+// line from another core waits in that core's ring, and the flag is read when
+// the line goes into the ring and kept with it; the drain withholds the
+// screen from a line that was written while an application held it. A line
+// written while the screen was ours is still not drawn if an application has
+// taken the screen by the time the line is drained.
+//
 #include <SDL2/SDL.h>
 #include "sdl2circle.h"
 
@@ -43,6 +51,7 @@
 #include <circle/serial.h>
 #include <circle/spinlock.h>
 
+#include <atomic>
 #include <string.h>
 
 namespace
@@ -72,7 +81,21 @@ CCharGenerator s_font;
 // tee is built, if the machine has a display and has not asked to be left
 // off it; cleared when an application takes the display, and set again when
 // it is given back.
-bool s_screenLive = false;
+//
+// Read from every core. A core that writes into its ring reads it at that
+// moment and stores the answer with the record (src/log.cpp), while the flag
+// is only ever changed on core 0. Atomic, so that a read on another core is
+// never a data race. The store releases and every read acquires: a core that
+// sees the screen live also sees the screen geometry set before the flag
+// was, and an application core that has created or destroyed its window
+// sees the new value as soon as its call to core 0 returns, because that
+// call's completion is itself an acquire of what core 0 did before it.
+std::atomic<bool> s_screenLive{false};
+
+// Set by the drain on core 0 while it writes a record that was produced when
+// the screen was not ours, so the tee sends that record to the serial port
+// alone. Only core 0 touches it, and only while the split is active.
+bool s_screenWithheld = false;
 
 // The serial device the host kernel gave Circle's logger. The tee holds it and
 // writes it on every line for the whole run; it is never replaced.
@@ -242,7 +265,7 @@ public:
                                 ? s_serial->Write(pBuffer, nCount)
                                 : (int)nCount;
 
-        if (s_screenLive)
+        if (s_screenLive.load(std::memory_order_acquire) && !s_screenWithheld)
         {
             s_lock.Acquire();
             const char *p = (const char *)pBuffer;
@@ -354,14 +377,14 @@ int SDL2Circle_ConsoleInit(void)
     // destination has quietly failed.
     s_serial = pLogger->GetTarget();
     if (ScreenPrepare() == 0)
-        s_screenLive = true;
+        s_screenLive.store(true, std::memory_order_release);
 
     // The logger is never pointed anywhere else again - not when the
     // application takes the display, not ever - so there is no moment at
     // which output has no destination and no second object to keep in step.
     pLogger->SetNewTarget(&s_tee);
 
-    if (s_screenLive)
+    if (s_screenLive.load(std::memory_order_acquire))
         // Said on both destinations, because it is now on both. Every number
         // in it was read back from the firmware.
         SDL2Circle_Log("sdl2console", SDL2CIRCLE_LOG_NOTICE,
@@ -446,13 +469,25 @@ extern "C" unsigned SDL2Circle_ConsoleRows(void)
     return s_cols != 0 ? s_rows : 0;
 }
 
+// Whether the screen is being drawn on at this moment. Valid from any core.
+bool SDL2Circle_ConsoleScreenLive(void)
+{
+    return s_screenLive.load(std::memory_order_acquire);
+}
+
+// Core 0's drain, around each record it writes out of a ring.
+void SDL2Circle_ConsoleWithholdScreen(bool withhold)
+{
+    s_screenWithheld = withhold;
+}
+
 // ---------------------------------------------------------------------------
 // The display hand-off (SDL_CreateWindow / SDL_DestroyWindow)
 // ---------------------------------------------------------------------------
 
 void SDL2Circle_ConsoleReleaseScreen(void)
 {
-    if (!s_screenLive)
+    if (!s_screenLive.load(std::memory_order_acquire))
         return;
 
     // Under the same lock a line is drawn under, so a line already part way
@@ -460,7 +495,7 @@ void SDL2Circle_ConsoleReleaseScreen(void)
     // moves: the logger's target is the tee before this and the tee after it,
     // and the serial half is untouched.
     s_lock.Acquire();
-    s_screenLive = false;
+    s_screenLive.store(false, std::memory_order_release);
     s_lock.Release();
 
     SDL2Circle_Log("sdl2console", SDL2CIRCLE_LOG_NOTICE, "screen log off");
@@ -473,7 +508,8 @@ void SDL2Circle_ConsoleReleaseScreen(void)
 // has none to give back either, and a screen already live is left alone.
 void SDL2Circle_ConsoleGrantScreen(void)
 {
-    if (!s_started || s_base == nullptr || s_screenLive)
+    if (!s_started || s_base == nullptr
+        || s_screenLive.load(std::memory_order_acquire))
         return;
 
     // Said before the screen is taken, so it goes to the serial port alone.
@@ -487,6 +523,6 @@ void SDL2Circle_ConsoleGrantScreen(void)
     SDL2Circle_Log("sdl2console", SDL2CIRCLE_LOG_NOTICE, "screen log on");
 
     s_lock.Acquire();
-    s_screenLive = true;
+    s_screenLive.store(true, std::memory_order_release);
     s_lock.Release();
 }

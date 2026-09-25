@@ -38,6 +38,13 @@
 // A record says which of the two it is and the drain gives it to the right
 // one.
 //
+// Whether a record is drawn on the screen is decided when it is written, not
+// when it is drained. The producing core reads the console's screen flag as
+// it writes the record and the record carries the answer, so a line written
+// while an application holds the display stays off the screen even if the
+// window has closed by the time the servo drains it. That is how the
+// hardware core's own lines behave, since they go straight through.
+//
 // A ring that is full drops the line and counts it, rather than stalling
 // the producing core or overwriting a line already in the ring. The console
 // is a fixed, slow width, so dropping is the steady state for a chatty
@@ -118,12 +125,17 @@ namespace
 // bytes go to the destination exactly as they arrived and `from` and
 // `severity` mean nothing in it; anything else is a log line and gets its
 // label from Circle's logger when the servo prints it.
+//
+// `screen` is whether the console was drawing on the screen when the record
+// was written. The drain keeps a record that was written without it off the
+// screen, whichever channel it came from.
 struct LogRec
 {
     const char *from;
     unsigned severity;
     unsigned len;          // bytes following the header
     bool raw;
+    bool screen;
 };
 
 struct alignas(64) LogRing
@@ -259,7 +271,7 @@ void RingPush(const char *from, unsigned severity, const char *text,
         return;
     }
 
-    LogRec rec{from, severity, len, raw};
+    LogRec rec{from, severity, len, raw, SDL2Circle_ConsoleScreenLive()};
     RingCopyIn(ring, tail, &rec, sizeof(rec));
     RingCopyIn(ring, tail + sizeof(rec), text, len);
 
@@ -441,12 +453,16 @@ void SDL2Circle_LogDrain(void)
             // The one place the two channels part company. Raw output goes to
             // the destination by count, because it may hold a byte that is
             // not text and it has no line to end; a log record goes through
-            // the logger and comes out labelled.
+            // the logger and comes out labelled. Both reach the tee, which
+            // leaves the screen alone for a record written while the screen
+            // was not being drawn on.
+            SDL2Circle_ConsoleWithholdScreen(!rec.screen);
             if (rec.raw)
                 DestinationWrite(line, rec.len);
             else
                 CLogger::Get()->Write(rec.from ? rec.from : "sdl2",
                                       ToCircle(rec.severity), "%s", line);
+            SDL2Circle_ConsoleWithholdScreen(false);
             printed++;
         }
 

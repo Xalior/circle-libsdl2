@@ -89,6 +89,17 @@ void SDL2Circle_ConsoleReleaseScreen(void);
 // console). The same tee, the same drawing code - nothing is rebuilt.
 void SDL2Circle_ConsoleGrantScreen(void);
 
+// Whether the console is drawing on the screen at this moment. Valid from any
+// core: a core writing into its log ring reads it then and keeps the answer
+// with the record, so a line written while an application holds the display
+// is not drawn when it is drained later.
+bool SDL2Circle_ConsoleScreenLive(void);
+
+// Core 0's log drain only. While set, the tee writes to the serial port alone
+// and leaves the screen untouched; the drain sets it around each record that
+// was written while the screen was not being drawn on.
+void SDL2Circle_ConsoleWithholdScreen(bool withhold);
+
 // ---- the C library's standard descriptors (src/stdio.cpp) ------------------
 //
 // Bind standard input, standard output and standard error to this board's one

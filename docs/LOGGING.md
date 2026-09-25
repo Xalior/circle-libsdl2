@@ -22,6 +22,8 @@ Both are safe from any core, on the same terms. The serial console is a device, 
 
 So they do not write. **Each core copies into a ring of its own and returns**, and the hardware core's servo drains every ring. Nothing crosses but memory. A core that prints never touches the console and is never delayed by one that is printing. Both channels share the one ring per core, so a program's printed line and the log line it writes next come out in the order it produced them.
 
+**Each record in a ring also carries whether the screen was being drawn on when the record was written.** The drain honours that answer, so a record reaches the screen or stays off it according to the moment it was written, not the moment it was drained. See [The display hand-off](#the-display-hand-off).
+
 ## Guarantees
 
 - **It never blocks, and it never hides a loss.** If a ring is full the record is dropped and counted. The drain says when a core starts dropping and when it stops, with the total - rather than a line per pass, which would spend the scarce console on describing its own scarcity. Waiting would put the calling core to sleep for the sake of a diagnostic, and overwriting would silently corrupt the record.
@@ -58,7 +60,11 @@ Nothing is attached, detached or moved to do that. The logger's destination is t
 
 Because the hand-off waits for a window rather than for `SDL_Init`, anything that goes wrong while video is coming up is still said on the screen as well as on the wire.
 
-**Output written while a window is open reaches the serial port only.** An application that wants something on the screen after its window has closed, such as the reason it stopped, has to keep that text and print it again once the window is gone. `SDL2Circle_ConsoleRows()` returns how many rows of text the screen log holds, or 0 when there is no screen log, so the application can size what it keeps to what the screen can show. The number is fixed on core 0 when the screen log is built, before the split starts, and does not change while an application holds the display, so any core may ask for it.
+**Output written while a window is open reaches the serial port only**, however late it is drained. The hardware core writes straight through, so its lines are drawn or not according to the screen at that moment. A line from any other core waits in that core's ring, and the ring keeps with each record whether the screen was being drawn on when the record was written. The drain sends a record written while a window was open to the serial port alone, even if the window has closed by the time the record comes out. A record written before a window opened and drained after it opened is not drawn either: once an application holds the display the console draws nothing, whatever a record says.
+
+The flag is changed on core 0 and read on every core, so it is an atomic value: each change is a release and each read an acquire. An application core that creates or destroys its window waits for core 0 to make the change, so the next line it writes already carries the new answer.
+
+An application that wants something on the screen after its window has closed, such as the reason it stopped, has to keep that text and print it again once the window is gone. `SDL2Circle_ConsoleRows()` returns how many rows of text the screen log holds, or 0 when there is no screen log, so the application can size what it keeps to what the screen can show. The number is fixed on core 0 when the screen log is built, before the split starts, and does not change while an application holds the display, so any core may ask for it.
 
 ### Asking for it earlier
 

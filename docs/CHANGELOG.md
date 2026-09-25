@@ -9,6 +9,24 @@ existing kernel will not build or run until it is followed.
 
 ## vPoC3
 
+### A line written while a window is open stays off the screen
+
+Whether a line is drawn on the screen is now decided when the line is
+written, not when it reaches the console. A line written on a core other
+than core 0 waits in that core's ring until core 0 drains it, and the screen
+used to be checked at drain time. So a line written while an application's
+window was open, and drained just after the window closed, was drawn on the
+screen that had come back to the console. An application that printed its
+reason for stopping after its window closed could find that text on the
+screen below lines it never meant to show there, such as its own window
+teardown messages or a first copy of the same text.
+
+Each record in a ring now carries whether the screen was being drawn on when
+the record was written, for log lines and raw output alike, and the drain
+sends a record written while a window was open to the serial port alone.
+Core 0 writes straight through, so its lines already behaved this way. A
+record is still never drawn while an application holds the display.
+
 ### A host kernel can finish the output before it stops
 
 `SDL2Circle_LogFlush()` writes out what every core has handed to the log and
