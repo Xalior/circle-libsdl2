@@ -9,6 +9,20 @@ existing kernel will not build or run until it is followed.
 
 ## vPoC3
 
+### The Circle worlds follow circle-stdlib back to GitHub
+
+circle-stdlib has moved from Codeberg back to GitHub, and its Codeberg
+repositories for newlib and for its LLVM fork no longer exist. A recursive
+clone of a world pinned before the move fails when it reaches newlib. Each
+board's world is now circle-stdlib at `4fbab62` from GitHub, which carries
+Circle Step 51.1.1 and an updated newlib, and `LLVM_REPO` clones the LLVM
+fork from GitHub. The LLVM tag, `circle-stdlib-22.1.3-v2`, is unchanged.
+
+A world that was configured before this change keeps its old build, because
+`make deps` skips configure when the world's `Config.mk` exists. Run
+`make mrproper` inside each world, then `make deps`, to build it from
+nothing.
+
 ### A line written while a window is open stays off the screen
 
 Whether a line is drawn on the screen is now decided when the line is

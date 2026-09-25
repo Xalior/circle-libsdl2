@@ -218,17 +218,15 @@ $(OTHER_ARCHIVES):
 	@exit 1
 
 # LLVM/libc++ comes from a git checkout at a fixed tag via --libcxx-repo, NOT
-# circle-stdlib's default --libcxx tarball: Codeberg regenerates its archives,
-# drifting their SHA from the pin, so a clean --libcxx build fails its hash
-# check. An immutable tag reproduces from a fresh clone. The checkout lands in
-# the gitignored libs/llvm-project that --libcxx-repo reads.
+# circle-stdlib's default --libcxx tarball fetch. A tag is immutable, so the
+# checkout reproduces from a fresh clone, and one checkout serves every world
+# (below). The world reads it through its gitignored libs/llvm-project.
 #
-# It is on Codeberg because that is the only place it exists: the tag names a
+# The repository is circle-stdlib's own fork of llvm-project: the tag names a
 # tree carrying the bare-metal patches, and neither the tag nor its commits
-# are in llvm/llvm-project. Codeberg is a small volunteer-run forge and it
-# times out often enough to fail a build that would otherwise have worked, so
-# override LLVM_REPO to clone from a mirror of your own.
-LLVM_REPO ?= https://codeberg.org/larchcone/llvm-project.git
+# are in llvm/llvm-project. Override LLVM_REPO to clone from a mirror of your
+# own.
+LLVM_REPO ?= https://github.com/smuehlst/llvm-project.git
 LLVM_TAG  ?= circle-stdlib-22.1.3-v2
 
 # How many times to try that clone before giving up. A gateway timeout on the

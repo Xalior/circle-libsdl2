@@ -24,7 +24,7 @@ There is one world and one archive per board. Each is compiled for its own proce
 | Pi 4 | `circle-stdlib-rpi4` | `libSDL2-rpi4.a` |
 | Pi 5 | `circle-stdlib-rpi5` | `libSDL2-rpi5.a` |
 
-`make deps` does all of them. For each board it fetches the world's sources, configures the world, builds it, and then builds this library against it. libc++ comes from a git checkout at a fixed LLVM tag rather than a tarball, because Codeberg regenerates its archives and the tarball fails its hash check on a clean build. The configure line is `-r <board> -p aarch64-none-elf- --libcxx-repo --kernel-max-size 255 -o ARM_ALLOW_MULTI_CORE -o KERNEL_STACK_SIZE=0x200000`. The first build is long. newlib and libc++ compile from source, once per board.
+`make deps` does all of them. For each board it fetches the world's sources, configures the world, builds it, and then builds this library against it. libc++ comes from a git checkout at a fixed LLVM tag rather than a tarball, and one checkout serves every board's world. The configure line is `-r <board> -p aarch64-none-elf- --libcxx-repo --kernel-max-size 255 -o ARM_ALLOW_MULTI_CORE -o KERNEL_STACK_SIZE=0x200000`. The first build is long. newlib and libc++ compile from source, once per board.
 
 After that, name the archive to rebuild one board. `BOARD` selects which, and defaults to `rpi4`.
 
