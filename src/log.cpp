@@ -458,6 +458,33 @@ void SDL2Circle_LogDrain(void)
     s_nextCore = 0;
 }
 
+// Whether every core's ring has been drained. A ring is empty when its
+// reader has caught up with its writer.
+static bool RingsEmpty(void)
+{
+    for (unsigned c = 0; c < LOG_MAX_CORES; c++)
+        if (g_rings[c].head.load(std::memory_order_relaxed)
+            != g_rings[c].tail.load(std::memory_order_acquire))
+            return false;
+    return true;
+}
+
+extern "C" int SDL2Circle_LogFlush(void)
+{
+    if (SDL2Circle_ThisCore() != 0)
+        return SDL_SetError("SDL2Circle_LogFlush: core 0 only - the serial "
+                            "port is core 0's device");
+
+    // One drain pass is bounded, so a full ring takes several. Without the
+    // split nothing rings, and every byte has already gone to the device.
+    if (SDL2Circle_SplitActive())
+        while (!RingsEmpty())
+            SDL2Circle_LogDrain();
+
+    SDL2Circle_ConsoleFlushSerial();
+    return 0;
+}
+
 // ---------------------------------------------------------------------------
 // SDL's own logging API
 //

@@ -58,6 +58,8 @@ Nothing is attached, detached or moved to do that. The logger's destination is t
 
 Because the hand-off waits for a window rather than for `SDL_Init`, anything that goes wrong while video is coming up is still said on the screen as well as on the wire.
 
+**Output written while a window is open reaches the serial port only.** An application that wants something on the screen after its window has closed, such as the reason it stopped, has to keep that text and print it again once the window is gone. `SDL2Circle_ConsoleRows()` returns how many rows of text the screen log holds, or 0 when there is no screen log, so the application can size what it keeps to what the screen can show. The number is fixed on core 0 when the screen log is built, before the split starts, and does not change while an application holds the display, so any core may ask for it.
+
 ### Asking for it earlier
 
 `SDL2Circle_LogAttachScreen` exists for one case: a host kernel with bring-up of its own worth watching on the glass, such as mounting a card, which happens before the arming call. Call it on core 0 once the logger is on the serial device and the same one device is built at that moment instead.
@@ -104,6 +106,23 @@ is the one thing a silent board still has to be able to say.
 **A host kernel that wants its own console for C output keeps it, and must bind it before `SDL2Circle_ArmCoreRuntime`.** The C library binds its three standard descriptors together and refuses - inside an assertion, which stops the board - to bind them twice. So the library checks first and leaves them alone when they are already bound, and a kernel that binds after that call is the one arrangement that fails.
 
 **All three descriptors stay held for the life of the program, standard input included** - which is now the keyboard, read through this same console (see `stdio.cpp`). The C library hands out the lowest free descriptor, so a released standard descriptor would go to the first file a program opened - and a language runtime that reads descriptor 0, 1 or 2 as the console would then send that file's writes to the console instead of to the card.
+
+## Finishing the output
+
+**Output is not on the wire when the call that wrote it returns.** A line written on another core waits in that core's ring until the servo drains it, and the servo drains a limited amount per pass. A byte written to the serial device waits in the UART until the hardware sends it, and the UART sends only while the board is running. A host kernel that reboots, or stops core 0, straight after its application returns cuts off whatever is still waiting. That is usually the last thing the application said, which is often the reason it stopped.
+
+`SDL2Circle_LogFlush()` finishes the job. It drains every core's ring until all of them are empty, then waits until the UART has sent its last byte. Call it on core 0, after the last line you want out, and before the reboot or the stop:
+
+```c
+m_Logger.Write(From, LogNotice, "application exited with %d, rebooting", res);
+SDL2Circle_LogFlush();
+return ShutdownReboot;
+```
+
+- **Core 0 only**, because the serial port is core 0's device. Anywhere else it returns -1 and `SDL_GetError` says why.
+- **Without the split there are no rings**, so it only waits for the UART.
+- **It returns only when the other cores have stopped writing.** Output that arrives while it runs is drained too. Call it after the application has finished, not while it is still printing.
+- **The wait on the UART covers a serial device that Circle's logger was given**, found among the `ttyS` devices Circle registers. A kernel whose logger writes to some other device gets the ring drain and no wait.
 
 ## Format and delivery
 

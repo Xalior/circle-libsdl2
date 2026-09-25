@@ -72,6 +72,11 @@ int SDL2Circle_ConsoleInit(void);
 class CDevice;
 CDevice *SDL2Circle_ConsoleDevice(void);
 
+// Wait until the serial device the tee holds has sent its last byte. Core 0
+// only. Does nothing when the tee holds no serial device, or holds a device
+// that is not one of Circle's CSerialDevice UARTs.
+void SDL2Circle_ConsoleFlushSerial(void);
+
 // The display hand-off, made when an application creates its window - the
 // moment it actually takes the framebuffer, not merely SDL_Init. Clears the
 // flag and nothing else: no device is built, moved or taken away, and the

@@ -104,6 +104,7 @@ Details that are easy to get wrong:
 
 - **A core that is given no role must be parked** in a wait loop. Returning from your dispatch function lets the core continue into whatever code follows it.
 - **Core 0 must keep yielding for as long as the application runs.** The servo is a scheduler task, so it only runs when something gives up the core. A host that waits for the application by spinning without yielding will deadlock: the application core waits for answers that core 0 is never free to give. Wait in a loop that calls `CScheduler::Yield`.
+- **When the application has finished, call `SDL2Circle_LogFlush` on core 0 before you reboot or stop the core.** The application's last lines are still in its core's ring until the servo drains them, and a reboot straight after it returns loses them. See [Finishing the output](LOGGING.md#finishing-the-output).
 
 A host kernel is also the one piece of software that may still need a device this library does not own - its own serial port, a GPIO line. For those, `SDL2Circle_CallOn0` runs a function on core 0 and waits for it. It is the same mailbox the library marshals through, and it is a direct call, costing nothing, when the split is inactive or the caller is already core 0.
 

@@ -38,7 +38,9 @@
 
 #include <circle/chargenerator.h>
 #include <circle/device.h>
+#include <circle/devicenameservice.h>
 #include <circle/logger.h>
+#include <circle/serial.h>
 #include <circle/spinlock.h>
 
 #include <string.h>
@@ -388,6 +390,39 @@ CDevice *SDL2Circle_ConsoleDevice(void)
     return s_serial;
 }
 
+// CSerialDevice::Flush waits until the UART has sent the last byte, but it is
+// protected. Naming it through a derived class yields a pointer to
+// CSerialDevice's own member, which can then be called on any CSerialDevice;
+// nothing of this class is ever constructed.
+namespace
+{
+struct SerialFlush : CSerialDevice
+{
+    static void On(CSerialDevice *pSerial)
+    {
+        void (CSerialDevice::*flush)(void) = &SerialFlush::Flush;
+        (pSerial->*flush)();
+    }
+};
+}   // namespace
+
+void SDL2Circle_ConsoleFlushSerial(void)
+{
+    if (s_serial == nullptr)
+        return;
+
+    // The logger's destination is a CDevice, and whatever the host kernel
+    // chose. It is flushed only once it is found among the names every
+    // CSerialDevice registers for itself (ttyS1 onwards), which is what
+    // makes the call on it one on a real CSerialDevice.
+    for (unsigned i = 1; i <= SERIAL_DEVICES; i++)
+        if (CDeviceNameService::Get()->GetDevice("ttyS", i, FALSE) == s_serial)
+        {
+            SerialFlush::On(static_cast<CSerialDevice *>(s_serial));
+            return;
+        }
+}
+
 extern "C" int SDL2Circle_LogAttachScreen(void)
 {
     // Nothing has to call this: the library builds the tee itself while the
@@ -400,6 +435,15 @@ extern "C" int SDL2Circle_LogAttachScreen(void)
     // second mechanism behind it; this and the arming call are two doors
     // into the same idempotent build.
     return SDL2Circle_ConsoleInit();
+}
+
+extern "C" unsigned SDL2Circle_ConsoleRows(void)
+{
+    // Both counts are settled together, and only when the character cell
+    // fits the screen; a screen that failed any earlier step left them zero.
+    // An application holding the display does not change the answer: the
+    // console still exists, it is only not drawing.
+    return s_cols != 0 ? s_rows : 0;
 }
 
 // ---------------------------------------------------------------------------

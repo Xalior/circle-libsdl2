@@ -9,6 +9,29 @@ existing kernel will not build or run until it is followed.
 
 ## vPoC3
 
+### A host kernel can finish the output before it stops
+
+`SDL2Circle_LogFlush()` writes out what every core has handed to the log and
+to standard output, then waits until the serial port has sent the last byte.
+A kernel that reboots, or holds the board still, straight after its
+application returns would otherwise lose whatever was still in a core's ring
+or in the UART.
+
+It is core 0 only, because the serial port is core 0's device, and returns -1
+with `SDL_GetError` when called anywhere else. Without the split there are no
+rings to drain, and it only waits on the UART.
+
+### An application can ask how many rows the screen log holds
+
+`SDL2Circle_ConsoleRows()` answers with the number of text rows the screen
+log draws, or 0 when there is no screen log. An application that prints after
+its window has closed can use it to size what it keeps, so that what it
+prints fits on the screen.
+
+The number is settled on core 0 when the screen log is built, before the
+split is armed, and never changes, so the call is valid from any core. An
+application that holds the display gets the same answer.
+
 ### The usable desktop area is answered
 
 `SDL_GetDisplayUsableBounds` was declared in `SDL_video.h` and implemented

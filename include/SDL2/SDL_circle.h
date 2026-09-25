@@ -373,6 +373,20 @@ void SDL2Circle_WriteBytes(const char *bytes, unsigned len);
 // console never reaches), or a negated errno.
 long SDL2Circle_ReadStdin(void *buf, uint32_t len);
 
+// FINISH THE OUTPUT: write out everything every core has handed over, and
+// return once the serial port has sent the last byte. For a host kernel
+// about to stop - to reboot, or to hold the board still - whose last words
+// would otherwise be left in a ring or in the UART.
+//
+// CORE 0 ONLY, because it drives the serial device. The rings are drained
+// here pass after pass until all of them are empty; without the split there
+// are no rings and that part does nothing. The wait on the UART happens
+// either way. Output another core hands over while this runs is drained too,
+// so this returns only once the other cores have stopped writing.
+//
+// Returns 0, or -1 with SDL_GetError explaining when called off core 0.
+int SDL2Circle_LogFlush(void);
+
 // ---- the log on the screen --------------------------------------------------
 
 // NOTHING HAS TO CALL THIS, AND THERE IS NOTHING TO CONFIGURE. Output goes to
@@ -416,6 +430,16 @@ long SDL2Circle_ReadStdin(void *buf, uint32_t len);
 // this console cannot draw, is not a failure: it is a machine with one
 // destination instead of two, said once on the log, and this answers 0.
 int SDL2Circle_LogAttachScreen(void);
+
+// How many rows of text the screen log holds, or 0 when there is no screen
+// log: no display, a pixel format it cannot draw, or a call made before the
+// library has built it. For an application that wants to size what it prints
+// to what will stay on the glass once its window is gone.
+//
+// Callable from ANY core once SDL2Circle_ArmCoreRuntime has run on core 0.
+// The number is settled there, once, before the split is armed, and never
+// changes after; an application holding the display does not change it.
+unsigned SDL2Circle_ConsoleRows(void);
 
 // ---- I/O service (any core) -------------------------------------------------
 
